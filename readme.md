@@ -105,6 +105,11 @@ The key design constraint is to keep this adapter minimal. It is an interface bo
 
 ## Core Modules
 
+The current data-structure and module-interface contracts are recorded in
+[`docs/interfaces.md`](docs/interfaces.md). That document is the implementation
+guide for the MVP boundary between task construction, candidate rendering,
+checking, workspace materialization, and the future cost-sensitive controller.
+
 ### ProofSystemAdapter
 
 The MVP should implement only `LeanAdapter`, but the controller should depend on a small proof-system interface:
