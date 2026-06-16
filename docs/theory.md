@@ -176,10 +176,15 @@ be meaningful. The theorem supplies the target quantity that the empirical
 system should try to estimate from model confidence, verifier progress,
 retriever similarity, branch history, and diagnostic categories.
 
-## 3. Cheap Search Before Escalation
+## 3. Two-Tier Model Control
+
+The MVP should use a two-tier model policy. A cheap model proposes short Lean
+tactics, small proof terms, and lightweight repairs. A strong model is reserved
+for detailed proof completion or decomposition on branches that the controller
+believes are worth the cost.
 
 The simplest comparison is between direct escalation to a strong model and a
-policy that first tries a cheap search action.
+policy that first tries a cheap tactic-search action.
 
 Let:
 
@@ -230,10 +235,129 @@ c < pC.
 ### Interpretation
 
 This theorem formalizes a central design principle of the architecture:
-cheap proof expansion, retrieval, or repair is worthwhile only when its cost is
+cheap proof expansion, retrieval, or repair is worthwhile when its cost is
 smaller than the expected escalation cost it avoids. In experiments, the trace
 store can estimate \(p\), \(c\), and \(C\) for different error categories and
 task levels.
+
+This theorem only covers direct cheap success. In practice, cheap tactic search
+may also be useful because it improves the state before a later strong-model
+call. The next theorem captures that case.
+
+Let \(s_0\) be the initial proof-search state. A direct strong-model attempt at
+\(s_0\) costs \(C_H\) and succeeds with probability \(p_H(s_0)\). A cheap
+search action costs \(c_L\), succeeds directly with probability \(p_L\), and if
+it does not solve the task, moves the agent to a new state \(s_1\). A later
+strong-model attempt at \(s_1\) succeeds with probability \(p_H(s_1)\).
+
+For this comparison, measure expected cost per solved task. Direct strong
+completion has expected cost per success
+
+\[
+\frac{C_H}{p_H(s_0)}.
+\]
+
+Cheap-search-then-strong has success probability
+
+\[
+p_L + (1-p_L)p_H(s_1),
+\]
+
+and expected cost
+
+\[
+c_L + (1-p_L)C_H.
+\]
+
+### Theorem 3: State-Improving Cheap Search Before Strong Completion
+
+Cheap-search-then-strong has lower expected cost per solved task than direct
+strong completion whenever
+
+\[
+\frac{c_L + (1-p_L)C_H}
+     {p_L + (1-p_L)p_H(s_1)}
+<
+\frac{C_H}{p_H(s_0)}.
+\]
+
+Equivalently,
+
+\[
+c_L p_H(s_0)
+<
+C_H\left(
+  p_L(1-p_H(s_0))
+  + (1-p_L)(p_H(s_1)-p_H(s_0))
+\right).
+\]
+
+#### Proof
+
+The direct policy pays \(C_H\) and succeeds with probability \(p_H(s_0)\), so
+its expected cost per success is \(C_H/p_H(s_0)\). The two-tier policy always
+pays \(c_L\). It pays \(C_H\) only if the cheap action fails, which happens with
+probability \(1-p_L\). Its total success probability is the probability of
+cheap success plus the probability of cheap failure followed by strong success:
+
+\[
+p_L + (1-p_L)p_H(s_1).
+\]
+
+Thus its expected cost per success is
+
+\[
+\frac{c_L + (1-p_L)C_H}
+     {p_L + (1-p_L)p_H(s_1)}.
+\]
+
+Requiring this to be smaller than \(C_H/p_H(s_0)\) and multiplying by positive
+denominators gives
+
+\[
+p_H(s_0)(c_L + (1-p_L)C_H)
+<
+C_H(p_L + (1-p_L)p_H(s_1)).
+\]
+
+Rearranging yields
+
+\[
+c_L p_H(s_0)
+<
+C_H\left(
+  p_L(1-p_H(s_0))
+  + (1-p_L)(p_H(s_1)-p_H(s_0))
+\right).
+\]
+
+\(\square\)
+
+### Interpretation
+
+The right-hand side has two benefits. The term
+
+\[
+p_L(1-p_H(s_0))
+\]
+
+is the direct benefit of cheap success: the cheap model may solve tasks that
+would otherwise require a strong call. The term
+
+\[
+(1-p_L)(p_H(s_1)-p_H(s_0))
+\]
+
+is the state-improvement benefit: even when cheap search does not solve the
+task, it may create verifier feedback, a longer verified prefix, retrieved
+lemmas, or a decomposition that raises the conditional success probability of
+the strong model.
+
+This theorem justifies treating strong-model calls as high-cost macro-actions
+such as `escalate_detailed_proof` or `escalate_decompose`, not as another
+ordinary sampler. The controller should escalate when cheap search has either
+saturated or produced enough evidence that \(p_H(s)\) is high relative to the
+strong-model cost.
 
 ## 4. Repair Versus Regeneration
 
@@ -250,7 +374,7 @@ Let:
 - \(c_g\) be the cost of generating a fresh candidate;
 - \(p_g\) be the probability that a fresh candidate succeeds.
 
-### Theorem 3: When Repair Dominates Regeneration
+### Theorem 4: When Repair Dominates Regeneration
 
 After observing diagnostic \(e\), repair has lower expected cost per success
 than fresh regeneration whenever
@@ -326,7 +450,7 @@ The controller can score an action by
 This is a proof-search analogue of value of computation: spend a computation
 step when its expected verifier-observable improvement per unit cost is high.
 
-### Proposition 4: Residual Scoring Recovers Cost per Success
+### Proposition 5: Residual Scoring Recovers Cost per Success
 
 If the progress feature is the binary success indicator
 
@@ -393,6 +517,9 @@ The theory proves conditional optimality statements under an explicit model:
 - if candidate success probabilities and costs are known, candidates should be
   ordered by \(p_i/c_i\);
 - cheap search before escalation is cheaper exactly when \(c < pC\);
+- cheap tactic search before strong detailed proof is cheaper when direct cheap
+  success plus state improvement raises expected strong-model value enough to
+  offset cheap-search cost;
 - repair is preferable to regeneration when its diagnostic-conditioned success
   per cost is higher;
 - residual verifier progress per cost generalizes success probability per cost.
@@ -409,7 +536,8 @@ quantities that the theory identifies as decision-relevant:
 
 \[
 c(a), \quad p(a \mid s), \quad p_r(e), \quad
-\mathbb{E}[\Delta(s,a,S')], \quad C_{\textsf{strong}}.
+\mathbb{E}[\Delta(s,a,S')], \quad
+p_H(s), \quad C_{\textsf{strong}}.
 \]
 
 ## 8. Empirical Predictions
@@ -418,17 +546,19 @@ The theory suggests the following measurable predictions for the MVP:
 
 1. Cheap-first search should reduce expected cost on task categories where
    \(c < pC\).
-2. Diagnostic-aware repair should outperform blind regeneration for error
+2. Cheap tactic search should make strong-model calls more effective when it
+   increases \(p_H(s)\) through verified prefixes, diagnostics, retrieved
+   lemmas, or decomposition hints.
+3. Diagnostic-aware repair should outperform blind regeneration for error
    categories with high \(p_r(e)/c_r(e)\).
-3. Retrieval should be useful mainly for diagnostics or states where it
+4. Retrieval should be useful mainly for diagnostics or states where it
    increases downstream success probability enough to offset retrieval cost.
-4. Budget-aware policies should spend more aggressively on high-value branches
-   as the remaining budget shrinks.
-5. The advantage of cost-sensitive control should be largest when strong-model
+5. Budget-aware policies should spend strong-model calls on branches with high
+   estimated \(p_H(s)/C_H\), rather than after a fixed number of failures.
+6. The advantage of cost-sensitive control should be largest when strong-model
    calls are expensive and cheap verifier-guided feedback is informative.
 
 These predictions connect the formal theory to the proposed Lean experiments:
 the system can record every action, cost, diagnostic category, progress signal,
-and final outcome, then test whether the observed policy gains match the
-conditions above.
-
+branch value, escalation point, model tier, and final outcome, then test whether
+the observed policy gains match the conditions above.

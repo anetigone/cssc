@@ -180,11 +180,21 @@ an `ActionGenerationRequest` with the task, attempt index, previous feedback,
 and requested candidate count, then returns `ActionCandidate` objects that can
 be converted into `CandidateEdit`.
 
+The next controller should distinguish model tiers at the action boundary. A
+cheap generator should produce short tactic candidates and lightweight repairs.
+A strong generator should be invoked only by explicit escalation actions, where
+the requested output is a detailed proof completion or decomposition for a
+high-value branch. The two tiers may share the same `ActionCandidate` return
+shape, but their costs, prompts, and intended roles should be recorded in
+metadata.
+
 `BudgetManager` tracks coarse spending:
 
 ```text
 max_checks
 max_model_calls
+max_cheap_model_calls
+max_strong_model_calls
 per_check_timeout_seconds
 max_elapsed_seconds
 ```
@@ -207,15 +217,21 @@ Future cost-sensitive policy can grow behind the same `ActionGenerator`,
 Expected later actions:
 
 ```text
-expand_cheap
+expand_cheap_tactic
+repair_cheap
 retrieve
-repair
-decompose
-escalate
+escalate_detailed_proof
+escalate_decompose
 backtrack
 prune
 stop
 ```
+
+The controller should treat `escalate_detailed_proof` and
+`escalate_decompose` as high-cost macro-actions rather than ordinary retries.
+They should be chosen when verifier progress, retrieved context, branch value,
+or cheap-attempt saturation indicates that a strong-model call has enough
+expected value per unit cost.
 
 ## Extension Notes
 

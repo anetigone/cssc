@@ -68,9 +68,10 @@ The central hypothesis is:
 
 The accompanying theoretical framing is recorded in
 [`docs/theory.md`](docs/theory.md). The key claim is conditional rather than
-absolute: search is cheaper when the expected success gain of a cheap action
-exceeds its cost relative to direct escalation, and sequential proof attempts
-should be ordered by estimated success gain per unit cost.
+absolute: cheap tactic search is useful when it either solves the task directly
+or improves the state enough to make a later strong-model proof attempt worth
+its cost. Sequential proof attempts should therefore be ordered by estimated
+success or progress gain per unit cost.
 
 ## System Architecture
 
@@ -186,16 +187,18 @@ The encoded state should separate prover-neutral fields from Lean-specific field
 
 ### Action Space
 
-The controller chooses among meta-actions rather than only asking the model for another proof step:
+The controller chooses among meta-actions rather than only asking one model for another proof step. The MVP should use a two-tier model policy:
 
-- `expand_cheap`: generate candidate Lean tactics or proof terms with a cheap model;
+- `expand_cheap_tactic`: use a cheap model to generate short Lean tactics, small proof terms, or local proof sketches;
+- `repair_cheap`: use Lean diagnostics to make a small local fix to a failed candidate;
 - `retrieve`: retrieve similar Mathlib/local lemmas or proof snippets;
-- `repair`: use Lean diagnostics to fix the current failed candidate;
-- `decompose`: ask a stronger model to propose intermediate lemmas or subgoals;
-- `escalate`: call a stronger model;
+- `escalate_detailed_proof`: call a stronger model to generate a longer proof script for a high-value branch;
+- `escalate_decompose`: call a stronger model to propose intermediate lemmas, `have` statements, or subgoals;
 - `backtrack`: return to an earlier node;
 - `prune`: abandon an unpromising branch;
 - `stop`: terminate after success or budget exhaustion.
+
+The two model tiers should not be treated as interchangeable samplers. The cheap model is the default search and repair tool: it probes the local proof state, produces many inexpensive candidates, and creates verifier feedback. The strong model is a high-cost macro-action reserved for detailed completion or decomposition after the controller has evidence that a branch is worth spending on.
 
 For the first implementation, keep the edit format simple: candidate actions should be patches to a single proof hole, not arbitrary whole-file rewrites. That makes verification, blame assignment, and trace comparison much cleaner.
 
@@ -247,9 +250,38 @@ b_remaining = remaining_budget / total_budget
 
 The intended behavior is:
 
-- when budget is plentiful, explore more broadly;
-- when budget is low, exploit high-value nodes and prefer completion or repair;
+- when budget is plentiful, explore more broadly with cheap tactic candidates;
+- when budget is low, exploit high-value nodes and prefer cheap repair or strong-model completion;
 - when a branch repeats the same verifier failure, prune or backtrack earlier.
+
+For two-tier model control, the main escalation question is whether cheap search
+has increased the value of the branch enough to justify a strong-model call:
+
+```text
+escalate if
+  estimated_strong_success(node) / strong_model_cost
+  >
+  estimated_cheap_progress(node) / cheap_model_cost
+
+and branch_value(node) is high enough
+```
+
+The strong model's success estimate should be state-dependent rather than a
+constant. A useful heuristic is:
+
+```text
+estimated_strong_success(node)
+= base_strong_success
++ a * verifier_progress
++ b * retriever_relevance
++ c * verified_prefix_length
+- d * repeated_error_count
+- e * goal_complexity
+```
+
+This makes cheap search useful even when it does not solve the task directly:
+it can improve the proof state, expose useful diagnostics, retrieve relevant
+lemmas, and raise the expected value of a later detailed proof attempt.
 
 The budget manager should track a small set of cost counters:
 
@@ -361,7 +393,12 @@ for task in task_set:
         encode current proof-search frontier
         controller chooses action
         budget manager allocates a small budget slice
-        action creates one or more candidate Lean edits
+        if action is cheap expansion or cheap repair:
+            cheap model creates one or more short candidate Lean edits
+        elif action is retrieval:
+            retriever returns concise lemma/context evidence
+        elif action is strong escalation:
+            strong model creates a detailed proof or decomposition
         adapter renders candidate source
         workspace writes isolated candidate files
         proof-system adapter checks each candidate
@@ -410,29 +447,37 @@ The output should be short and structured: theorem name, statement, import path,
 Start with a heuristic controller before trying learning:
 
 ```text
-if syntax/parser error:
-    prefer repair
+if no candidate has been tried:
+    use cheap model to generate k short tactic candidates
+elif proof accepted:
+    stop
+elif syntax/parser error:
+    prefer cheap repair
 elif unknown identifier:
-    prefer retrieve or repair imports/names
+    prefer retrieve or cheap import/name repair
 elif type mismatch:
-    prefer repair with local context
-elif unsolved goals decreased:
-    continue expanding this branch
+    prefer cheap repair with local context
+elif candidate made verifier progress:
+    continue cheap expansion or cheap repair on this branch
 elif repeated same error >= k:
     prune or backtrack
-elif cheap budget is nearly exhausted and branch value is high:
-    escalate
+elif branch value is high and cheap attempts are saturated:
+    escalate_detailed_proof or escalate_decompose
+elif remaining budget is low:
+    escalate only on high-value branches; otherwise prune or stop
 else:
     best-first expand by residual value / estimated cost
 ```
 
-This is enough to test the research question before committing to a learned policy.
+This is enough to test the research question before committing to a learned policy. The strong model should be evaluated as a scarce resource: the controller should not call it merely because a cheap attempt failed, but because the current state has enough estimated value to justify an expensive detailed proof or decomposition.
 
 The first controller should be deliberately small:
 
 - fixed cost table for each action type;
 - fixed error-category policy rules;
 - best-first frontier ordered by progress-per-cost;
+- separate cheap-model and strong-model budgets;
+- escalation threshold based on state value and cheap-attempt saturation;
 - simple budget phase, such as high/mid/low remaining budget;
 - no learned value model in the first version.
 
@@ -453,8 +498,9 @@ Output: accepted Lean proof script
 
 1. `DFS + cheap model`
 2. `Best-first + cheap model`
-3. `Fixed escalation`: call the strong model after every N failed attempts
-4. `Budget-aware controller`: choose expand, repair, retrieve, escalate, prune, or backtrack using budget-conditioned scoring
+3. `Direct strong model`: call the strong model immediately for detailed proof completion
+4. `Fixed escalation`: call the strong model after every N failed cheap attempts
+5. `Budget-aware two-tier controller`: use cheap tactic search by default and escalate only for high-value branches
 
 Minimal ablations should compare controllers with the same available tools:
 
@@ -462,6 +508,7 @@ Minimal ablations should compare controllers with the same available tools:
 2. `Budget-aware, no retrieval`
 3. `Budget-aware, no repair`
 4. `Budget-aware, no escalation`
+5. `Budget-aware, fixed escalation threshold`
 
 These ablations are enough for the first paper-style evaluation. Larger experiments can wait until the Lean task set and trace pipeline are stable.
 
@@ -470,6 +517,8 @@ These ablations are enough for the first paper-style evaluation. Larger experime
 - number of solved proof tasks under a fixed budget;
 - average token cost per solved task;
 - expensive model calls per solved task;
+- cheap attempts before escalation;
+- strong-model success rate conditioned on branch value;
 - verifier calls per solved task;
 - proof-completion success rate;
 - branch-pruning accuracy;
