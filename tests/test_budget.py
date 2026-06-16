@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from agent.budget import BudgetConfig, BudgetExhausted, BudgetManager
+from agent.search.budget import BudgetConfig, BudgetExhausted, BudgetManager
 
 
 class BudgetManagerTests(unittest.TestCase):

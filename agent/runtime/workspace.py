@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from .proof_system_adapter import CandidateEdit, ProofTask
+from ..proof_system.base import CandidateEdit, ProofTask
 
 
 @dataclass(frozen=True)

@@ -29,9 +29,9 @@ from agent import (  # noqa: E402
     ProofController,
     ProofTask,
 )
-from agent.env_loader import load_dotenv  # noqa: E402
-from agent.model_adapter import ChatTransport, ModelAdapterError  # noqa: E402
-from agent.workspace import AttemptWorkspace  # noqa: E402
+from agent.runtime.env_loader import load_dotenv  # noqa: E402
+from agent.model.openai_chat import ChatTransport, ModelAdapterError  # noqa: E402
+from agent.runtime.workspace import AttemptWorkspace  # noqa: E402
 
 
 class MockOpenAITransport(ChatTransport):

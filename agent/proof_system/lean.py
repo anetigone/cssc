@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .proof_system_adapter import (
+from .base import (
     BudgetSlice,
     CandidateEdit,
     CheckResult,

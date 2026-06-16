@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from .proof_system_adapter import BudgetSlice
+from ..proof_system.base import BudgetSlice
 
 
 class BudgetExhausted(RuntimeError):

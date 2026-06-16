@@ -8,7 +8,7 @@ from typing import Any
 
 from .action import ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
-from .proof_system_adapter import (
+from ..proof_system.base import (
     CandidateEdit,
     CheckResult,
     DiagnosticCategory,
@@ -16,7 +16,7 @@ from .proof_system_adapter import (
     ProofSystemAdapter,
     ProofTask,
 )
-from .workspace import AttemptWorkspace
+from ..runtime.workspace import AttemptWorkspace
 
 
 @dataclass(frozen=True)

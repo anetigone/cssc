@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from agent.action import ActionCandidate, ActionGenerationRequest, StaticActionGenerator
-from agent.proof_system_adapter import ProofTask
+from agent.search.action import ActionCandidate, ActionGenerationRequest, StaticActionGenerator
+from agent.proof_system.base import ProofTask
 
 
 class ActionTests(unittest.TestCase):

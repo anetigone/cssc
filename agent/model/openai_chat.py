@@ -10,8 +10,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence
 
-from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
-from .proof_system_adapter import ParsedFeedback, ProofTask
+from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from ..proof_system.base import ParsedFeedback, ProofTask
 
 
 class ModelAdapterError(RuntimeError):

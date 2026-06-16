@@ -112,8 +112,47 @@
 
 ### Suggested Next Steps
 
-- Add a small CLI for building tasks from Lean files and solving one selected
-  task.
+- Add `ModelProfile` presets for DeepSeek and other OpenAI-compatible models.
+- Persist controller traces as JSONL for later analysis and replay.
+- Add a simple repair loop that feeds Lean feedback back into the model for a
+  second attempt.
+
+## 2026-06-16
+
+### CLI
+
+- Added the Lean task-solving CLI.
+  - Core implementation lives in `agent/cli/solve_lean_task.py`.
+  - The repository root keeps a thin `solve_lean_task.py` entry point.
+  - Builds `ProofTask` objects from a Lean file or Lean source directory.
+  - Supports task discovery through `--list-tasks`.
+  - Selects one task with `--task-index` or `--task-id`.
+  - Solves the selected task through the existing `ProofController`,
+    `LeanAdapter`, `AttemptWorkspace`, and budget configuration.
+  - Supports deterministic static candidates with `--candidate` or
+    `--candidate-file`.
+  - Supports real OpenAI-compatible model calls with `--use-model`, loading
+    environment configuration only through the existing `.env` loader.
+  - Auto-detects a nearby Lake project root and offers `--project-root` and
+    `--no-lake` overrides.
+
+### Tests
+
+- Added CLI helper tests for task building, task selection, static candidate
+  loading, `.env` existence behavior, and Lake root detection.
+
+### Verification
+
+- `python -m unittest discover -s tests -v`
+  - 32 tests pass.
+  - 2 real Lean tests skip inside the sandbox when elan toolchain access is not
+    available.
+
+- `python -m compileall agent tests scripts`
+  - Passes.
+
+### Suggested Next Steps
+
 - Add `ModelProfile` presets for DeepSeek and other OpenAI-compatible models.
 - Persist controller traces as JSONL for later analysis and replay.
 - Add a simple repair loop that feeds Lean feedback back into the model for a

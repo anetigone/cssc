@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.proof_system_adapter import CandidateEdit
-from agent.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
+from agent.proof_system.base import CandidateEdit
+from agent.tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
 
 
 class LeanTaskBuilderTests(unittest.TestCase):

@@ -6,14 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.lean_adapter import LeanAdapter
-from agent.proof_system_adapter import (
+from agent.proof_system.lean import LeanAdapter
+from agent.proof_system.base import (
     BudgetSlice,
     CandidateEdit,
     DiagnosticCategory,
     ProofTask,
 )
-from agent.workspace import AttemptWorkspace
+from agent.runtime.workspace import AttemptWorkspace
 
 
 def has_usable_lean() -> bool:

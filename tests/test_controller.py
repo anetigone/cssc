@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from agent.action import ActionCandidate, ActionGenerationRequest
-from agent.budget import BudgetConfig
-from agent.controller import ControllerConfig, ProofController
-from agent.proof_system_adapter import (
+from agent.search.action import ActionCandidate, ActionGenerationRequest
+from agent.search.budget import BudgetConfig
+from agent.search.controller import ControllerConfig, ProofController
+from agent.proof_system.base import (
     BudgetSlice,
     CandidateEdit,
     CheckResult,
@@ -18,7 +18,7 @@ from agent.proof_system_adapter import (
     ProofSystemAdapter,
     ProofTask,
 )
-from agent.workspace import AttemptWorkspace
+from agent.runtime.workspace import AttemptWorkspace
 
 
 class FakeAdapter(ProofSystemAdapter):

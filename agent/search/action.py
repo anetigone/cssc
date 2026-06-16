@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
-from .proof_system_adapter import CandidateEdit, ParsedFeedback, ProofTask
+from ..proof_system.base import CandidateEdit, ParsedFeedback, ProofTask
 
 
 @dataclass(frozen=True)

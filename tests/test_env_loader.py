@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.env_loader import load_dotenv
+from agent.runtime.env_loader import load_dotenv
 
 
 class EnvLoaderTests(unittest.TestCase):

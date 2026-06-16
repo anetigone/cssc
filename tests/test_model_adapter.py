@@ -5,15 +5,15 @@ import unittest
 from typing import Any, Mapping
 from unittest.mock import patch
 
-from agent.action import ActionGenerationRequest
-from agent.model_adapter import (
+from agent.search.action import ActionGenerationRequest
+from agent.model.openai_chat import (
     ChatTransport,
     ModelAdapterError,
     OpenAIChatActionGenerator,
     OpenAIChatConfig,
     _chat_completions_url,
 )
-from agent.proof_system_adapter import DiagnosticCategory, ParsedFeedback, ProofTask
+from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 
 
 class RecordingTransport(ChatTransport):

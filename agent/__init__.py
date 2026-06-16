@@ -1,17 +1,17 @@
 """Core agent package for cost-sensitive proof search."""
 
-from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator, StaticActionGenerator
-from .budget import BudgetConfig, BudgetExhausted, BudgetManager, BudgetSnapshot
-from .controller import AttemptRecord, ControllerConfig, ControllerResult, ProofController
-from .env_loader import load_dotenv
-from .lean_adapter import LeanAdapter
-from .model_adapter import (
+from .search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator, StaticActionGenerator
+from .search.budget import BudgetConfig, BudgetExhausted, BudgetManager, BudgetSnapshot
+from .search.controller import AttemptRecord, ControllerConfig, ControllerResult, ProofController
+from .runtime.env_loader import load_dotenv
+from .proof_system.lean import LeanAdapter
+from .model.openai_chat import (
     ModelAdapterError,
     OpenAIChatActionGenerator,
     OpenAIChatConfig,
     UrllibChatTransport,
 )
-from .proof_system_adapter import (
+from .proof_system.base import (
     BudgetSlice,
     CandidateEdit,
     CheckResult,
@@ -21,8 +21,8 @@ from .proof_system_adapter import (
     ProofSystemAdapter,
     ProofTask,
 )
-from .task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
-from .workspace import AttemptWorkspace, MaterializedCandidate
+from .tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
+from .runtime.workspace import AttemptWorkspace, MaterializedCandidate
 
 __all__ = [
     "ActionCandidate",

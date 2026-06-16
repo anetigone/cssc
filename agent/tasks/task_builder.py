@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .proof_system_adapter import ProofTask
+from ..proof_system.base import ProofTask
 
 
 DEFAULT_HOLE_MARKER = "{{proof}}"
