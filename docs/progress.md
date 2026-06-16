@@ -160,6 +160,37 @@
     writes, and trace persistence.
   - Model logs avoid API keys, headers, and full prompts.
 
+### Lightweight Search Components
+
+- Added `agent/search/state_encoder.py`.
+  - Encodes task metadata, imports, local declarations, proof prefix, recent
+    normalized feedback, unsolved goals, branch history, and remaining budget
+    into a compact controller-facing state.
+  - Provides a terse prompt-context rendering for future model and repair
+    prompts.
+
+- Added `agent/retrieval/lexical.py`.
+  - Implements a small lexical Lean retriever over local source files or
+    in-memory sources.
+  - Extracts theorem, lemma, definition, and example snippets.
+  - Ranks results by token overlap with a query, task, and optional checker
+    feedback.
+  - Fixed the first smoke feedback issue: Lean-style names and projections such
+    as `and_comm_demo` and `h.right` now split into searchable subtokens.
+
+- Added `agent/search/repair.py`.
+  - Implements a deterministic `FeedbackRepairGenerator`.
+  - Produces simple repair candidates from normalized categories such as parser
+    errors, unknown identifiers, type mismatches, unsolved goals, tactic
+    failures, and timeouts.
+
+- Added `agent/search/proposer.py`.
+  - Implements a small `CandidateLibraryGenerator` for fixed proof-snippet
+    baselines and smoke tests.
+
+- Exported the new state encoder, repair generator, library proposer, and
+  lexical retriever from the top-level `agent` package.
+
 ### Tests
 
 - Added CLI helper tests for task building, task selection, static candidate
@@ -168,6 +199,8 @@
   JSONL append behavior.
 - Added logging configuration tests for level selection, file output, and
   invalid level handling.
+- Added unit tests for compact state encoding, feedback-driven repair,
+  lexical retrieval, and fixed proof-snippet proposal.
 
 ### Verification
 
@@ -178,6 +211,16 @@
 
 - `python -m compileall agent tests solve_lean_task.py`
   - Passes.
+
+- `python -B -m unittest discover -s tests -v`
+  - 43 tests pass.
+  - 2 real Lean tests skip inside the sandbox when elan toolchain access is not
+    available.
+
+- `$env:PYTHONPYCACHEPREFIX = Join-Path $env:TEMP 'cssc_pycache_check'; python -m compileall agent tests solve_lean_task.py`
+  - Passes.
+  - Uses a temporary pycache prefix because the desktop sandbox can deny writes
+    to existing `__pycache__` entries.
 
 ### Suggested Next Steps
 
