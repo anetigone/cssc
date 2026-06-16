@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,9 @@ from ..proof_system.base import (
     ProofTask,
 )
 from ..runtime.workspace import AttemptWorkspace
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,7 @@ class ProofController:
         self.config = config or ControllerConfig()
 
     def run(self, task: ProofTask) -> ControllerResult:
+        logger.info("Controller run started: task_id=%s", task.task_id)
         attempts: list[AttemptRecord] = []
         feedback_history: list[ParsedFeedback] = []
         stop_reason = "budget"
@@ -78,6 +83,12 @@ class ProofController:
 
         while self.budget.can_call_model() and self.budget.can_check():
             self.budget.reserve_model_call()
+            logger.debug(
+                "Generating actions: task_id=%s attempt_index=%d previous_feedback=%d",
+                task.task_id,
+                attempt_index,
+                len(feedback_history),
+            )
             request = ActionGenerationRequest(
                 task=task,
                 attempt_index=attempt_index,
@@ -85,16 +96,30 @@ class ProofController:
                 max_candidates=self.config.max_candidates_per_model_call,
             )
             actions = tuple(self.action_generator.generate(request))
+            logger.debug(
+                "Generated %d action(s): task_id=%s attempt_index=%d",
+                len(actions),
+                task.task_id,
+                attempt_index,
+            )
             if not actions:
                 stop_reason = "no_actions"
+                logger.info("Controller stopped: task_id=%s reason=%s", task.task_id, stop_reason)
                 break
 
             for action in actions[: self.config.max_candidates_per_model_call]:
                 if not self.budget.can_check():
                     stop_reason = "budget"
+                    logger.info("Controller stopped before check: task_id=%s reason=%s", task.task_id, stop_reason)
                     break
 
                 edit = action.to_edit()
+                logger.debug(
+                    "Rendering candidate: task_id=%s attempt_index=%d action=%s",
+                    task.task_id,
+                    attempt_index,
+                    edit.action,
+                )
                 source = self.adapter.render_candidate(task, edit)
                 materialized = self.workspace.write_candidate(
                     task,
@@ -103,6 +128,14 @@ class ProofController:
                     extension=self.config.candidate_extension,
                 )
                 budget_slice = self.budget.reserve_check()
+                logger.debug(
+                    "Checking candidate: task_id=%s attempt_index=%d candidate_id=%s path=%s timeout=%s",
+                    task.task_id,
+                    attempt_index,
+                    materialized.candidate_id,
+                    materialized.path,
+                    budget_slice.timeout_seconds,
+                )
                 check_result = self.adapter.check(materialized.path, budget_slice)
                 record = AttemptRecord(
                     attempt_index=attempt_index,
@@ -113,11 +146,24 @@ class ProofController:
                 )
                 attempts.append(record)
                 attempt_index += 1
+                logger.info(
+                    "Candidate checked: task_id=%s attempt_index=%d candidate_id=%s accepted=%s category=%s",
+                    task.task_id,
+                    record.attempt_index,
+                    record.candidate_id,
+                    check_result.accepted,
+                    check_result.category.value,
+                )
 
                 if check_result.parsed_feedback is not None:
                     feedback_history.append(check_result.parsed_feedback)
 
                 if check_result.accepted:
+                    logger.info(
+                        "Controller accepted proof: task_id=%s attempt_index=%d",
+                        task.task_id,
+                        record.attempt_index,
+                    )
                     return ControllerResult(
                         task=task,
                         accepted=True,
@@ -132,6 +178,7 @@ class ProofController:
                     and check_result.category == DiagnosticCategory.TOOL_UNAVAILABLE
                 ):
                     stop_reason = "tool_unavailable"
+                    logger.warning("Controller stopped: task_id=%s reason=%s", task.task_id, stop_reason)
                     return ControllerResult(
                         task=task,
                         accepted=False,
@@ -143,6 +190,12 @@ class ProofController:
         reason = self.budget.exhausted_reason()
         if reason is not None:
             stop_reason = f"budget:{reason}"
+        logger.info(
+            "Controller run finished: task_id=%s accepted=False stop_reason=%s attempts=%d",
+            task.task_id,
+            stop_reason,
+            len(attempts),
+        )
 
         return ControllerResult(
             task=task,

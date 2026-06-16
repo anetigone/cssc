@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ from .base import (
 
 
 _LOCATION_RE = re.compile(r":(?P<line>\d+):(?P<column>\d+):\s+(?:error|warning):")
+logger = logging.getLogger(__name__)
 
 
 class LeanAdapter(ProofSystemAdapter):
@@ -46,9 +48,22 @@ class LeanAdapter(ProofSystemAdapter):
         self.disallow_sorry = disallow_sorry
         self.lean_executable = _resolve_executable(lean_executable, "lean")
         self.lake_executable = _resolve_executable(lake_executable, "lake")
+        logger.debug(
+            "Initialized LeanAdapter: project_root=%s prefer_lake=%s disallow_sorry=%s lean=%s lake=%s",
+            self.project_root,
+            self.prefer_lake,
+            self.disallow_sorry,
+            self.lean_executable,
+            self.lake_executable,
+        )
 
     def render_candidate(self, task: ProofTask, candidate_edit: CandidateEdit) -> str:
         if task.hole_marker not in task.source_template:
+            logger.error(
+                "Task template is missing marker: task_id=%s marker=%s",
+                task.task_id,
+                task.hole_marker,
+            )
             raise ValueError(
                 f"Task {task.task_id!r} template is missing marker {task.hole_marker!r}"
             )
@@ -64,6 +79,7 @@ class LeanAdapter(ProofSystemAdapter):
         command = self._build_command(candidate_file)
         if command is None:
             raw = "Lean checker unavailable: neither lake nor lean was found on PATH."
+            logger.warning("Lean checker unavailable for candidate_file=%s", candidate_file)
             feedback = ParsedFeedback(
                 category=DiagnosticCategory.TOOL_UNAVAILABLE,
                 message=raw,
@@ -79,6 +95,12 @@ class LeanAdapter(ProofSystemAdapter):
             )
 
         started = time.perf_counter()
+        logger.debug(
+            "Running Lean checker: command=%s cwd=%s timeout=%s",
+            command,
+            self.project_root or candidate_file.parent,
+            budget_slice.timeout_seconds,
+        )
         try:
             completed = subprocess.run(
                 command,
@@ -90,6 +112,12 @@ class LeanAdapter(ProofSystemAdapter):
             )
         except subprocess.TimeoutExpired as exc:
             elapsed = time.perf_counter() - started
+            logger.warning(
+                "Lean checker timed out: candidate_file=%s timeout=%s elapsed=%.3f",
+                candidate_file,
+                budget_slice.timeout_seconds,
+                elapsed,
+            )
             raw = _combine_output(exc.stdout, exc.stderr)
             if raw:
                 raw = f"{raw}\nLean checker timed out after {budget_slice.timeout_seconds}s."
@@ -115,12 +143,20 @@ class LeanAdapter(ProofSystemAdapter):
         elapsed = time.perf_counter() - started
         raw = _combine_output(completed.stdout, completed.stderr)
         feedback = self.parse_feedback(raw)
+        logger.debug(
+            "Lean checker completed: candidate_file=%s exit_code=%s category=%s elapsed=%.3f",
+            candidate_file,
+            completed.returncode,
+            feedback.category.value,
+            elapsed,
+        )
 
         accepted = completed.returncode == 0 and feedback.category == DiagnosticCategory.PROOF_ACCEPTED
         if feedback.category == DiagnosticCategory.TOOL_UNAVAILABLE:
             accepted = False
         if self.disallow_sorry and _contains_sorry_warning(raw):
             accepted = False
+            logger.info("Rejecting Lean candidate because it uses sorry: candidate_file=%s", candidate_file)
             feedback = ParsedFeedback(
                 category=DiagnosticCategory.UNSOLVED_GOALS,
                 message="Lean accepted the file but the declaration uses 'sorry'.",

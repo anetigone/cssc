@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..proof_system.base import CandidateEdit, ProofTask
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -22,6 +26,7 @@ class AttemptWorkspace:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        logger.debug("Initialized attempt workspace: root=%s", self.root)
 
     def write_candidate(
         self,
@@ -36,6 +41,13 @@ class AttemptWorkspace:
         task_dir.mkdir(parents=True, exist_ok=True)
         path = task_dir / f"{candidate_id}{extension}"
         path.write_text(source, encoding="utf-8")
+        logger.debug(
+            "Wrote candidate: task_id=%s candidate_id=%s path=%s bytes=%d",
+            task.task_id,
+            candidate_id,
+            path,
+            len(source.encode("utf-8")),
+        )
         return MaterializedCandidate(candidate_id=candidate_id, path=path, source=source)
 
     @staticmethod
@@ -54,4 +66,3 @@ class AttemptWorkspace:
 def _safe_name(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
     return cleaned or "task"
-

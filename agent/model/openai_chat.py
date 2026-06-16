@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -12,6 +13,9 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from ..proof_system.base import ParsedFeedback, ProofTask
+
+
+logger = logging.getLogger(__name__)
 
 
 class ModelAdapterError(RuntimeError):
@@ -72,6 +76,14 @@ class OpenAIChatActionGenerator(ActionGenerator):
         self.transport = transport or UrllibChatTransport()
 
     def generate(self, request: ActionGenerationRequest) -> Sequence[ActionCandidate]:
+        url = _chat_completions_url(self.config.base_url)
+        logger.debug(
+            "Requesting chat completions: model=%s url=%s task_id=%s max_candidates=%d",
+            self.config.model,
+            url,
+            request.task.task_id,
+            request.max_candidates,
+        )
         payload = {
             "model": self.config.model,
             "messages": _build_messages(request),
@@ -81,7 +93,7 @@ class OpenAIChatActionGenerator(ActionGenerator):
             **self.config.extra_body,
         }
         response = self.transport.post_json(
-            _chat_completions_url(self.config.base_url),
+            url,
             headers={
                 "Authorization": f"Bearer {self.config.api_key}",
                 "Content-Type": "application/json",
@@ -91,6 +103,7 @@ class OpenAIChatActionGenerator(ActionGenerator):
         )
         choices = response.get("choices")
         if not isinstance(choices, list):
+            logger.error("Model response missing choices list: model=%s", self.config.model)
             raise ModelAdapterError("Model response is missing a choices list.")
 
         candidates: list[ActionCandidate] = []
@@ -112,6 +125,12 @@ class OpenAIChatActionGenerator(ActionGenerator):
                     },
                 )
             )
+        logger.info(
+            "Generated model candidates: model=%s task_id=%s candidates=%d",
+            self.config.model,
+            request.task.task_id,
+            len(candidates),
+        )
         return tuple(candidates)
 
 
@@ -128,19 +147,24 @@ class UrllibChatTransport:
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
         try:
+            logger.debug("POST model request: url=%s timeout=%s", url, timeout_seconds)
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            logger.warning("Model endpoint returned HTTP error: url=%s status=%s", url, exc.code)
             raise ModelAdapterError(f"Model endpoint returned HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
+            logger.warning("Model endpoint unavailable: url=%s reason=%s", url, exc.reason)
             raise ModelAdapterError(f"Model endpoint is unavailable: {exc.reason}") from exc
 
         try:
             decoded = json.loads(body)
         except json.JSONDecodeError as exc:
+            logger.warning("Model endpoint returned invalid JSON: url=%s", url)
             raise ModelAdapterError("Model endpoint returned invalid JSON.") from exc
         if not isinstance(decoded, Mapping):
+            logger.warning("Model endpoint returned non-object JSON: url=%s", url)
             raise ModelAdapterError("Model endpoint returned a non-object JSON payload.")
         return decoded
 

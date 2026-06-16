@@ -148,17 +148,31 @@
   - Omits raw checker output by default to keep traces compact; raw output can
     be enabled explicitly.
 
+### Debug Logging
+
+- Added standard-library logging configuration in
+  `agent/runtime/logging_config.py`.
+  - CLI supports `--log-level` and `--log-file`.
+  - `agent` installs a package-level `NullHandler` so library warnings do not
+    leak to stderr unless logging is configured.
+  - Added boundary logs for CLI setup, controller run lifecycle, candidate
+    rendering/checking, Lean command execution, model requests, workspace
+    writes, and trace persistence.
+  - Model logs avoid API keys, headers, and full prompts.
+
 ### Tests
 
 - Added CLI helper tests for task building, task selection, static candidate
   loading, `.env` existence behavior, and Lake root detection.
 - Added trace store tests for summary/attempt events, raw-output opt-in, and
   JSONL append behavior.
+- Added logging configuration tests for level selection, file output, and
+  invalid level handling.
 
 ### Verification
 
 - `python -m unittest discover -s tests -v`
-  - 35 tests pass.
+  - 38 tests pass.
   - 2 real Lean tests skip inside the sandbox when elan toolchain access is not
     available.
 

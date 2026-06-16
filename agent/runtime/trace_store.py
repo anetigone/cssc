@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
@@ -18,6 +19,9 @@ from ..search.budget import BudgetSnapshot
 from ..search.controller import AttemptRecord, ControllerResult
 
 
+logger = logging.getLogger(__name__)
+
+
 class JsonlTraceStore:
     """Append controller results as replay-friendly JSONL events."""
 
@@ -27,12 +31,21 @@ class JsonlTraceStore:
 
     def append_result(self, result: ControllerResult) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        count = 0
         with self.path.open("a", encoding="utf-8") as handle:
             for event in result_events(result, include_raw_output=self.include_raw_output):
                 handle.write(
                     json.dumps(event, ensure_ascii=False, sort_keys=True, default=_json_default)
                 )
                 handle.write("\n")
+                count += 1
+        logger.info(
+            "Appended trace events: path=%s task_id=%s events=%d include_raw_output=%s",
+            self.path,
+            result.task.task_id,
+            count,
+            self.include_raw_output,
+        )
 
 
 def result_events(

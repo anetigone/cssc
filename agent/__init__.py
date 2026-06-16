@@ -1,5 +1,7 @@
 """Core agent package for cost-sensitive proof search."""
 
+import logging
+
 from .search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator, StaticActionGenerator
 from .search.budget import BudgetConfig, BudgetExhausted, BudgetManager, BudgetSnapshot
 from .search.controller import AttemptRecord, ControllerConfig, ControllerResult, ProofController
@@ -24,6 +26,8 @@ from .proof_system.base import (
 from .tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
 from .runtime.workspace import AttemptWorkspace, MaterializedCandidate
 from .runtime.trace_store import JsonlTraceStore, result_events
+
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
     "ActionCandidate",

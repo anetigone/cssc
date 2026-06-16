@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,32 +31,46 @@ from agent import (
     TaskBuilderConfig,
 )
 from agent.runtime.env_loader import load_dotenv
+from agent.runtime.logging_config import configure_logging
 from agent.runtime.trace_store import JsonlTraceStore
 from agent.runtime.workspace import AttemptWorkspace
 
 
 ROOT = Path(__file__).resolve().parents[2]
+logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        configure_logging(level=args.log_level, log_file=args.log_file)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "stage": "logging_config", "error": str(exc)}, indent=2))
+        return 2
+
+    logger.info("CLI started: source=%s use_model=%s", args.source, args.use_model)
 
     try:
         tasks = build_tasks(args)
+        logger.info("Built %d task(s) from %s", len(tasks), args.source)
         if args.list_tasks:
             payload = {"tasks": [_task_summary(task, index) for index, task in enumerate(tasks)]}
             print(json.dumps(payload, indent=2))
             return 0
 
         task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
+        logger.info("Selected task: task_id=%s", task.task_id)
         generator = build_action_generator(args)
     except (TaskBuildError, ValueError, ModelAdapterError) as exc:
+        logger.exception("CLI setup failed")
         print(json.dumps({"ok": False, "stage": "setup", "error": str(exc)}, indent=2))
         return 2
 
     project_root = Path(args.project_root).resolve() if args.project_root else find_lake_root(args.source)
+    logger.debug("Using project_root=%s", project_root)
     with _workspace_context(args.work_dir) as work_dir:
+        logger.debug("Using attempt workspace: %s", work_dir)
         controller = ProofController(
             adapter=LeanAdapter(
                 project_root=project_root,
@@ -75,12 +90,21 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = controller.run(task)
         except ModelAdapterError as exc:
+            logger.exception("Controller run failed during model call")
             print(json.dumps({"ok": False, "stage": "run", "error": str(exc)}, indent=2))
             return 2
 
     if args.trace_jsonl:
+        logger.info("Appending controller trace: %s", args.trace_jsonl)
         JsonlTraceStore(args.trace_jsonl, include_raw_output=args.trace_raw_output).append_result(result)
 
+    logger.info(
+        "CLI finished: task_id=%s accepted=%s stop_reason=%s attempts=%d",
+        result.task.task_id,
+        result.accepted,
+        result.stop_reason,
+        len(result.attempts),
+    )
     print(json.dumps(_result_payload(result, include_candidate_file=args.work_dir is not None), indent=2))
     return 0 if result.accepted else 1
 
@@ -128,6 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include raw checker output in JSONL traces.",
     )
+    parser.add_argument("--log-level", default="WARNING", help="Python logging level.")
+    parser.add_argument("--log-file", default=None, help="Optional file for debug logs.")
     return parser
 
 
@@ -173,11 +199,15 @@ def build_action_generator(args: argparse.Namespace):
     if candidates and args.use_model:
         raise ValueError("Use either static candidates or --use-model, not both.")
     if candidates:
+        logger.debug("Using %d static candidate(s)", len(candidates))
         return StaticActionGenerator(candidates)
     if args.use_model:
         env_path = Path(args.env_file)
         if env_path.exists():
+            logger.debug("Loading environment file: %s", env_path)
             load_dotenv(env_path, override=False)
+        else:
+            logger.debug("Environment file does not exist: %s", env_path)
         return OpenAIChatActionGenerator(OpenAIChatConfig.from_env())
     raise ValueError("Provide --candidate, --candidate-file, or --use-model.")
 
