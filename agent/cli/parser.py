@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-elapsed-seconds", type=float, default=None)
     parser.add_argument("--project-root", default=None, help="Lake project root; auto-detected by default.")
     parser.add_argument("--no-lake", action="store_true", help="Call lean directly instead of lake env lean.")
+    parser.add_argument(
+        "--no-lean-server",
+        action="store_true",
+        help="Disable the persistent Lean language server and run a fresh lean process per check.",
+    )
     parser.add_argument("--allow-sorry", action="store_true", help="Do not reject remaining sorry warnings.")
     parser.add_argument(
         "--work-dir",

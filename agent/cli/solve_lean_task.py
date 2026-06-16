@@ -84,12 +84,15 @@ def main(argv: list[str] | None = None) -> int:
     with _workspace_context(args.work_dir, agent_root=agent_root) as work_dir:
         check_workspace = build_check_workspace(args, agent_root=agent_root, project_root=project_root)
         logger.debug("Using attempt workspace: %s", work_dir)
+        adapter = LeanAdapter(
+            project_root=project_root,
+            prefer_lake=not args.no_lake,
+            disallow_sorry=not args.allow_sorry,
+            use_server=not args.no_lean_server,
+        )
+        adapter.start_service(timeout_seconds=min(max(args.lean_timeout, 1.0), 10.0))
         controller = ProofController(
-            adapter=LeanAdapter(
-                project_root=project_root,
-                prefer_lake=not args.no_lake,
-                disallow_sorry=not args.allow_sorry,
-            ),
+            adapter=adapter,
             action_generator=generator,
             workspace=AttemptWorkspace(work_dir),
             check_workspace=check_workspace,
@@ -113,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
             logger.exception("Controller run failed during model call")
             print(json.dumps({"ok": False, "stage": "run", "error": str(exc)}, indent=2))
             return 2
+        finally:
+            adapter.close()
 
     if args.trace_jsonl:
         trace_path = resolve_agent_path(agent_root, args.trace_jsonl)

@@ -20,6 +20,7 @@ from .base import (
     ProofSystemAdapter,
     ProofTask,
 )
+from .lean_server import LeanServerClient, LeanServerError, LeanServerTimeout
 
 
 _LOCATION_RE = re.compile(r":(?P<line>\d+):(?P<column>\d+):\s+(?:error|warning):")
@@ -42,19 +43,23 @@ class LeanAdapter(ProofSystemAdapter):
         disallow_sorry: bool = True,
         lean_executable: str | None = None,
         lake_executable: str | None = None,
+        use_server: bool = False,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.prefer_lake = prefer_lake
         self.disallow_sorry = disallow_sorry
         self.lean_executable = _resolve_executable(lean_executable, "lean")
         self.lake_executable = _resolve_executable(lake_executable, "lake")
+        self.use_server = use_server
+        self._server: LeanServerClient | None = None
         logger.debug(
-            "Initialized LeanAdapter: project_root=%s prefer_lake=%s disallow_sorry=%s lean=%s lake=%s",
+            "Initialized LeanAdapter: project_root=%s prefer_lake=%s disallow_sorry=%s lean=%s lake=%s use_server=%s",
             self.project_root,
             self.prefer_lake,
             self.disallow_sorry,
             self.lean_executable,
             self.lake_executable,
+            self.use_server,
         )
 
     def render_candidate(self, task: ProofTask, candidate_edit: CandidateEdit) -> str:
@@ -93,6 +98,10 @@ class LeanAdapter(ProofSystemAdapter):
                 parsed_feedback=feedback,
                 progress=self.extract_progress(None, _minimal_result(feedback)),
             )
+
+        server_result = self._check_with_server(candidate_file, budget_slice)
+        if server_result is not None:
+            return server_result
 
         started = time.perf_counter()
         logger.debug(
@@ -258,6 +267,119 @@ class LeanAdapter(ProofSystemAdapter):
         if self.lake_executable and self._has_lake_project():
             return [self.lake_executable, "env", "lean", str(candidate_file)]
         return None
+
+    def _build_server_command(self) -> list[str] | None:
+        if self.prefer_lake and self.lake_executable and self._has_lake_project():
+            return [self.lake_executable, "env", "lean", "--server"]
+        if self.lean_executable:
+            return [self.lean_executable, "--server"]
+        if self.lake_executable and self._has_lake_project():
+            return [self.lake_executable, "env", "lean", "--server"]
+        return None
+
+    def start_service(self, *, timeout_seconds: float = 10.0) -> bool:
+        """Start a persistent Lean language server for repeated checks."""
+
+        if not self.use_server:
+            return False
+        if self._server is not None and self._server.is_alive():
+            return True
+        command = self._build_server_command()
+        if command is None:
+            return False
+        try:
+            server = LeanServerClient(
+                command,
+                cwd=self.project_root,
+                root=self.project_root,
+            )
+            server.start(timeout_seconds=timeout_seconds)
+        except (OSError, LeanServerError):
+            logger.warning("Failed to start Lean server; falling back to subprocess checks", exc_info=True)
+            self._server = None
+            return False
+        self._server = server
+        logger.info("Started Lean server: command=%s cwd=%s", command, self.project_root)
+        return True
+
+    def close(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            self._server = None
+
+    def _check_with_server(
+        self,
+        candidate_file: Path,
+        budget_slice: BudgetSlice,
+    ) -> CheckResult | None:
+        if not self.use_server:
+            return None
+        if self._server is None or not self._server.is_alive():
+            self.start_service(timeout_seconds=min(max(budget_slice.timeout_seconds, 1.0), 10.0))
+        if self._server is None:
+            return None
+
+        command = self._server.command
+        started = time.perf_counter()
+        try:
+            server_result = self._server.check_file(candidate_file, timeout_seconds=budget_slice.timeout_seconds)
+        except LeanServerTimeout as exc:
+            elapsed = time.perf_counter() - started
+            raw = str(exc)
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.TIMEOUT,
+                message=raw,
+                raw_output=raw,
+            )
+            result = CheckResult(
+                accepted=False,
+                category=DiagnosticCategory.TIMEOUT,
+                raw_output=raw,
+                candidate_file=candidate_file,
+                command=tuple(command),
+                exit_code=None,
+                elapsed_seconds=elapsed,
+                parsed_feedback=feedback,
+            )
+            return _with_progress(self, result)
+        except LeanServerError:
+            logger.warning("Lean server check failed; falling back to subprocess check", exc_info=True)
+            self.close()
+            return None
+
+        elapsed = time.perf_counter() - started
+        raw = server_result.raw_output
+        feedback = self.parse_feedback(raw)
+        if server_result.exit_code != 0 and feedback.category == DiagnosticCategory.PROOF_ACCEPTED:
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.CHECKER_ERROR,
+                message=f"Lean server reported failure without diagnostic output.",
+                raw_output=raw,
+            )
+
+        if self.disallow_sorry and _contains_sorry_warning(raw):
+            logger.info("Rejecting Lean candidate because it uses sorry: candidate_file=%s", candidate_file)
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.UNSOLVED_GOALS,
+                message="Lean accepted the file but the declaration uses 'sorry'.",
+                raw_output=raw,
+            )
+
+        accepted = (
+            server_result.exit_code == 0
+            and feedback.category == DiagnosticCategory.PROOF_ACCEPTED
+        )
+        result = CheckResult(
+            accepted=accepted,
+            category=feedback.category if not accepted else DiagnosticCategory.PROOF_ACCEPTED,
+            raw_output=raw,
+            candidate_file=candidate_file,
+            command=tuple(command),
+            exit_code=server_result.exit_code,
+            elapsed_seconds=elapsed,
+            parsed_feedback=feedback,
+        )
+        return _with_progress(self, result)
 
     def _has_lake_project(self) -> bool:
         if self.project_root is None:
