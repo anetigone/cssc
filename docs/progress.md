@@ -191,6 +191,48 @@
 - Exported the new state encoder, repair generator, library proposer, and
   lexical retriever from the top-level `agent` package.
 
+### Lake Workspace Integration
+
+- Created two local Lake workspaces outside version control:
+  - `lean_test/` for integration tests and small reproducible smoke tasks.
+  - `lean_workspace/` for the formal Lean development workspace.
+
+- Added a tiny integration task in the test Lake workspace:
+  - `lean_test/LeanTest/Integration.lean`
+  - The task contains `theorem integration_true : True := by sorry`.
+  - `lean_test/LeanTest.lean` imports the integration module.
+
+- Validated the real Lake environment:
+  - `lake build` succeeds in `lean_test/`.
+  - `lake env lean LeanTest\Integration.lean` succeeds with the expected
+    `sorry` warning.
+
+- Validated the full CLI/controller/checker path with real Lean:
+  - Task discovery extracts `Integration:4:3:0`.
+  - Static candidate `trivial` is accepted through
+    `ProofController -> AttemptWorkspace -> LeanAdapter -> lake env lean`.
+  - Static failing candidate `exact False.elim` is rejected and normalized as
+    `type_mismatch`.
+
+- Chosen local artifact convention:
+  - Unit tests keep using temporary directories.
+  - Real Lake smoke runs write candidates, traces, and logs under the relevant
+    workspace's `.runs/` directory.
+  - Extracted task datasets should later be written to top-level `data/tasks/`
+    when they become experiment inputs rather than one-off smoke tasks.
+
+### Integration Feedback Fixes
+
+- Fixed Windows Lean output decoding in `agent/proof_system/lean.py`.
+  - `subprocess.run` now uses `encoding="utf-8"` and `errors="replace"`.
+  - This prevents UTF-8 Lean diagnostics from crashing the reader thread under
+    a GBK console/code page.
+
+- Tightened checker result classification.
+  - A nonzero Lean exit with empty decoded output is now treated as
+    `checker_error` instead of accidentally flowing through the empty-output
+    accepted path.
+
 ### Tests
 
 - Added CLI helper tests for task building, task selection, static candidate
@@ -201,6 +243,8 @@
   invalid level handling.
 - Added unit tests for compact state encoding, feedback-driven repair,
   lexical retrieval, and fixed proof-snippet proposal.
+- Added Lean adapter regression tests for UTF-8 replacement decoding and
+  nonzero-exit empty-output handling.
 
 ### Verification
 
@@ -213,7 +257,7 @@
   - Passes.
 
 - `python -B -m unittest discover -s tests -v`
-  - 43 tests pass.
+  - 45 tests pass.
   - 2 real Lean tests skip inside the sandbox when elan toolchain access is not
     available.
 
@@ -222,8 +266,22 @@
   - Uses a temporary pycache prefix because the desktop sandbox can deny writes
     to existing `__pycache__` entries.
 
+- Real Lake integration checks run in non-sandbox mode:
+  - `lake build` in `lean_test/` passes.
+  - `python solve_lean_task.py lean_test\LeanTest\Integration.lean --candidate trivial --project-root lean_test ...`
+    returns `proof_accepted`.
+  - `python solve_lean_task.py lean_test\LeanTest\Integration.lean --candidate "exact False.elim" --project-root lean_test ...`
+    returns `type_mismatch`.
+
 ### Suggested Next Steps
 
+- Add a documented integration-smoke command or script so the `lean_test`
+  check can be rerun consistently.
+- Export stable task JSONL files into `data/tasks/` once the first real task
+  set is chosen.
 - Add `ModelProfile` presets for DeepSeek and other OpenAI-compatible models.
 - Add a simple repair loop that feeds Lean feedback back into the model for a
   second attempt.
+- Decide how generated candidates should be mapped into Lake module roots for
+  larger projects, especially if future candidates need local project imports
+  before an initial `lake build`.
