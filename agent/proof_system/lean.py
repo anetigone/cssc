@@ -107,6 +107,8 @@ class LeanAdapter(ProofSystemAdapter):
                 cwd=self.project_root or candidate_file.parent,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=budget_slice.timeout_seconds,
                 check=False,
             )
@@ -143,6 +145,12 @@ class LeanAdapter(ProofSystemAdapter):
         elapsed = time.perf_counter() - started
         raw = _combine_output(completed.stdout, completed.stderr)
         feedback = self.parse_feedback(raw)
+        if completed.returncode != 0 and feedback.category == DiagnosticCategory.PROOF_ACCEPTED:
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.CHECKER_ERROR,
+                message=f"Lean exited with code {completed.returncode} without diagnostic output.",
+                raw_output=raw,
+            )
         logger.debug(
             "Lean checker completed: candidate_file=%s exit_code=%s category=%s elapsed=%.3f",
             candidate_file,

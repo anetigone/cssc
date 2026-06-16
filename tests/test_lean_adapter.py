@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.proof_system.lean import LeanAdapter
 from agent.proof_system.base import (
@@ -56,6 +57,53 @@ class LeanAdapterTests(unittest.TestCase):
             "Attempt.lean:1:8: warning: declaration uses sorry\n"
         )
         self.assertEqual(feedback.category, DiagnosticCategory.UNSOLVED_GOALS)
+
+    def test_subprocess_output_uses_utf8_replacement_decoding(self) -> None:
+        adapter = LeanAdapter(
+            prefer_lake=False,
+            lean_executable="lean",
+            lake_executable=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Attempt.lean"
+            path.write_text("theorem sample : True := by\n  exact False.elim\n", encoding="utf-8")
+            with patch("agent.proof_system.lean.subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    args=("lean", str(path)),
+                    returncode=1,
+                    stdout="",
+                    stderr="Attempt.lean:2:8: error: application type mismatch\n",
+                )
+
+                result = adapter.check(path, BudgetSlice(timeout_seconds=1))
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.category, DiagnosticCategory.TYPE_MISMATCH)
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+
+    def test_nonzero_exit_without_output_is_checker_error(self) -> None:
+        adapter = LeanAdapter(
+            prefer_lake=False,
+            lean_executable="lean",
+            lake_executable=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Attempt.lean"
+            path.write_text("theorem sample : True := by\n  exact False.elim\n", encoding="utf-8")
+            with patch("agent.proof_system.lean.subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    args=("lean", str(path)),
+                    returncode=1,
+                    stdout="",
+                    stderr="",
+                )
+
+                result = adapter.check(path, BudgetSlice(timeout_seconds=1))
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.category, DiagnosticCategory.CHECKER_ERROR)
+        self.assertIn("without diagnostic output", result.parsed_feedback.message)
 
     @unittest.skipIf(not has_usable_lean(), "Lean is not installed or no toolchain is configured")
     def test_accepts_valid_lean_file(self) -> None:
