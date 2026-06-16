@@ -180,20 +180,40 @@ def _build_messages(request: ActionGenerationRequest) -> list[dict[str, str]]:
         },
         {
             "role": "user",
-            "content": _build_user_prompt(request.task, request.previous_feedback),
+            "content": _build_user_prompt(request),
         },
     ]
 
 
-def _build_user_prompt(task: ProofTask, feedback: Sequence[ParsedFeedback]) -> str:
+def _build_user_prompt(request: ActionGenerationRequest) -> str:
+    task = request.task
+    feedback = request.previous_feedback
     parts = [
         f"Task id: {task.task_id}",
         f"Replace exactly this marker: {task.hole_marker}",
+    ]
+    meta_action = request.metadata.get("meta_action")
+    if isinstance(meta_action, str):
+        parts.append(f"Controller action: {meta_action}")
+    encoded_state = request.metadata.get("encoded_state")
+    if encoded_state is not None and hasattr(encoded_state, "to_prompt_context"):
+        parts.extend(["Controller state:", str(encoded_state.to_prompt_context())])
+    retrieved = request.metadata.get("retrieved_results") or ()
+    if isinstance(retrieved, Sequence) and retrieved:
+        parts.append("Retrieved Lean snippets:")
+        for item in retrieved[:5]:
+            name = getattr(item, "name", None)
+            snippet = getattr(item, "snippet", None)
+            if isinstance(name, str) and isinstance(snippet, str):
+                parts.extend([f"- {name}", "```lean", snippet, "```"])
+    parts.extend(
+        [
         "Lean source template:",
         "```lean",
         task.source_template,
         "```",
-    ]
+        ]
+    )
     if feedback:
         parts.extend(["Previous checker feedback:"])
         for item in feedback[-3:]:

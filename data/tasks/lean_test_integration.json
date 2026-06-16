@@ -1,0 +1,19 @@
+{
+  "project_root": "lean_test",
+  "split": "dev",
+  "imports": [
+    "LeanTest.Basic"
+  ],
+  "enable_retrieval": true,
+  "retrieval_sources": [
+    "lean_test/LeanTest"
+  ],
+  "retrieve_before_first_model_call": true,
+  "tasks": [
+    {
+      "task_id": "integration_true",
+      "source_name": "data/tasks/lean_test_integration.json#integration_true",
+      "proof_source": "theorem integration_true : True := by\n  sorry\n"
+    }
+  ]
+}

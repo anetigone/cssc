@@ -8,6 +8,7 @@ from typing import Any
 from agent.search.action import ActionCandidate, ActionGenerationRequest
 from agent.search.budget import BudgetConfig
 from agent.search.controller import ControllerConfig, ProofController
+from agent.retrieval import RetrievalResult
 from agent.proof_system.base import (
     BudgetSlice,
     CandidateEdit,
@@ -19,13 +20,18 @@ from agent.proof_system.base import (
     ProofTask,
 )
 from agent.runtime.workspace import AttemptWorkspace
+from agent.runtime.workspace import EphemeralCheckWorkspace
 
 
 class FakeAdapter(ProofSystemAdapter):
+    def __init__(self) -> None:
+        self.checked_files: list[Path] = []
+
     def render_candidate(self, task: ProofTask, candidate_edit: CandidateEdit) -> str:
         return task.source_template.replace(task.hole_marker, candidate_edit.text)
 
     def check(self, candidate_file: Path, budget_slice: BudgetSlice) -> CheckResult:
+        self.checked_files.append(candidate_file)
         source = candidate_file.read_text(encoding="utf-8")
         if "trivial" in source:
             feedback = ParsedFeedback(
@@ -75,6 +81,43 @@ class QueueGenerator:
         return [ActionCandidate(proof_text=text, action="queued") for text in self.batches.pop(0)]
 
 
+class RepairGenerator:
+    def __init__(self, candidates: list[str]) -> None:
+        self.candidates = candidates
+        self.requests: list[ActionGenerationRequest] = []
+
+    def generate(self, request: ActionGenerationRequest) -> list[ActionCandidate]:
+        self.requests.append(request)
+        return [
+            ActionCandidate(proof_text=text, action="repair")
+            for text in self.candidates[: request.max_candidates]
+        ]
+
+
+class FakeRetriever:
+    def __init__(self) -> None:
+        self.requests: list[tuple[ProofTask | None, ParsedFeedback | None, int]] = []
+
+    def retrieve(
+        self,
+        query: str | None = None,
+        *,
+        task: ProofTask | None = None,
+        feedback: ParsedFeedback | None = None,
+        top_k: int = 5,
+    ) -> tuple[RetrievalResult, ...]:
+        self.requests.append((task, feedback, top_k))
+        return (
+            RetrievalResult(
+                name="true_intro",
+                source_path="Demo.lean",
+                start_line=1,
+                snippet="theorem true_intro : True := by\n  trivial",
+                score=0.7,
+            ),
+        )
+
+
 class ProofControllerTests(unittest.TestCase):
     def test_runs_until_candidate_is_accepted(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
@@ -92,10 +135,53 @@ class ProofControllerTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         self.assertEqual(result.stop_reason, "accepted")
         self.assertIsNotNone(result.accepted_attempt)
-        self.assertEqual(len(result.attempts), 2)
-        self.assertEqual(result.budget.checks_used, 2)
+        self.assertEqual(len(result.attempts), 3)
+        self.assertEqual(result.budget.checks_used, 3)
         self.assertEqual(result.budget.model_calls_used, 2)
-        self.assertEqual(len(generator.requests[1].previous_feedback), 1)
+        self.assertEqual(len(generator.requests[1].previous_feedback), 2)
+
+    def test_repairs_failed_candidate_before_next_model_call(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["exact False.elim"], ["bad"]])
+        repair_generator = RepairGenerator(["trivial"])
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                repair_generator=repair_generator,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=4, max_model_calls=4),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.budget.model_calls_used, 1)
+        self.assertEqual([attempt.edit.action for attempt in result.attempts], ["queued", "repair"])
+        self.assertEqual(repair_generator.requests[0].metadata["meta_action"], "repair")
+
+    def test_retrieves_context_for_model_request(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["trivial"]])
+        retriever = FakeRetriever()
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                retriever=retriever,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=2, max_model_calls=2),
+                config=ControllerConfig(retrieve_before_first_model_call=True),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(retriever.requests), 1)
+        self.assertEqual(generator.requests[0].metadata["meta_action"], "retrieve")
+        self.assertEqual(generator.requests[0].metadata["retrieved_results"][0].name, "true_intro")
+        self.assertEqual(result.attempts[0].edit.metadata["meta_action"], "retrieve")
+        self.assertEqual(result.attempts[0].edit.metadata["retrieved_results"][0]["name"], "true_intro")
 
     def test_stops_when_check_budget_is_exhausted(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
@@ -132,6 +218,31 @@ class ProofControllerTests(unittest.TestCase):
         self.assertEqual(result.stop_reason, "no_actions")
         self.assertEqual(result.budget.model_calls_used, 1)
         self.assertEqual(result.budget.checks_used, 0)
+
+    def test_records_archive_file_while_checking_project_local_copy(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["trivial"]])
+        adapter = FakeAdapter()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "agent-runs"
+            checker = root / "lean-project" / ".checks"
+            controller = ProofController(
+                adapter=adapter,
+                action_generator=generator,
+                workspace=AttemptWorkspace(archive),
+                check_workspace=EphemeralCheckWorkspace(checker),
+                budget_config=BudgetConfig(max_checks=2, max_model_calls=2),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(adapter.checked_files), 1)
+        self.assertTrue(adapter.checked_files[0].is_relative_to(checker.resolve()))
+        self.assertTrue(result.attempts[0].candidate_file.is_relative_to(archive.resolve()))
+        self.assertEqual(result.attempts[0].check_result.candidate_file, result.attempts[0].candidate_file)
+        self.assertFalse(adapter.checked_files[0].exists())
 
 
 if __name__ == "__main__":

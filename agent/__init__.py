@@ -28,7 +28,7 @@ from .proof_system.base import (
     ProofTask,
 )
 from .tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
-from .runtime.workspace import AttemptWorkspace, MaterializedCandidate
+from .runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace, MaterializedCandidate
 from .runtime.trace_store import JsonlTraceStore, result_events
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -51,6 +51,7 @@ __all__ = [
     "ControllerResult",
     "DiagnosticCategory",
     "EncodedProofState",
+    "EphemeralCheckWorkspace",
     "FeedbackRepairGenerator",
     "LeanAdapter",
     "LeanTaskBuilder",
