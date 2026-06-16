@@ -66,6 +66,12 @@ The central hypothesis is:
 
 > A verifier-guided proof agent can solve more formal proof tasks under the same budget by making budget-aware decisions about expansion, repair, retrieval, pruning, backtracking, and model escalation.
 
+The accompanying theoretical framing is recorded in
+[`docs/theory.md`](docs/theory.md). The key claim is conditional rather than
+absolute: search is cheaper when the expected success gain of a cheap action
+exceeds its cost relative to direct escalation, and sequential proof attempts
+should be ordered by estimated success gain per unit cost.
+
 ## System Architecture
 
 ```mermaid
