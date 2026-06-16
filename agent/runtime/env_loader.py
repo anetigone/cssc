@@ -42,8 +42,16 @@ def load_dotenv(path: str | Path = ".env", *, override: bool = False) -> dict[st
 
 
 def _strip_inline_comment(value: str) -> str:
-    if not value or value[0] in {"'", '"'}:
+    if not value:
         return value
+    if value[0] in {"'", '"'}:
+        quote = value[0]
+        end = value.find(quote, 1)
+        if end == -1:
+            return value
+        suffix = value[end + 1 :]
+        marker = suffix.find(" #")
+        return value[: end + 1 + marker].rstrip() if marker != -1 else value
     marker = value.find(" #")
     return value[:marker].rstrip() if marker != -1 else value
 

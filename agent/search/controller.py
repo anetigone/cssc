@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from .action import ActionGenerationRequest, ActionGenerator
+from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
 from .repair import FeedbackRepairGenerator
 from .state_encoder import encode_proof_state
@@ -38,6 +38,7 @@ class Retriever(Protocol):
         top_k: int = 5,
     ) -> tuple[RetrievalResult, ...]:
         """Return snippets relevant to the current proof state."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class ControllerConfig:
     candidate_extension: str = ".lean"
     stop_on_tool_unavailable: bool = True
     max_repair_rounds: int = 2
+    max_feedback_history: int = 5
     max_retrieval_results: int = 5
     retrieve_before_first_model_call: bool = False
     retrieve_on_categories: tuple[DiagnosticCategory, ...] = (
@@ -81,6 +83,26 @@ class ControllerResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class _ControllerRunState:
+    """Mutable working state for a single controller run.
+
+    Encapsulates everything that changes from one loop iteration to the next so
+    that ``run()`` can be expressed as a short pipeline of phase methods.
+    """
+
+    attempts: list[AttemptRecord] = field(default_factory=list)
+    feedback_history: list[ParsedFeedback] = field(default_factory=list)
+    retrieved_history: list[RetrievalResult] = field(default_factory=list)
+    seen_candidate_keys: set[tuple[str, str]] = field(default_factory=set)
+    current_retrieved: tuple[RetrievalResult, ...] = ()
+    stop_reason: str = "budget"
+    attempt_index: int = 0
+    repair_rounds: int = 0
+    retrieved_this_episode: bool = False
+    next_meta_action: str = "expand"
+
+
 class ProofController:
     """Coordinate action generation, rendering, materialization, and checking."""
 
@@ -107,223 +129,354 @@ class ProofController:
 
     def run(self, task: ProofTask) -> ControllerResult:
         logger.info("Controller run started: task_id=%s", task.task_id)
-        attempts: list[AttemptRecord] = []
-        feedback_history: list[ParsedFeedback] = []
-        retrieved_history: list[RetrievalResult] = []
-        seen_candidate_keys: set[tuple[str, str]] = set()
-        stop_reason = "budget"
-        attempt_index = 0
-        repair_rounds = 0
-        next_meta_action = "retrieve" if self.config.retrieve_before_first_model_call else "expand"
+        state = self._initial_state()
 
         while self.budget.can_check():
-            feedback = feedback_history[-1] if feedback_history else None
-            retrieved = self._maybe_retrieve(task, feedback, next_meta_action)
-            if retrieved:
-                retrieved_history.extend(retrieved)
+            # Mark the start of a "retrieve + expand" cycle. The flag is reset
+            # below whenever we enter a plain expand iteration, so each expand
+            # cycle is allowed to retrieve at most once.
+            if state.next_meta_action == "retrieve":
+                state.retrieved_this_episode = True
 
-            if next_meta_action == "repair":
-                if repair_rounds >= self.config.max_repair_rounds:
-                    next_meta_action = "expand"
-                    continue
+            state.current_retrieved = self._maybe_retrieve(
+                task,
+                state.feedback_history[-1] if state.feedback_history else None,
+                state.next_meta_action,
+            )
+            if state.current_retrieved:
+                state.retrieved_history.extend(state.current_retrieved)
+
+            is_repair_iteration = state.next_meta_action == "repair"
+            if is_repair_iteration:
                 generator = self.repair_generator
                 max_candidates = self.config.max_candidates_per_model_call
-                repair_rounds += 1
             else:
                 if not self.budget.can_call_model():
-                    stop_reason = "budget:model_calls"
-                    logger.info("Controller stopped before model call: task_id=%s reason=%s", task.task_id, stop_reason)
+                    state.stop_reason = "budget:model_calls"
+                    logger.info(
+                        "Controller stopped before model call: task_id=%s reason=%s",
+                        task.task_id,
+                        state.stop_reason,
+                    )
                     break
                 self.budget.reserve_model_call()
                 generator = self.action_generator
                 max_candidates = self.config.max_candidates_per_model_call
-                repair_rounds = 0
+                state.repair_rounds = 0
+                if state.next_meta_action != "retrieve":
+                    # A fresh expand cycle starts here; allow another retrieve.
+                    state.retrieved_this_episode = False
 
-            budget_snapshot = self.budget.snapshot()
-            encoded_state = encode_proof_state(
-                task,
-                feedback_history=feedback_history,
-                budget=budget_snapshot,
-                metadata={"next_meta_action": next_meta_action},
-            )
-            logger.debug(
-                "Generating actions: task_id=%s attempt_index=%d previous_feedback=%d",
-                task.task_id,
-                attempt_index,
-                len(feedback_history),
-            )
-            request = ActionGenerationRequest(
-                task=task,
-                attempt_index=attempt_index,
-                previous_feedback=tuple(feedback_history),
-                max_candidates=max_candidates,
-                metadata={
-                    "meta_action": next_meta_action,
-                    "encoded_state": encoded_state,
-                    "retrieved_results": tuple(retrieved),
-                    "retrieved_history": tuple(retrieved_history),
-                    "budget": budget_snapshot,
-                },
-            )
-            actions = tuple(generator.generate(request))
-            logger.debug(
-                "Generated %d action(s): task_id=%s attempt_index=%d",
-                len(actions),
-                task.task_id,
-                attempt_index,
+            actions = self._generate_actions(
+                state, task, generator, max_candidates
             )
             if not actions:
-                if next_meta_action == "repair":
-                    next_meta_action = "expand"
+                if is_repair_iteration:
+                    state.next_meta_action = "expand"
                     continue
-                stop_reason = "no_actions"
-                logger.info("Controller stopped: task_id=%s reason=%s", task.task_id, stop_reason)
-                break
-
-            checked_any = False
-            for action in actions[:max_candidates]:
-                if not self.budget.can_check():
-                    stop_reason = "budget"
-                    logger.info("Controller stopped before check: task_id=%s reason=%s", task.task_id, stop_reason)
-                    break
-
-                candidate_key = (action.action, action.proof_text.strip())
-                if candidate_key in seen_candidate_keys:
-                    logger.debug(
-                        "Skipping duplicate candidate: task_id=%s attempt_index=%d action=%s",
-                        task.task_id,
-                        attempt_index,
-                        action.action,
-                    )
-                    continue
-                seen_candidate_keys.add(candidate_key)
-
-                edit = _edit_with_controller_metadata(
-                    action.to_edit(),
-                    meta_action=next_meta_action,
-                    retrieved=tuple(retrieved),
-                )
-                logger.debug(
-                    "Rendering candidate: task_id=%s attempt_index=%d action=%s",
-                    task.task_id,
-                    attempt_index,
-                    edit.action,
-                )
-                source = self.adapter.render_candidate(task, edit)
-                materialized = self.workspace.write_candidate(
-                    task,
-                    edit,
-                    source,
-                    extension=self.config.candidate_extension,
-                )
-                budget_slice = self.budget.reserve_check()
-                logger.debug(
-                    "Checking candidate: task_id=%s attempt_index=%d candidate_id=%s path=%s timeout=%s",
-                    task.task_id,
-                    attempt_index,
-                    materialized.candidate_id,
-                    materialized.path,
-                    budget_slice.timeout_seconds,
-                )
-                if self.check_workspace is None:
-                    check_result = self.adapter.check(materialized.path, budget_slice)
-                else:
-                    with self.check_workspace.materialize_candidate(
-                        task,
-                        candidate_id=materialized.candidate_id,
-                        source=source,
-                        extension=self.config.candidate_extension,
-                    ) as check_candidate:
-                        check_result = self.adapter.check(check_candidate.path, budget_slice)
-                    check_result = replace(check_result, candidate_file=materialized.path)
-                record = AttemptRecord(
-                    attempt_index=attempt_index,
-                    candidate_id=materialized.candidate_id,
-                    edit=edit,
-                    candidate_file=materialized.path,
-                    check_result=check_result,
-                )
-                attempts.append(record)
-                attempt_index += 1
+                state.stop_reason = "no_actions"
                 logger.info(
-                    "Candidate checked: task_id=%s attempt_index=%d candidate_id=%s accepted=%s category=%s",
+                    "Controller stopped: task_id=%s reason=%s",
                     task.task_id,
-                    record.attempt_index,
-                    record.candidate_id,
-                    check_result.accepted,
-                    check_result.category.value,
+                    state.stop_reason,
                 )
-
-                if check_result.parsed_feedback is not None:
-                    feedback_history.append(check_result.parsed_feedback)
-                checked_any = True
-
-                if check_result.accepted:
-                    logger.info(
-                        "Controller accepted proof: task_id=%s attempt_index=%d",
-                        task.task_id,
-                        record.attempt_index,
-                    )
-                    return ControllerResult(
-                        task=task,
-                        accepted=True,
-                        attempts=tuple(attempts),
-                        budget=self.budget.snapshot(),
-                        stop_reason="accepted",
-                        accepted_attempt=record,
-                        metadata={
-                            "retrieved_results": tuple(retrieved_history),
-                            "feedback_count": len(feedback_history),
-                        },
-                    )
-
-                if (
-                    self.config.stop_on_tool_unavailable
-                    and check_result.category == DiagnosticCategory.TOOL_UNAVAILABLE
-                ):
-                    stop_reason = "tool_unavailable"
-                    logger.warning("Controller stopped: task_id=%s reason=%s", task.task_id, stop_reason)
-                    return ControllerResult(
-                        task=task,
-                        accepted=False,
-                        attempts=tuple(attempts),
-                        budget=self.budget.snapshot(),
-                        stop_reason=stop_reason,
-                        metadata={
-                            "retrieved_results": tuple(retrieved_history),
-                            "feedback_count": len(feedback_history),
-                        },
-                    )
-
-                next_meta_action = self._choose_next_meta_action(check_result.category, repair_rounds)
-
-            if not checked_any:
-                if next_meta_action == "repair":
-                    next_meta_action = "expand"
-                    continue
-                stop_reason = "no_new_actions"
-                logger.info("Controller stopped: task_id=%s reason=%s", task.task_id, stop_reason)
                 break
 
-        reason = self.budget.exhausted_reason()
-        if reason is not None:
-            stop_reason = f"budget:{reason}"
-        logger.info(
-            "Controller run finished: task_id=%s accepted=False stop_reason=%s attempts=%d",
-            task.task_id,
-            stop_reason,
-            len(attempts),
+            accepted_record = self._evaluate_candidates(
+                state, task, actions, max_candidates, is_repair_iteration
+            )
+            if accepted_record is not None:
+                return self._build_accepted_result(state, task, accepted_record)
+            if state.stop_reason == "tool_unavailable":
+                return self._build_tool_unavailable_result(state, task)
+            if state.stop_reason == "no_new_actions":
+                break
+
+        return self._build_final_result(state, task)
+
+    def _initial_state(self) -> _ControllerRunState:
+        return _ControllerRunState(
+            next_meta_action=(
+                "retrieve"
+                if self.config.retrieve_before_first_model_call
+                else "expand"
+            ),
         )
 
+    def _generate_actions(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+        generator: ActionGenerator,
+        max_candidates: int,
+    ) -> tuple[ActionCandidate, ...]:
+        request = self._build_generation_request(
+            state, task, generator, max_candidates
+        )
+        actions = tuple(generator.generate(request))
+        logger.debug(
+            "Generated %d action(s): task_id=%s attempt_index=%d",
+            len(actions),
+            task.task_id,
+            state.attempt_index,
+        )
+        return actions
+
+    def _build_generation_request(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+        generator: ActionGenerator,
+        max_candidates: int,
+    ) -> ActionGenerationRequest:
+        budget_snapshot = self.budget.snapshot()
+        encoded_state = encode_proof_state(
+            task,
+            feedback_history=state.feedback_history,
+            budget=budget_snapshot,
+            metadata={"next_meta_action": state.next_meta_action},
+        )
+        logger.debug(
+            "Generating actions: task_id=%s attempt_index=%d previous_feedback=%d",
+            task.task_id,
+            state.attempt_index,
+            len(state.feedback_history),
+        )
+        return ActionGenerationRequest(
+            task=task,
+            attempt_index=state.attempt_index,
+            previous_feedback=tuple(state.feedback_history),
+            max_candidates=max_candidates,
+            metadata={
+                "meta_action": state.next_meta_action,
+                "encoded_state": encoded_state,
+                "retrieved_results": state.current_retrieved,
+                "retrieved_history": tuple(state.retrieved_history),
+                "budget": budget_snapshot,
+            },
+        )
+
+    def _evaluate_candidates(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+        actions: tuple[ActionCandidate, ...],
+        max_candidates: int,
+        is_repair_iteration: bool,
+    ) -> AttemptRecord | None:
+        checked_any = False
+        for action in actions[:max_candidates]:
+            if not self.budget.can_check():
+                state.stop_reason = "budget"
+                logger.info(
+                    "Controller stopped before check: task_id=%s reason=%s",
+                    task.task_id,
+                    state.stop_reason,
+                )
+                break
+
+            candidate_key = (action.action, action.proof_text.strip())
+            if candidate_key in state.seen_candidate_keys:
+                logger.debug(
+                    "Skipping duplicate candidate: task_id=%s attempt_index=%d action=%s",
+                    task.task_id,
+                    state.attempt_index,
+                    action.action,
+                )
+                continue
+            state.seen_candidate_keys.add(candidate_key)
+
+            record = self._check_single_candidate(state, task, action)
+            state.attempts.append(record)
+            state.attempt_index += 1
+            logger.info(
+                "Candidate checked: task_id=%s attempt_index=%d candidate_id=%s accepted=%s category=%s",
+                task.task_id,
+                record.attempt_index,
+                record.candidate_id,
+                record.check_result.accepted,
+                record.check_result.category.value,
+            )
+
+            if record.check_result.parsed_feedback is not None:
+                state.feedback_history.append(record.check_result.parsed_feedback)
+                if len(state.feedback_history) > self.config.max_feedback_history:
+                    state.feedback_history[:] = state.feedback_history[
+                        -self.config.max_feedback_history :
+                    ]
+            checked_any = True
+
+            if record.check_result.accepted:
+                logger.info(
+                    "Controller accepted proof: task_id=%s attempt_index=%d",
+                    task.task_id,
+                    record.attempt_index,
+                )
+                return record
+
+            if (
+                self.config.stop_on_tool_unavailable
+                and record.check_result.category == DiagnosticCategory.TOOL_UNAVAILABLE
+            ):
+                state.stop_reason = "tool_unavailable"
+                logger.warning(
+                    "Controller stopped: task_id=%s reason=%s",
+                    task.task_id,
+                    state.stop_reason,
+                )
+                return None
+
+            # ``state.repair_rounds`` counts completed repair iterations for
+            # the current expand cycle. When we are inside a repair iteration we
+            # pass repair_rounds + 1 here so the boundary check in
+            # ``_choose_next_meta_action`` (``< max_repair_rounds``) matches the
+            # old pre-execution gate. Keep this aligned with the increment at
+            # the end of this method.
+            state.next_meta_action = self._choose_next_meta_action(
+                record.check_result.category,
+                state.repair_rounds + 1 if is_repair_iteration else state.repair_rounds,
+                retrieved_this_episode=state.retrieved_this_episode,
+            )
+
+        if not checked_any:
+            if is_repair_iteration:
+                state.next_meta_action = "expand"
+                return None
+            state.stop_reason = "no_new_actions"
+            logger.info(
+                "Controller stopped: task_id=%s reason=%s",
+                task.task_id,
+                state.stop_reason,
+            )
+            return None
+
+        # Record that a repair iteration has completed. Must stay aligned with
+        # the +1 passed to ``_choose_next_meta_action`` above.
+        if is_repair_iteration:
+            state.repair_rounds += 1
+        return None
+
+    def _check_single_candidate(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+        action: ActionCandidate,
+    ) -> AttemptRecord:
+        edit = _edit_with_controller_metadata(
+            action.to_edit(),
+            meta_action=state.next_meta_action,
+            retrieved=state.current_retrieved,
+        )
+        logger.debug(
+            "Rendering candidate: task_id=%s attempt_index=%d action=%s",
+            task.task_id,
+            state.attempt_index,
+            edit.action,
+        )
+        source = self.adapter.render_candidate(task, edit)
+        materialized = self.workspace.write_candidate(
+            task,
+            edit,
+            source,
+            extension=self.config.candidate_extension,
+        )
+        budget_slice = self.budget.reserve_check()
+        logger.debug(
+            "Checking candidate: task_id=%s attempt_index=%d candidate_id=%s path=%s timeout=%s",
+            task.task_id,
+            state.attempt_index,
+            materialized.candidate_id,
+            materialized.path,
+            budget_slice.timeout_seconds,
+        )
+        if self.check_workspace is None:
+            check_result = self.adapter.check(materialized.path, budget_slice)
+        else:
+            with self.check_workspace.materialize_candidate(
+                task,
+                candidate_id=materialized.candidate_id,
+                source=source,
+                extension=self.config.candidate_extension,
+            ) as check_candidate:
+                check_result = self.adapter.check(check_candidate.path, budget_slice)
+            check_result = replace(check_result, candidate_file=materialized.path)
+        return AttemptRecord(
+            attempt_index=state.attempt_index,
+            candidate_id=materialized.candidate_id,
+            edit=edit,
+            candidate_file=materialized.path,
+            check_result=check_result,
+        )
+
+    def _build_accepted_result(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+        record: AttemptRecord,
+    ) -> ControllerResult:
+        logger.info(
+            "Controller accepted proof: task_id=%s attempt_index=%d",
+            task.task_id,
+            record.attempt_index,
+        )
+        return ControllerResult(
+            task=task,
+            accepted=True,
+            attempts=tuple(state.attempts),
+            budget=self.budget.snapshot(),
+            stop_reason="accepted",
+            accepted_attempt=record,
+            metadata={
+                "retrieved_results": tuple(state.retrieved_history),
+                "feedback_count": len(state.feedback_history),
+            },
+        )
+
+    def _build_tool_unavailable_result(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+    ) -> ControllerResult:
+        logger.warning(
+            "Controller stopped: task_id=%s reason=%s",
+            task.task_id,
+            state.stop_reason,
+        )
         return ControllerResult(
             task=task,
             accepted=False,
-            attempts=tuple(attempts),
+            attempts=tuple(state.attempts),
             budget=self.budget.snapshot(),
-            stop_reason=stop_reason,
+            stop_reason=state.stop_reason,
             metadata={
-                "retrieved_results": tuple(retrieved_history),
-                "feedback_count": len(feedback_history),
+                "retrieved_results": tuple(state.retrieved_history),
+                "feedback_count": len(state.feedback_history),
+            },
+        )
+
+    def _build_final_result(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+    ) -> ControllerResult:
+        reason = self.budget.exhausted_reason()
+        if reason is not None:
+            state.stop_reason = f"budget:{reason}"
+        logger.info(
+            "Controller run finished: task_id=%s accepted=False stop_reason=%s attempts=%d",
+            task.task_id,
+            state.stop_reason,
+            len(state.attempts),
+        )
+        return ControllerResult(
+            task=task,
+            accepted=False,
+            attempts=tuple(state.attempts),
+            budget=self.budget.snapshot(),
+            stop_reason=state.stop_reason,
+            metadata={
+                "retrieved_results": tuple(state.retrieved_history),
+                "feedback_count": len(state.feedback_history),
             },
         )
 
@@ -355,8 +508,14 @@ class ProofController:
         self,
         category: DiagnosticCategory,
         repair_rounds: int,
+        *,
+        retrieved_this_episode: bool,
     ) -> str:
-        if category in self.config.retrieve_on_categories and self.retriever is not None:
+        if (
+            category in self.config.retrieve_on_categories
+            and self.retriever is not None
+            and not retrieved_this_episode
+        ):
             return "retrieve"
         if repair_rounds < self.config.max_repair_rounds and category in _REPAIRABLE_CATEGORIES:
             return "repair"

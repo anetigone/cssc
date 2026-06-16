@@ -103,7 +103,7 @@ def _documents_from_source(source: str, source_path: str | None) -> list[_Docume
 
     documents: list[_Document] = []
     for position, (start, name) in enumerate(starts):
-        end = starts[position + 1][0] if position + 1 < len(starts) else min(start + 12, len(lines))
+        end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
         snippet = "\n".join(lines[start:end]).strip()
         documents.append(
             _Document(

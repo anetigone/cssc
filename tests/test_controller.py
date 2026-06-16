@@ -219,6 +219,23 @@ class ProofControllerTests(unittest.TestCase):
         self.assertEqual(result.budget.model_calls_used, 1)
         self.assertEqual(result.budget.checks_used, 0)
 
+    def test_caps_feedback_history(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["bad1"], ["bad2"], ["bad3"], ["bad4"], ["bad5"], ["trivial"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=10, max_model_calls=10),
+                config=ControllerConfig(max_feedback_history=3),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertLessEqual(len(generator.requests[-1].previous_feedback), 3)
+
     def test_records_archive_file_while_checking_project_local_copy(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
         generator = QueueGenerator([["trivial"]])

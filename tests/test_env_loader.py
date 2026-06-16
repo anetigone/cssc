@@ -55,6 +55,27 @@ class EnvLoaderTests(unittest.TestCase):
 
                 self.assertEqual(os.environ["OPENAI_MODEL"], "from_file")
 
+    def test_preserves_bare_values_with_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "\n".join(
+                    [
+                        "OPENAI_BASE_URL=http://x.com/path#anchor",
+                        "WITH_COMMENT=value # inline comment",
+                        "QUOTED='http://x.com/path#anchor' # inline comment",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                loaded = load_dotenv(path)
+
+                self.assertEqual(loaded["OPENAI_BASE_URL"], "http://x.com/path#anchor")
+                self.assertEqual(loaded["WITH_COMMENT"], "value")
+                self.assertEqual(loaded["QUOTED"], "http://x.com/path#anchor")
+
 
 if __name__ == "__main__":
     unittest.main()

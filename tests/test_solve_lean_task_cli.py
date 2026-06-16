@@ -7,16 +7,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.search.action import StaticActionGenerator
-from agent.cli.solve_lean_task import (
-    apply_task_config,
-    build_action_generator,
-    build_check_workspace,
-    build_tasks,
-    find_lake_root,
-    resolve_agent_path,
-    select_task,
-    _workspace_context,
-)
+from agent.cli.config import apply_task_config
+from agent.cli.generators import build_action_generator
+from agent.cli.paths import find_lake_root, resolve_agent_path
+from agent.cli.tasks import build_tasks, select_task
+from agent.cli.workspace import build_check_workspace, _workspace_context
 
 
 class SolveLeanTaskCliTests(unittest.TestCase):
@@ -55,9 +50,9 @@ class SolveLeanTaskCliTests(unittest.TestCase):
 
     def test_model_generator_loads_env_only_when_file_exists(self) -> None:
         args = _args(use_model=True, env_file="missing.env")
-        with patch("agent.cli.solve_lean_task.load_dotenv") as load_mock:
+        with patch("agent.cli.generators.load_dotenv") as load_mock:
             with patch(
-                "agent.cli.solve_lean_task.OpenAIChatConfig.from_env",
+                "agent.cli.generators.OpenAIChatConfig.from_env",
                 side_effect=RuntimeError("stop"),
             ):
                 with self.assertRaises(RuntimeError):
@@ -116,6 +111,23 @@ class SolveLeanTaskCliTests(unittest.TestCase):
         self.assertEqual(tasks[0].metadata["task_config_index"], 0)
         self.assertEqual(tasks[0].imports, ("LeanWorkspace.Basic",))
         self.assertNotIn("import LeanWorkspace.Basic", tasks[0].source_template)
+
+    def test_task_config_rejects_unknown_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_dir = root / "data" / "tasks"
+            task_dir.mkdir(parents=True)
+            config = task_dir / "basic.json"
+            config.write_text(
+                json_config({"project_root": "lean_workspace", "retrival_source": "Basic.lean"}),
+                encoding="utf-8",
+            )
+            args = _args(agent_root=str(root), task_config="data/tasks/basic.json")
+
+            with self.assertRaises(ValueError) as ctx:
+                apply_task_config(args)
+
+        self.assertIn("retrival_source", str(ctx.exception))
 
     def test_default_workspace_is_under_agent_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

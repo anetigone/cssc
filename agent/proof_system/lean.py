@@ -159,17 +159,18 @@ class LeanAdapter(ProofSystemAdapter):
             elapsed,
         )
 
-        accepted = completed.returncode == 0 and feedback.category == DiagnosticCategory.PROOF_ACCEPTED
-        if feedback.category == DiagnosticCategory.TOOL_UNAVAILABLE:
-            accepted = False
         if self.disallow_sorry and _contains_sorry_warning(raw):
-            accepted = False
             logger.info("Rejecting Lean candidate because it uses sorry: candidate_file=%s", candidate_file)
             feedback = ParsedFeedback(
                 category=DiagnosticCategory.UNSOLVED_GOALS,
                 message="Lean accepted the file but the declaration uses 'sorry'.",
                 raw_output=raw,
             )
+
+        accepted = (
+            completed.returncode == 0
+            and feedback.category == DiagnosticCategory.PROOF_ACCEPTED
+        )
 
         result = CheckResult(
             accepted=accepted,
