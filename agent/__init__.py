@@ -23,6 +23,7 @@ from .proof_system.base import (
 )
 from .tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
 from .runtime.workspace import AttemptWorkspace, MaterializedCandidate
+from .runtime.trace_store import JsonlTraceStore, result_events
 
 __all__ = [
     "ActionCandidate",
@@ -43,6 +44,7 @@ __all__ = [
     "LeanAdapter",
     "LeanTaskBuilder",
     "load_dotenv",
+    "JsonlTraceStore",
     "MaterializedCandidate",
     "ModelAdapterError",
     "OpenAIChatActionGenerator",
@@ -52,6 +54,7 @@ __all__ = [
     "ProofController",
     "ProofSystemAdapter",
     "ProofTask",
+    "result_events",
     "StaticActionGenerator",
     "TaskBuildError",
     "TaskBuilderConfig",

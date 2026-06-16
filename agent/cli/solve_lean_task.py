@@ -30,6 +30,7 @@ from agent import (
     TaskBuilderConfig,
 )
 from agent.runtime.env_loader import load_dotenv
+from agent.runtime.trace_store import JsonlTraceStore
 from agent.runtime.workspace import AttemptWorkspace
 
 
@@ -77,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"ok": False, "stage": "run", "error": str(exc)}, indent=2))
             return 2
 
+    if args.trace_jsonl:
+        JsonlTraceStore(args.trace_jsonl, include_raw_output=args.trace_raw_output).append_result(result)
+
     print(json.dumps(_result_payload(result, include_candidate_file=args.work_dir is not None), indent=2))
     return 0 if result.accepted else 1
 
@@ -117,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--work-dir",
         default=None,
         help="Directory for materialized candidates. If omitted, a temporary directory is used.",
+    )
+    parser.add_argument("--trace-jsonl", default=None, help="Append controller trace events to JSONL.")
+    parser.add_argument(
+        "--trace-raw-output",
+        action="store_true",
+        help="Include raw checker output in JSONL traces.",
     )
     return parser
 

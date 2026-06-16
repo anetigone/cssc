@@ -113,7 +113,6 @@
 ### Suggested Next Steps
 
 - Add `ModelProfile` presets for DeepSeek and other OpenAI-compatible models.
-- Persist controller traces as JSONL for later analysis and replay.
 - Add a simple repair loop that feeds Lean feedback back into the model for a
   second attempt.
 
@@ -135,25 +134,39 @@
     environment configuration only through the existing `.env` loader.
   - Auto-detects a nearby Lake project root and offers `--project-root` and
     `--no-lake` overrides.
+  - Supports `--trace-jsonl` for appending controller trace events and
+    `--trace-raw-output` when raw checker output is needed.
+
+### Trace Store
+
+- Added `agent/runtime/trace_store.py`.
+  - Persists `ControllerResult` data as JSONL events.
+  - Emits one `run_summary` event and one `attempt` event per checked
+    candidate.
+  - Records task metadata, budget snapshot, candidate edits, normalized checker
+    categories, parsed feedback, and progress features.
+  - Omits raw checker output by default to keep traces compact; raw output can
+    be enabled explicitly.
 
 ### Tests
 
 - Added CLI helper tests for task building, task selection, static candidate
   loading, `.env` existence behavior, and Lake root detection.
+- Added trace store tests for summary/attempt events, raw-output opt-in, and
+  JSONL append behavior.
 
 ### Verification
 
 - `python -m unittest discover -s tests -v`
-  - 32 tests pass.
+  - 35 tests pass.
   - 2 real Lean tests skip inside the sandbox when elan toolchain access is not
     available.
 
-- `python -m compileall agent tests scripts`
+- `python -m compileall agent tests solve_lean_task.py`
   - Passes.
 
 ### Suggested Next Steps
 
 - Add `ModelProfile` presets for DeepSeek and other OpenAI-compatible models.
-- Persist controller traces as JSONL for later analysis and replay.
 - Add a simple repair loop that feeds Lean feedback back into the model for a
   second attempt.
