@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import tempfile
 from pathlib import Path
@@ -66,6 +67,10 @@ class SequenceTransport(ChatTransport):
         return response
 
 
+def _json_response(source: str) -> str:
+    return json.dumps({"proof_source": source})
+
+
 class FormalizationAgentTests(unittest.TestCase):
     def test_openai_formalizer_parses_json_scaffold(self) -> None:
         transport = RecordingTransport(
@@ -123,9 +128,7 @@ class FormalizationAgentTests(unittest.TestCase):
         system_prompt = transport.calls[0][2]["messages"][0]["content"]
         self.assertIn("smallest Lean imports", system_prompt)
         self.assertIn("Do not use `import Mathlib`", system_prompt)
-        self.assertIn("Mathlib.Topology.Algebra.Ring.Real", system_prompt)
-        self.assertIn("Mathlib.Topology.Order.Real", system_prompt)
-        self.assertIn("Do not import `Mathlib.Topology.Instances.Real`", system_prompt)
+        self.assertIn("preferred imports", system_prompt)
 
     def test_openai_formalizer_validates_json_shape(self) -> None:
         from agent.input.validation import ScaffoldValidationError
@@ -183,34 +186,28 @@ class FormalizationAgentTests(unittest.TestCase):
         retry_prompt = transport.calls[1][2]["messages"][2]["content"]
         self.assertIn("syntax error", retry_prompt)
 
-    def test_openai_formalizer_normalizes_known_bad_real_topology_import(self) -> None:
-        transport = RecordingTransport(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                '{"proof_source":"import Mathlib.Data.Real.Basic\\n'
-                                'import Mathlib.Topology.Instances.Real\\n\\n'
-                                'theorem sample {E : Set ℝ} : sSup E = sSup E := by\\n  sorry"}'
-                            )
-                        }
-                    }
-                ]
-            }
+    def test_openai_formalizer_does_not_rewrite_scaffold_before_validation(self) -> None:
+        source = (
+            "import Mathlib.Topology.Instances.Real\n\n"
+            "theorem sample : True := by\n  sorry"
         )
-        checker = FakeChecker([True])
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": _json_response(source)}}]}
+        )
+        checker = FakeChecker([False])
         formalizer = OpenAIChatFormalizationAgent(
             OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=checker,
+            validation=ValidationConfig(max_retries=0),
         )
 
-        result = formalizer.formalize(FormalizationRequest(problem="Prove a real supremum fact."))
+        from agent.agents import ModelAdapterError
 
-        self.assertIn("import Mathlib.Topology.Algebra.Ring.Real", result.proof_source)
-        self.assertIn("import Mathlib.Topology.Order.Real", result.proof_source)
-        self.assertNotIn("import Mathlib.Topology.Instances.Real", result.proof_source)
+        with self.assertRaises(ModelAdapterError):
+            formalizer.formalize(FormalizationRequest(problem="Prove a real supremum fact."))
+
+        self.assertEqual(checker.calls[0][0], source)
 
     def test_openai_formalizer_raises_after_max_retries(self) -> None:
         from agent.agents import ModelAdapterError

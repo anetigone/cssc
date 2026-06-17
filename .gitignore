@@ -1,6 +1,7 @@
 *.pyc
 __pycache__/
 .env
+.env_backup
 lean_workspace/
 lean_test/
 .runs/

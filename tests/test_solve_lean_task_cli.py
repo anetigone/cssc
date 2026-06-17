@@ -270,18 +270,34 @@ class SolveLeanTaskCliTests(unittest.TestCase):
                 self.assertEqual(work_dir, expected)
                 self.assertTrue(expected.exists())
 
-    def test_run_artifact_path_groups_loose_runs_files(self) -> None:
+    def test_run_artifact_path_groups_under_run_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
 
-            log_path = _run_artifact_path(root, ".runs/sup_sequence_e2e.log")
-            trace_path = _run_artifact_path(root, ".runs/sup_sequence_e2e_trace.jsonl")
+            log_path = _run_artifact_path(root, ".runs/sup_sequence_e2e.log", "sup_sequence_e2e")
+            trace_path = _run_artifact_path(root, ".runs/sup_sequence_e2e_trace.jsonl", "sup_sequence_e2e")
 
         self.assertEqual(log_path, root / ".runs" / "sup_sequence_e2e" / "sup_sequence_e2e.log")
         self.assertEqual(
             trace_path,
             root / ".runs" / "sup_sequence_e2e" / "sup_sequence_e2e_trace.jsonl",
         )
+
+    def test_run_artifact_path_without_run_name_is_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            log_path = _run_artifact_path(root, ".runs/sup_sequence_e2e.log", None)
+
+        self.assertEqual(log_path, (root / ".runs" / "sup_sequence_e2e.log").resolve())
+
+    def test_run_artifact_path_sanitizes_run_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            log_path = _run_artifact_path(root, ".runs/run.log", "my run/name")
+
+        self.assertEqual(log_path, root / ".runs" / "my_run_name" / "run.log")
 
     def test_default_check_workspace_is_under_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -377,6 +393,11 @@ def _args(**overrides) -> Namespace:
         "no_lake": False,
         "check_work_dir": None,
         "keep_check_files": False,
+        "model_timeout": 60.0,
+        "formalization_cache_dir": None,
+        "formalization_cache": False,
+        "no_formalization_cache": False,
+        "run_name": None,
     }
     values.update(overrides)
     return Namespace(**values)

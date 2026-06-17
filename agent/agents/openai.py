@@ -47,7 +47,7 @@ class OpenAIChatConfig:
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_env(cls) -> "OpenAIChatConfig":
+    def from_env(cls, *, timeout_seconds: float) -> "OpenAIChatConfig":
         api_key = os.environ.get("OPENAI_API_KEY", "")
         model = os.environ.get("OPENAI_MODEL", "")
         base_url = (
@@ -59,7 +59,6 @@ class OpenAIChatConfig:
             raise ModelAdapterError("OPENAI_API_KEY is not set.")
         if not model:
             raise ModelAdapterError("OPENAI_MODEL is not set.")
-        timeout_seconds = _float_from_env("OPENAI_TIMEOUT_SECONDS", cls.timeout_seconds)
         return cls(
             api_key=api_key,
             model=model,
@@ -104,16 +103,6 @@ class UrllibChatTransport:
             logger.warning("Model endpoint returned non-object JSON: url=%s", url)
             raise ModelAdapterError("Model endpoint returned a non-object JSON payload.")
         return decoded
-
-
-def _float_from_env(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ModelAdapterError(f"{name} must be a number.") from exc
 
 
 def chat_completions_url(base_url: str) -> str:

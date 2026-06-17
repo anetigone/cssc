@@ -29,16 +29,16 @@ def build_action_generator(args: Namespace):
         candidates.append(Path(path).read_text(encoding="utf-8"))
 
     if candidates:
+        if args.use_model:
+            logger.warning(
+                "Static candidates take precedence; --use-model is ignored. "
+                "Drop --candidate/--candidate-file to use the model."
+            )
         logger.debug("Using %d static candidate(s)", len(candidates))
         return StaticActionGenerator(candidates)
     if args.use_model:
-        env_path = Path(args.env_file)
-        if env_path.exists():
-            logger.debug("Loading environment file: %s", env_path)
-            load_dotenv(env_path, override=False)
-        else:
-            logger.debug("Environment file does not exist: %s", env_path)
-        return OpenAIChatActionGenerator(OpenAIChatConfig.from_env())
+        _ensure_env_loaded(args)
+        return OpenAIChatActionGenerator(_model_config(args))
     raise ValueError("Provide --candidate, --candidate-file, or --use-model.")
 
 
@@ -51,22 +51,30 @@ def build_formalization_agent(
         return None
     if not args.use_model:
         raise ValueError("Natural-language tasks require --use-model so the formalizer can create Lean.")
-    env_path = Path(args.env_file)
-    if env_path.exists():
-        logger.debug("Loading environment file for formalizer: %s", env_path)
-        load_dotenv(env_path, override=False)
-    else:
-        logger.debug("Environment file does not exist for formalizer: %s", env_path)
+    _ensure_env_loaded(args)
     cache = None
     if args.formalization_cache_dir:
         cache = VerifiedFormalizationCache(
             resolve_agent_path(Path(args.agent_root), args.formalization_cache_dir)
         )
     return OpenAIChatFormalizationAgent(
-        OpenAIChatConfig.from_env(),
+        _model_config(args),
         checker=checker,
         cache=cache,
     )
+
+
+def _ensure_env_loaded(args: Namespace) -> None:
+    env_path = Path(args.env_file)
+    if env_path.exists():
+        logger.debug("Loading environment file: %s", env_path)
+        load_dotenv(env_path, override=False)
+    else:
+        logger.debug("Environment file does not exist: %s", env_path)
+
+
+def _model_config(args: Namespace) -> OpenAIChatConfig:
+    return OpenAIChatConfig.from_env(timeout_seconds=args.model_timeout)
 
 
 def _needs_formalizer(args: Namespace) -> bool:

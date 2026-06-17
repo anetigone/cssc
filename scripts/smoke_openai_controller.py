@@ -67,6 +67,7 @@ def main() -> int:
     parser.add_argument("--max-checks", type=int, default=1)
     parser.add_argument("--max-model-calls", type=int, default=1)
     parser.add_argument("--lean-timeout", type=float, default=10.0)
+    parser.add_argument("--model-timeout", type=float, default=60.0)
     args = parser.parse_args()
 
     load_dotenv(args.env_file, override=False)
@@ -83,7 +84,9 @@ def main() -> int:
             )
             generator = OpenAIChatActionGenerator(config, transport=MockOpenAITransport())
         else:
-            generator = OpenAIChatActionGenerator(OpenAIChatConfig.from_env())
+            generator = OpenAIChatActionGenerator(
+                OpenAIChatConfig.from_env(timeout_seconds=args.model_timeout)
+            )
     except ModelAdapterError as exc:
         print(json.dumps({"ok": False, "stage": "model_config", "error": str(exc)}, indent=2))
         return 2

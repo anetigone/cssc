@@ -27,7 +27,11 @@ from .openai import (
 
 
 logger = logging.getLogger(__name__)
-PROMPT_VERSION = "formalization-v4-real-analysis-imports"
+PROMPT_VERSION = "formalization-v5-validated-scaffold"
+
+# Bump when scaffold validation semantics change. This is folded into the cache
+# key so entries validated under older assumptions are not silently reused.
+CACHE_VERSION = "validation-v1"
 
 
 @dataclass(frozen=True)
@@ -157,7 +161,6 @@ class OpenAIChatFormalizationAgent:
                 context="Formalizer response",
             )
             proof_source, natural_language_proof = validate_scaffold_json(data)
-            proof_source = _normalize_scaffold_source(proof_source)
 
             if self.checker is None:
                 logger.info(
@@ -247,6 +250,7 @@ class VerifiedFormalizationCache:
         payload = {
             "cache_key": key,
             "prompt_version": PROMPT_VERSION,
+            "cache_version": CACHE_VERSION,
             "validated": True,
             "model": model,
             "proof_source": result.proof_source,
@@ -274,6 +278,7 @@ class VerifiedFormalizationCache:
     def _key_for(request: FormalizationRequest, *, model: str) -> str:
         payload = {
             "prompt_version": PROMPT_VERSION,
+            "cache_version": CACHE_VERSION,
             "model": model,
             "problem": request.problem,
             "imports": request.imports,
@@ -298,13 +303,9 @@ def _build_messages(request: FormalizationRequest) -> list[dict[str, str]]:
                 "no narrower Mathlib module is reasonable. If the task is in core Lean, use "
                 "no import. The scaffold must be self-contained: include every namespace "
                 "opening or use fully qualified names for symbols such as Filter.Tendsto, "
-                "Filter.atTop, Set.Nonempty, sSup, and neighborhood notation. For real-analysis "
-                "statements about `Set ℝ`, `sSup`, limits, filters, or neighborhood notation, "
-                "prefer precise imports such as `Mathlib.Topology.Algebra.Ring.Real` and "
-                "`Mathlib.Topology.Order.Real`. Do not import "
-                "`Mathlib.Topology.Instances.Real`; it is not available in the configured "
-                "mathlib version. Prefer `nhds (sSup E)` over Unicode neighborhood notation "
-                "when writing filter convergence targets."
+                "Filter.atTop, Set.Nonempty, sSup, and neighborhood notation. If preferred "
+                "imports are provided by the user prompt, use those imports unless Lean "
+                "validation feedback shows they are insufficient."
             ),
         },
         {"role": "user", "content": _build_user_prompt(request)},
@@ -332,41 +333,6 @@ def _build_user_prompt(request: FormalizationRequest) -> str:
         ]
     )
     return "\n".join(parts)
-
-
-def _normalize_scaffold_source(source: str) -> str:
-    lines = source.splitlines()
-    normalized: list[str] = []
-    saw_ring_real = False
-    saw_order_real = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "import Mathlib.Topology.Instances.Real":
-            for replacement in (
-                "import Mathlib.Topology.Algebra.Ring.Real",
-                "import Mathlib.Topology.Order.Real",
-            ):
-                if replacement not in normalized:
-                    normalized.append(replacement)
-            saw_ring_real = True
-            saw_order_real = True
-            continue
-        if stripped == "import Mathlib.Topology.Algebra.Ring.Real":
-            saw_ring_real = True
-        elif stripped == "import Mathlib.Topology.Order.Real":
-            saw_order_real = True
-        normalized.append(line)
-
-    text = "\n".join(normalized)
-    if "Set ℝ" in text and "sSup" in text and ("Tendsto" in text or "Filter." in text):
-        import_lines: list[str] = []
-        if not saw_ring_real:
-            import_lines.append("import Mathlib.Topology.Algebra.Ring.Real")
-        if not saw_order_real:
-            import_lines.append("import Mathlib.Topology.Order.Real")
-        if import_lines:
-            text = "\n".join((*import_lines, text))
-    return text
 
 
 def _build_retry_prompt(validation_message: str) -> str:

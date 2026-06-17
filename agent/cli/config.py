@@ -47,6 +47,10 @@ CONFIG_FIELDS: frozenset[str] = frozenset(
         "input_kind",
         "problem_file",
         "formalization_cache_dir",
+        "formalization_cache",
+        "no_formalization_cache",
+        "model_timeout",
+        "run_name",
     }
 )
 

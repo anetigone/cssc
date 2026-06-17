@@ -83,7 +83,7 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
     def test_from_env_requires_key_and_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ModelAdapterError):
-                OpenAIChatConfig.from_env()
+                OpenAIChatConfig.from_env(timeout_seconds=60.0)
 
     def test_chat_completions_url_accepts_full_endpoint(self) -> None:
         self.assertEqual(

@@ -11,6 +11,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract Lean proof-completion tasks and solve one selected task."
     )
+
+    # --- Input source & task selection -------------------------------------
     parser.add_argument("source", nargs="?", default=None, help="Lean file or directory to scan.")
     parser.add_argument(
         "--agent-root",
@@ -44,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="UTF-8 file containing a natural-language problem statement.",
     )
 
+    # --- Candidate generation ---------------------------------------------
     parser.add_argument("--candidate", action="append", default=[], help="Static proof candidate.")
     parser.add_argument(
         "--candidate-file",
@@ -54,9 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-model", action="store_true", help="Use OpenAI-compatible chat config.")
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
     parser.add_argument("--max-candidates", type=int, default=1)
-    parser.add_argument("--max-checks", type=int, default=1)
     parser.add_argument("--max-model-calls", type=int, default=1)
     parser.add_argument("--max-repair-rounds", type=int, default=2)
+
+    # --- Retrieval ---------------------------------------------------------
     parser.add_argument("--enable-retrieval", action="store_true", help="Use lexical retrieval over local Lean files.")
     parser.add_argument(
         "--retrieval-source",
@@ -70,7 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Retrieve local snippets before the first model proposal.",
     )
-    parser.add_argument("--lean-timeout", type=float, default=10.0)
+
+    # --- Timeouts & budget -------------------------------------------------
+    parser.add_argument("--lean-timeout", type=float, default=10.0, help="Per-proof-check wall-clock timeout in seconds.")
     parser.add_argument(
         "--scaffold-timeout",
         type=float,
@@ -82,14 +88,35 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--model-timeout",
+        type=float,
+        default=60.0,
+        help="Timeout in seconds for each OpenAI-compatible model call.",
+    )
+    parser.add_argument("--max-checks", type=int, default=1)
+    parser.add_argument("--max-elapsed-seconds", type=float, default=None)
+
+    # --- Formalization cache ----------------------------------------------
+    parser.add_argument(
         "--formalization-cache-dir",
-        default=".runs/formalization_cache",
+        default=None,
         help=(
             "Directory for Lean-validated natural-language formalization cache entries. "
-            "Set to an empty string to disable."
+            "Disabled by default; set a path (or pass --formalization-cache) to enable."
         ),
     )
-    parser.add_argument("--max-elapsed-seconds", type=float, default=None)
+    parser.add_argument(
+        "--formalization-cache",
+        action="store_true",
+        help="Enable the formalization cache at the default .runs/formalization_cache.",
+    )
+    parser.add_argument(
+        "--no-formalization-cache",
+        action="store_true",
+        help="Disable the formalization cache even if --formalization-cache-dir is set.",
+    )
+
+    # --- Lean execution ----------------------------------------------------
     parser.add_argument("--project-root", default=None, help="Lake project root; auto-detected by default.")
     parser.add_argument("--no-lake", action="store_true", help="Call lean directly instead of lake env lean.")
     parser.add_argument(
@@ -115,6 +142,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-check-files",
         action="store_true",
         help="Keep checker-side temporary Lean files for debugging.",
+    )
+
+    # --- Artifacts & logging ----------------------------------------------
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help=(
+            "Group log/trace artifacts under AGENT_ROOT/.runs/<run-name>/. "
+            "When set, --log-file/--trace-jsonl are written into that directory."
+        ),
     )
     parser.add_argument("--trace-jsonl", default=None, help="Append controller trace events to JSONL.")
     parser.add_argument(

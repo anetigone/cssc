@@ -7,10 +7,11 @@ Examples:
 
 Note:
     When the input is natural-language, the formalizer validates its generated
-    scaffold against Lean before returning tasks. The scaffold check uses a
-    lightweight subprocess adapter, so ``--list-tasks`` on NL input does not
-    start the persistent Lean server. The server is started lazily when proof
-    search begins.
+    scaffold against Lean before returning tasks. Both the proof-search adapter
+    and the scaffold-validation adapter use the persistent Lean server unless
+    ``--no-lean-server`` is set. The validation adapter tolerates ``sorry``
+    placeholders so the scaffold's declaration/import shape can be checked
+    before proof search fills the hole.
 """
 
 from __future__ import annotations
@@ -62,27 +63,38 @@ class _LeanServices:
         self.adapter.close()
 
 
-def _run_artifact_path(agent_root: Path, value: str | None) -> Path | None:
-    """Resolve run artifacts, grouping loose .runs files into directories."""
+def _run_artifact_path(agent_root: Path, value: str | None, run_name: str | None) -> Path | None:
+    """Resolve a run artifact path, optionally grouping under ``.runs/<run_name>``.
+
+    When ``run_name`` is set, artifacts are written into
+    ``AGENT_ROOT/.runs/<run_name>/<basename>`` so a single run's log and trace
+    land in the same directory regardless of their file names. Without it the
+    value is resolved verbatim.
+    """
     if not value:
         return None
     path = resolve_agent_path(agent_root, value)
-    runs_root = (agent_root / ".runs").resolve()
-    if path.parent.resolve() == runs_root:
-        run_name = _run_artifact_group_name(path)
-        return runs_root / run_name / path.name
+    if run_name:
+        runs_root = (agent_root / ".runs").resolve()
+        if path.parent.resolve() == runs_root or path.parent.resolve() == agent_root.resolve():
+            return runs_root / _safe_name(run_name) / path.name
     return path
 
 
-def _run_artifact_group_name(path: Path) -> str:
-    name = path.name
-    suffixes = ("_trace.jsonl", ".jsonl", ".log")
-    for suffix in suffixes:
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name)
+def _safe_name(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
     return cleaned or "run"
+
+
+def _resolve_formalization_cache_dir(args: Namespace) -> str | None:
+    """Reconcile the formalization-cache flags into a single directory or None."""
+    if args.no_formalization_cache:
+        return None
+    if args.formalization_cache_dir:
+        return args.formalization_cache_dir
+    if args.formalization_cache:
+        return ".runs/formalization_cache"
+    return None
 
 
 @contextmanager
@@ -144,10 +156,11 @@ def main(argv: list[str] | None = None) -> int:
         args = apply_task_config(args)
         agent_root = resolve_agent_root(args.agent_root)
         args.agent_root = str(agent_root)
+        args.formalization_cache_dir = _resolve_formalization_cache_dir(args)
         if args.log_file:
-            args.log_file = str(_run_artifact_path(agent_root, args.log_file))
+            args.log_file = str(_run_artifact_path(agent_root, args.log_file, args.run_name))
         if args.trace_jsonl:
-            args.trace_jsonl = str(_run_artifact_path(agent_root, args.trace_jsonl))
+            args.trace_jsonl = str(_run_artifact_path(agent_root, args.trace_jsonl, args.run_name))
     except (OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "stage": "task_config", "error": str(exc)}, indent=2))
         return 2
