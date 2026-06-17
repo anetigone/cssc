@@ -176,12 +176,17 @@ class InputNormalizer:
         )
         if kind == TaskInputKind.NATURAL_LANGUAGE:
             text = problem
-            source_name: str | None = problem_file or "cli:problem"
+            source_name: str | None = problem_file or source or "cli:problem"
             if text is None and problem_file:
                 problem_path = Path(problem_file)
                 if not problem_path.is_absolute():
                     problem_path = Path(agent_root) / problem_path
                 text = problem_path.resolve().read_text(encoding="utf-8")
+            if text is None and source:
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = Path(agent_root) / source_path
+                text = source_path.resolve().read_text(encoding="utf-8")
             if not text:
                 raise ValueError(
                     "Provide a natural-language problem via --problem/--problem-file or a source path."

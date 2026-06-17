@@ -116,6 +116,17 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(normalized.specs[0].text, "Prove False.\n")
         self.assertEqual(normalized.specs[0].source_name, str(path))
 
+    def test_markdown_source_file_is_natural_language_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "problem.md"
+            path.write_text("Prove True from a markdown source.\n", encoding="utf-8")
+            n = InputNormalizer()
+            normalized = n.normalize(source=str(path))
+
+        self.assertEqual(normalized.kind, TaskInputKind.NATURAL_LANGUAGE)
+        self.assertEqual(normalized.specs[0].text, "Prove True from a markdown source.\n")
+        self.assertEqual(normalized.specs[0].source_name, str(path))
+
     def test_lean_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Basic.lean"

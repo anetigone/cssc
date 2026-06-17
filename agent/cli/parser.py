@@ -71,6 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Retrieve local snippets before the first model proposal.",
     )
     parser.add_argument("--lean-timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--scaffold-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Timeout in seconds for the formalizer's scaffold validation step. "
+            "Defaults to --lean-timeout. Scaffold checks run as fresh Lean processes, "
+            "so importing large libraries like Mathlib may need a larger value."
+        ),
+    )
     parser.add_argument("--max-elapsed-seconds", type=float, default=None)
     parser.add_argument("--project-root", default=None, help="Lake project root; auto-detected by default.")
     parser.add_argument("--no-lake", action="store_true", help="Call lean directly instead of lake env lean.")

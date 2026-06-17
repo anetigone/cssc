@@ -42,7 +42,7 @@ class OpenAIChatConfig:
     base_url: str = "https://api.openai.com/v1"
     timeout_seconds: float = 60.0
     temperature: float = 0.2
-    max_tokens: int = 512
+    max_tokens: int = 4096
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

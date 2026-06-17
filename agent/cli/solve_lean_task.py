@@ -34,7 +34,7 @@ from agent import (
     TaskBuildError,
     TaskInputKind,
 )
-from agent.input.validation import LeanAdapterScaffoldChecker
+from agent.input.validation import LeanAdapterScaffoldChecker, ValidationConfig
 from agent.runtime.logging_config import configure_logging
 from agent.runtime.workspace import AttemptWorkspace
 
@@ -105,7 +105,14 @@ def _build_scaffold_checker(
     """Build a scaffold checker only when the input is natural language."""
     if classify_input(args, task_config) != TaskInputKind.NATURAL_LANGUAGE:
         return None
-    return LeanAdapterScaffoldChecker(services.validation_adapter, check_workspace)
+    scaffold_timeout = args.scaffold_timeout
+    if scaffold_timeout is None:
+        scaffold_timeout = args.lean_timeout
+    return LeanAdapterScaffoldChecker(
+        services.validation_adapter,
+        check_workspace,
+        validation=ValidationConfig(check_timeout_seconds=scaffold_timeout),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
