@@ -62,6 +62,29 @@ class _LeanServices:
         self.adapter.close()
 
 
+def _run_artifact_path(agent_root: Path, value: str | None) -> Path | None:
+    """Resolve run artifacts, grouping loose .runs files into directories."""
+    if not value:
+        return None
+    path = resolve_agent_path(agent_root, value)
+    runs_root = (agent_root / ".runs").resolve()
+    if path.parent.resolve() == runs_root:
+        run_name = _run_artifact_group_name(path)
+        return runs_root / run_name / path.name
+    return path
+
+
+def _run_artifact_group_name(path: Path) -> str:
+    name = path.name
+    suffixes = ("_trace.jsonl", ".jsonl", ".log")
+    for suffix in suffixes:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name)
+    return cleaned or "run"
+
+
 @contextmanager
 def _lean_services(
     args: Namespace,
@@ -122,7 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         agent_root = resolve_agent_root(args.agent_root)
         args.agent_root = str(agent_root)
         if args.log_file:
-            args.log_file = str(resolve_agent_path(agent_root, args.log_file))
+            args.log_file = str(_run_artifact_path(agent_root, args.log_file))
+        if args.trace_jsonl:
+            args.trace_jsonl = str(_run_artifact_path(agent_root, args.trace_jsonl))
     except (OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "stage": "task_config", "error": str(exc)}, indent=2))
         return 2

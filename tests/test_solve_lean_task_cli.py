@@ -12,6 +12,7 @@ from agent.cli.output import result_payload
 from agent.cli.config import apply_task_config
 from agent.cli.generators import build_action_generator
 from agent.cli.paths import find_lake_root, resolve_agent_path
+from agent.cli.solve_lean_task import _run_artifact_path
 from agent.cli.tasks import build_tasks, classify_input, select_task
 from agent.cli.workspace import build_check_workspace, _workspace_context
 from agent.agents import FormalizationResult, StaticFormalizationAgent
@@ -268,6 +269,19 @@ class SolveLeanTaskCliTests(unittest.TestCase):
                 expected = resolve_agent_path(root, ".runs")
                 self.assertEqual(work_dir, expected)
                 self.assertTrue(expected.exists())
+
+    def test_run_artifact_path_groups_loose_runs_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            log_path = _run_artifact_path(root, ".runs/sup_sequence_e2e.log")
+            trace_path = _run_artifact_path(root, ".runs/sup_sequence_e2e_trace.jsonl")
+
+        self.assertEqual(log_path, root / ".runs" / "sup_sequence_e2e" / "sup_sequence_e2e.log")
+        self.assertEqual(
+            trace_path,
+            root / ".runs" / "sup_sequence_e2e" / "sup_sequence_e2e_trace.jsonl",
+        )
 
     def test_default_check_workspace_is_under_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
