@@ -6,6 +6,7 @@ from .formalization import (
     FormalizationRequest,
     FormalizationResult,
     OpenAIChatFormalizationAgent,
+    ScaffoldChecker,
     StaticFormalizationAgent,
 )
 from .openai import ChatTransport, ModelAdapterError, OpenAIChatConfig, UrllibChatTransport
@@ -22,6 +23,7 @@ __all__ = [
     "OpenAIChatConfig",
     "OpenAIChatFormalizationAgent",
     "RoleModelConfig",
+    "ScaffoldChecker",
     "StaticFormalizationAgent",
     "UrllibChatTransport",
 ]

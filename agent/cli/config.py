@@ -11,6 +11,18 @@ import json
 from argparse import Namespace
 from typing import Any
 
+from agent.input.parsing import (
+    INFORMAL_PROOF_KEYS,
+    LEAN_SOURCE_KEYS,
+    PROBLEM_KEYS,
+    config_informal_proof as _config_informal_proof,
+    config_lean_source as _config_lean_source,
+    config_problem as _config_problem,
+    config_value as _config_value,
+    has_inline_source as _has_inline_source,
+    has_nl_source as _has_nl_source,
+)
+
 from .paths import resolve_agent_path, resolve_agent_root
 
 
@@ -54,13 +66,6 @@ STRUCTURAL_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-# Canonical aliases for natural-language problem/proof fields in task configs.
-# These are shared by config validation, task building, and formalization setup
-# so the key list is defined in exactly one place.
-PROBLEM_KEYS: tuple[str, ...] = ("problem", "problem_statement", "natural_language_problem")
-INFORMAL_PROOF_KEYS: tuple[str, ...] = ("informal_proof", "natural_language_proof")
-LEAN_SOURCE_KEYS: tuple[str, ...] = ("proof_source", "source_template", "lean")
-
 
 def apply_task_config(args: Namespace) -> Namespace:
     if not args.task_config:
@@ -101,48 +106,5 @@ def _coerce_retrieval_source(value: Any) -> list[str]:
     raise ValueError("retrieval_source must be a string or list of strings.")
 
 
-def _config_value(entry: dict[str, Any], keys: tuple[str, ...]) -> str | None:
-    """Return the first string value among ``keys`` in ``entry``, if any."""
-    for key in keys:
-        value = entry.get(key)
-        if isinstance(value, str):
-            return value
-    return None
-
-
-def _config_problem(entry: dict[str, Any]) -> str | None:
-    """Return the natural-language problem text from a config entry."""
-    return _config_value(entry, PROBLEM_KEYS)
-
-
-def _config_informal_proof(entry: dict[str, Any]) -> str | None:
-    """Return the informal proof text from a config entry."""
-    return _config_value(entry, INFORMAL_PROOF_KEYS)
-
-
-def _config_lean_source(entry: dict[str, Any]) -> str | None:
-    """Return the inline Lean source text from a config entry."""
-    return _config_value(entry, LEAN_SOURCE_KEYS)
-
-
-def _has_inline_source(config: dict[str, Any]) -> bool:
-    if _config_lean_source(config) is not None:
-        return True
-    tasks = config.get("tasks")
-    return isinstance(tasks, list) and any(
-        isinstance(item, dict) and _config_lean_source(item) is not None for item in tasks
-    )
-
-
-def _has_nl_source(config: dict[str, Any]) -> bool:
-    if _config_problem(config) is not None:
-        return True
-    tasks = config.get("tasks")
-    if not isinstance(tasks, list):
-        return False
-    return any(isinstance(item, dict) and _config_problem(item) is not None for item in tasks)
-
-
 def _has_any_source(config: dict[str, Any]) -> bool:
     return _has_inline_source(config) or _has_nl_source(config)
-

@@ -62,7 +62,20 @@ class LeanAdapter(ProofSystemAdapter):
             self.use_server,
         )
 
-    def render_candidate(self, task: ProofTask, candidate_edit: CandidateEdit) -> str:
+    def render_candidate(
+        self,
+        task: ProofTask,
+        candidate_edit: CandidateEdit,
+        *,
+        holes: tuple[int, ...] | None = None,
+    ) -> str:
+        """Render a complete source file from a task template and candidate.
+
+        Multi-hole seam: ``holes`` is reserved for future controllers that want
+        to render a specific subset of holes. ``None`` preserves the current
+        single-active-marker behavior.
+        """
+        # TODO: multi-hole — honor ``holes`` when rendering subsets of holes.
         if task.hole_marker not in task.source_template:
             logger.error(
                 "Task template is missing marker: task_id=%s marker=%s",

@@ -4,23 +4,37 @@ Examples:
     python solve_lean_task.py lean_workspace/Cssc/Tasks/Basic.lean --list-tasks
     python solve_lean_task.py Basic.lean --task-index 0 --candidate trivial
     python solve_lean_task.py Basic.lean --use-model
+
+Note:
+    When the input is natural-language, the formalizer validates its generated
+    scaffold against Lean before returning tasks. The scaffold check uses a
+    lightweight subprocess adapter, so ``--list-tasks`` on NL input does not
+    start the persistent Lean server. The server is started lazily when proof
+    search begins.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from argparse import Namespace
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterator
 
 from agent import (
     BudgetConfig,
     ControllerConfig,
+    EphemeralCheckWorkspace,
     JsonlTraceStore,
     LeanAdapter,
     ModelAdapterError,
     ProofController,
     TaskBuildError,
+    TaskInputKind,
 )
+from agent.input.validation import LeanAdapterScaffoldChecker
 from agent.runtime.logging_config import configure_logging
 from agent.runtime.workspace import AttemptWorkspace
 
@@ -29,11 +43,69 @@ from .generators import build_action_generator, build_formalization_agent, build
 from .output import result_payload, task_summary
 from .parser import build_parser
 from .paths import find_lake_root, resolve_agent_path, resolve_agent_root
-from .tasks import build_tasks, select_task
+from .tasks import classify_input, build_tasks, select_task
 from .workspace import _workspace_context, build_check_workspace
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _LeanServices:
+    """Holds the Lean adapters used during a CLI run and cleans them up."""
+
+    adapter: LeanAdapter
+    validation_adapter: LeanAdapter
+
+    def close(self) -> None:
+        self.validation_adapter.close()
+        self.adapter.close()
+
+
+@contextmanager
+def _lean_services(
+    args: Namespace,
+    project_root: Path | None,
+) -> Iterator[_LeanServices]:
+    """Create Lean adapters for the run and ensure they are closed.
+
+    The main ``adapter`` is configured for proof search (potentially using a
+    persistent Lean server). The ``validation_adapter`` is a lightweight,
+    subprocess-only adapter used to validate formalized scaffolds; it tolerates
+    ``sorry`` placeholders and never starts the language server.
+    """
+    kwargs = {
+        "project_root": project_root,
+        "prefer_lake": not args.no_lake,
+    }
+    services = _LeanServices(
+        adapter=LeanAdapter(
+            **kwargs,
+            disallow_sorry=not args.allow_sorry,
+            use_server=not args.no_lean_server,
+        ),
+        validation_adapter=LeanAdapter(
+            **kwargs,
+            disallow_sorry=False,
+            use_server=False,
+        ),
+    )
+    try:
+        yield services
+    finally:
+        services.close()
+
+
+def _build_scaffold_checker(
+    args: Namespace,
+    services: _LeanServices,
+    task_config: Any,
+    check_workspace: EphemeralCheckWorkspace | None,
+) -> LeanAdapterScaffoldChecker | None:
+    """Build a scaffold checker only when the input is natural language."""
+    if classify_input(args, task_config) != TaskInputKind.NATURAL_LANGUAGE:
+        return None
+    return LeanAdapterScaffoldChecker(services.validation_adapter, check_workspace)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,23 +129,6 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info("CLI started: source=%s task_config=%s use_model=%s", args.source, args.task_config, args.use_model)
 
-    try:
-        formalizer = build_formalization_agent(args)
-        tasks = build_tasks(args, formalizer=formalizer)
-        logger.info("Built %d task(s) from task input", len(tasks))
-        if args.list_tasks:
-            payload = {"tasks": [task_summary(task, index) for index, task in enumerate(tasks)]}
-            print(json.dumps(payload, indent=2))
-            return 0
-
-        task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
-        logger.info("Selected task: task_id=%s", task.task_id)
-        generator = build_action_generator(args)
-    except (TaskBuildError, ValueError, ModelAdapterError) as exc:
-        logger.exception("CLI setup failed")
-        print(json.dumps({"ok": False, "stage": "setup", "error": str(exc)}, indent=2))
-        return 2
-
     agent_root = Path(args.agent_root)
     if args.project_root:
         project_root = resolve_agent_path(agent_root, args.project_root)
@@ -82,43 +137,62 @@ def main(argv: list[str] | None = None) -> int:
     else:
         project_root = None
     logger.debug("Using project_root=%s", project_root)
-    with _workspace_context(args.work_dir, agent_root=agent_root) as work_dir:
-        check_workspace = build_check_workspace(args, agent_root=agent_root, project_root=project_root)
-        logger.debug("Using attempt workspace: %s", work_dir)
-        adapter = LeanAdapter(
-            project_root=project_root,
-            prefer_lake=not args.no_lake,
-            disallow_sorry=not args.allow_sorry,
-            use_server=not args.no_lean_server,
-        )
-        adapter.start_service(timeout_seconds=min(max(args.lean_timeout, 1.0), 10.0))
-        controller = ProofController(
-            adapter=adapter,
-            action_generator=generator,
-            workspace=AttemptWorkspace(work_dir),
-            check_workspace=check_workspace,
-            retriever=build_retriever(args),
-            budget_config=BudgetConfig(
-                max_checks=args.max_checks,
-                max_model_calls=args.max_model_calls,
-                per_check_timeout_seconds=args.lean_timeout,
-                max_elapsed_seconds=args.max_elapsed_seconds,
-            ),
-            config=ControllerConfig(
-                max_candidates_per_model_call=args.max_candidates,
-                max_repair_rounds=args.max_repair_rounds,
-                max_retrieval_results=args.max_retrieval_results,
-                retrieve_before_first_model_call=args.retrieve_before_first_model_call,
-            ),
-        )
+
+    with (
+        _workspace_context(args.work_dir, agent_root=agent_root) as work_dir,
+        _lean_services(args, project_root) as services,
+    ):
         try:
-            result = controller.run(task)
-        except ModelAdapterError as exc:
-            logger.exception("Controller run failed during model call")
-            print(json.dumps({"ok": False, "stage": "run", "error": str(exc)}, indent=2))
+            task_config = getattr(args, "_task_config_data", None)
+            check_workspace = build_check_workspace(
+                args, agent_root=agent_root, project_root=project_root
+            )
+            checker = _build_scaffold_checker(args, services, task_config, check_workspace)
+
+            formalizer = build_formalization_agent(args, checker=checker)
+            tasks = build_tasks(args, formalizer=formalizer)
+            logger.info("Built %d task(s) from task input", len(tasks))
+
+            if args.list_tasks:
+                payload = {"tasks": [task_summary(task, index) for index, task in enumerate(tasks)]}
+                print(json.dumps(payload, indent=2))
+                return 0
+
+            task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
+            logger.info("Selected task: task_id=%s", task.task_id)
+            generator = build_action_generator(args)
+
+            logger.debug("Using attempt workspace: %s", work_dir)
+            controller = ProofController(
+                adapter=services.adapter,
+                action_generator=generator,
+                workspace=AttemptWorkspace(work_dir),
+                check_workspace=check_workspace,
+                retriever=build_retriever(args),
+                budget_config=BudgetConfig(
+                    max_checks=args.max_checks,
+                    max_model_calls=args.max_model_calls,
+                    per_check_timeout_seconds=args.lean_timeout,
+                    max_elapsed_seconds=args.max_elapsed_seconds,
+                ),
+                config=ControllerConfig(
+                    max_candidates_per_model_call=args.max_candidates,
+                    max_repair_rounds=args.max_repair_rounds,
+                    max_retrieval_results=args.max_retrieval_results,
+                    retrieve_before_first_model_call=args.retrieve_before_first_model_call,
+                ),
+            )
+            try:
+                result = controller.run(task)
+            except ModelAdapterError as exc:
+                logger.exception("Controller run failed during model call")
+                print(json.dumps({"ok": False, "stage": "run", "error": str(exc)}, indent=2))
+                return 2
+
+        except (TaskBuildError, ValueError, ModelAdapterError) as exc:
+            logger.exception("CLI setup failed")
+            print(json.dumps({"ok": False, "stage": "setup", "error": str(exc)}, indent=2))
             return 2
-        finally:
-            adapter.close()
 
     if args.trace_jsonl:
         trace_path = resolve_agent_path(agent_root, args.trace_jsonl)

@@ -35,12 +35,17 @@ class DiagnosticCategory(str, Enum):
 
 @dataclass(frozen=True)
 class CandidateEdit:
-    """A candidate replacement for the task's proof hole."""
+    """A candidate replacement for the task's proof hole.
+
+    Multi-hole seam: ``hole_id`` defaults to ``None`` (the active hole). Future
+    multi-hole controllers may set it to identify which hole this edit targets.
+    """
 
     text: str
     action: str = "manual"
     parent_node_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    hole_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,8 +99,21 @@ class ProofSystemAdapter(ABC):
     """Minimal boundary between search control and a concrete prover."""
 
     @abstractmethod
-    def render_candidate(self, task: ProofTask, candidate_edit: CandidateEdit) -> str:
-        """Render a complete source file from a task template and candidate."""
+    def render_candidate(
+        self,
+        task: ProofTask,
+        candidate_edit: CandidateEdit,
+        *,
+        holes: tuple[int, ...] | None = None,
+    ) -> str:
+        """Render a complete source file from a task template and candidate.
+
+        Multi-hole seam: ``holes`` is reserved for future controllers that want
+        to render a specific subset of holes. ``None`` preserves the current
+        single-active-marker behavior.
+        """
+        # TODO: multi-hole — wire ``holes`` through once a controller iterates
+        # over more than the single active marker.
 
     @abstractmethod
     def check(self, candidate_file: Path, budget_slice: BudgetSlice) -> CheckResult:

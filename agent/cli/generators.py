@@ -14,7 +14,7 @@ from agent import (
     TaskInputKind,
     load_dotenv,
 )
-from agent.agents import OpenAIChatFormalizationAgent
+from agent.agents import OpenAIChatFormalizationAgent, ScaffoldChecker
 
 from .paths import resolve_agent_path
 from .tasks import classify_input, require_source
@@ -44,7 +44,11 @@ def build_action_generator(args: Namespace):
     raise ValueError("Provide --candidate, --candidate-file, or --use-model.")
 
 
-def build_formalization_agent(args: Namespace) -> OpenAIChatFormalizationAgent | None:
+def build_formalization_agent(
+    args: Namespace,
+    *,
+    checker: ScaffoldChecker | None = None,
+) -> OpenAIChatFormalizationAgent | None:
     if not _needs_formalizer(args):
         return None
     if not args.use_model:
@@ -55,7 +59,10 @@ def build_formalization_agent(args: Namespace) -> OpenAIChatFormalizationAgent |
         load_dotenv(env_path, override=False)
     else:
         logger.debug("Environment file does not exist for formalizer: %s", env_path)
-    return OpenAIChatFormalizationAgent(OpenAIChatConfig.from_env())
+    return OpenAIChatFormalizationAgent(
+        OpenAIChatConfig.from_env(),
+        checker=checker,
+    )
 
 
 def _needs_formalizer(args: Namespace) -> bool:

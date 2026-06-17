@@ -7,6 +7,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from ..input.validation import (
+    ScaffoldValidationError,
+    ScaffoldValidationResult,
+    ValidationConfig,
+    validate_scaffold_json,
+)
 from .openai import (
     ChatTransport,
     ModelAdapterError,
@@ -51,6 +57,21 @@ class FormalizationAgent(Protocol):
         ...
 
 
+class ScaffoldChecker(Protocol):
+    """Boundary for validators that check a formalized Lean scaffold compiles."""
+
+    def validate_scaffold(
+        self,
+        source: str,
+        *,
+        imports: tuple[str, ...],
+        hole_marker: str = "{{proof}}",
+        inactive_fill: str = "sorry",
+    ) -> ScaffoldValidationResult:
+        """Return whether ``source`` compiles after filling its active hole."""
+        ...
+
+
 class StaticFormalizationAgent:
     """Deterministic formalizer useful for tests and curated datasets."""
 
@@ -66,49 +87,102 @@ class StaticFormalizationAgent:
 
 
 class OpenAIChatFormalizationAgent:
-    """Generate a Lean scaffold from prose through an OpenAI-compatible endpoint."""
+    """Generate a Lean scaffold from prose through an OpenAI-compatible endpoint.
+
+    When a ``checker`` is configured, the agent validates the scaffold with Lean
+    and retries a bounded number of times if the scaffold does not compile.
+    """
 
     def __init__(
         self,
         config: OpenAIChatConfig,
         *,
         transport: ChatTransport | None = None,
+        checker: ScaffoldChecker | None = None,
+        validation: ValidationConfig | None = None,
     ) -> None:
         self.config = config
         self.transport = transport or UrllibChatTransport()
+        self.checker = checker
+        self.validation = validation or ValidationConfig()
 
     def formalize(self, request: FormalizationRequest) -> FormalizationResult:
-        payload = {
-            "model": self.config.model,
-            "messages": _build_messages(request),
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
-            **self.config.extra_body,
-        }
-        response = self.transport.post_json(
-            chat_completions_url(self.config.base_url),
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-            },
-            payload=payload,
-            timeout_seconds=self.config.timeout_seconds,
-        )
-        data = parse_json_object(
-            first_choice_content(response),
-            context="Formalizer response",
-        )
-        proof_source = data.get("proof_source") or data.get("lean") or data.get("source_template")
-        if not isinstance(proof_source, str) or not proof_source.strip():
-            raise ModelAdapterError("Formalizer response must contain non-empty proof_source.")
-        natural_language_proof = data.get("natural_language_proof") or data.get("informal_proof")
-        if natural_language_proof is not None and not isinstance(natural_language_proof, str):
-            natural_language_proof = None
-        logger.info("Generated formalization: task_id=%s model=%s", request.task_id, self.config.model)
-        return FormalizationResult(
-            proof_source=proof_source.strip(),
-            natural_language_proof=natural_language_proof,
-            metadata={"model": self.config.model},
+        messages = _build_messages(request)
+        max_attempts = 1 + self.validation.max_retries
+        last_validation_message = ""
+
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                messages = list(messages)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _build_retry_prompt(last_validation_message),
+                    }
+                )
+
+            payload = {
+                "model": self.config.model,
+                "messages": messages,
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_tokens,
+                **self.config.extra_body,
+            }
+            response = self.transport.post_json(
+                chat_completions_url(self.config.base_url),
+                headers={
+                    "Authorization": f"Bearer {self.config.api_key}",
+                    "Content-Type": "application/json",
+                },
+                payload=payload,
+                timeout_seconds=self.config.timeout_seconds,
+            )
+            data = parse_json_object(
+                first_choice_content(response),
+                context="Formalizer response",
+            )
+            proof_source, natural_language_proof = validate_scaffold_json(data)
+
+            if self.checker is None:
+                logger.info(
+                    "Generated formalization: task_id=%s model=%s",
+                    request.task_id,
+                    self.config.model,
+                )
+                return FormalizationResult(
+                    proof_source=proof_source,
+                    natural_language_proof=natural_language_proof,
+                    metadata={"model": self.config.model},
+                )
+
+            validation_result = self.checker.validate_scaffold(
+                proof_source,
+                imports=request.imports,
+                hole_marker=request.hole_marker,
+                inactive_fill=self.validation.inactive_fill,
+            )
+            if validation_result.ok:
+                logger.info(
+                    "Generated and validated formalization: task_id=%s model=%s",
+                    request.task_id,
+                    self.config.model,
+                )
+                return FormalizationResult(
+                    proof_source=proof_source,
+                    natural_language_proof=natural_language_proof,
+                    metadata={"model": self.config.model},
+                )
+
+            last_validation_message = validation_result.message
+            logger.warning(
+                "Formalized scaffold failed validation (attempt %d/%d): %s",
+                attempt + 1,
+                max_attempts,
+                last_validation_message[:200],
+            )
+
+        raise ModelAdapterError(
+            f"Formalizer scaffold failed Lean validation after {max_attempts} attempt(s)."
         )
 
 
@@ -148,3 +222,11 @@ def _build_user_prompt(request: FormalizationRequest) -> str:
         ]
     )
     return "\n".join(parts)
+
+
+def _build_retry_prompt(validation_message: str) -> str:
+    return (
+        "The previous scaffold failed to compile or validate. "
+        "Please fix the Lean source and return corrected JSON.\n\n"
+        f"Validation feedback:\n{validation_message}"
+    )

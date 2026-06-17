@@ -4,3 +4,4 @@ __pycache__/
 lean_workspace/
 lean_test/
 .runs/
+tmp/

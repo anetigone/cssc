@@ -22,7 +22,14 @@ class ProofTask:
     Natural-language provenance and prompt context live in ``metadata`` under
     the keys ``natural_language_problem`` and ``natural_language_proof``. The
     verifier-facing target is still ``source_template`` plus ``hole_marker``.
+
+    Multi-hole seam: ``metadata`` may contain ``active_hole_count``,
+    ``source_hole_count`` and ``has_inactive_holes``. Current builders emit
+    exactly one active hole, but these fields let future controllers iterate
+    over multiple holes without changing the task shape.
     """
+    # TODO: multi-hole — populate active_hole_count/source_hole_count when a
+    # builder emits tasks with more than one editable hole.
 
     task_id: str
     source_template: str
@@ -47,3 +54,12 @@ class TaskInputSpec:
     source_name: str | None = None
     imports: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    # NEW: file-system provenance and directory scanning
+    source_path: str | None = None
+    is_directory: bool = False
+    directory_pattern: str = "*.lean"
+    # NEW: natural-language provenance passed to the formalizer
+    informal_proof: str | None = None
+    context: str | None = None
+    # NEW: per-spec split override
+    split: str | None = None
