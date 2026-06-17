@@ -19,16 +19,32 @@ comparison simple while leaving room for multi-hole source extraction later.
 
 ## Data Structures
 
+### Raw Task Input
+
+Defined in `agent/tasks/types.py`.
+
+```text
+TaskInputKind: auto | lean | natural_language
+TaskInputSpec: raw user-facing task text before checker materialization
+```
+
+The user-facing input layer is separate from the checker-facing task layer. A
+Lean file or inline Lean task can still go directly to `LeanTaskBuilder`. A
+natural-language problem must first pass through a formalization agent that
+produces a Lean scaffold with exactly one active proof hole.
+
 ### `ProofTask`
 
-Defined in `agent/proof_system_adapter.py`.
+Defined in `agent/tasks/types.py` and consumed by `agent/proof_system/base.py`.
 
 ```text
 task_id: stable task identifier
 source_template: full source with exactly one active hole marker
 hole_marker: marker string replaced by a candidate edit
 imports: extra imports to prepend at render time
-metadata: provenance, split, hole location, retrieval policy, leakage guards
+input_kind: original input mode, usually lean or natural_language
+metadata: provenance, split, hole location, retrieval policy, leakage guards,
+  plus optional natural_language_problem / natural_language_proof
 ```
 
 The task is the dataset-facing object. It should be serializable and should not
@@ -53,6 +69,10 @@ has_inactive_holes: whether this task came from a multi-hole source
 source_imports: imports parsed from the source file
 ground_truth_hidden: retrieval/evaluation leakage guard
 allowed_retrieval_scope: retrieval policy hint
+natural_language_problem: optional problem statement in ordinary mathematical prose
+natural_language_proof: optional informal proof/explanation to return with the verified Lean artifact
+input_kind: "lean" or "natural_language"
+formalized_by: formalizer identity/model when the task came from prose
 ```
 
 ### `CandidateEdit`
@@ -109,6 +129,7 @@ Responsibilities:
 - preserve provenance and leakage metadata;
 - emit one active-hole task per selected source hole;
 - avoid Lean execution and search decisions.
+- consume formalized Lean scaffolds, not perform model calls directly.
 
 Non-responsibilities:
 
@@ -121,7 +142,71 @@ Current extraction modes:
 ```text
 explicit marker: uses {{proof}} by default
 standalone sorry: tokenizer ignores comments and strings
+JSON task config: may attach problem/informal_proof metadata to an inline Lean scaffold
+natural-language config: may contain problem only, in which case a formalizer agent creates the Lean scaffold first
 ```
+
+Natural-language input is not a replacement for the checker target. The current
+pipeline is:
+
+```text
+natural-language problem
+-> FormalizationAgent
+-> Lean scaffold with one active hole
+-> LeanTaskBuilder
+-> ProofTask
+-> ProofController / LeanAdapter
+```
+
+This keeps the final verification strict while allowing the proposer prompt and
+result payload to retain the original prose problem and informal proof.
+
+### Agents
+
+Current implementation: `agent/agents/`.
+
+The agent layer owns model-backed roles and shared chat infrastructure:
+
+```text
+agent/agents/config.py: role names and role-level model config
+agent/agents/openai.py: OpenAI-compatible chat config, transport, parsing helpers
+agent/agents/formalization.py: natural-language problem -> Lean scaffold
+agent/agents/proof.py: Lean proof-hole completion proposals
+```
+
+This keeps role-specific prompts and model plumbing together. The proof system,
+task builder, and controller consume agent outputs; they do not own model
+configuration or chat transport details.
+
+Responsibilities:
+
+- convert a prose mathematical task into Lean source containing exactly one
+  editable proof hole, either the configured marker or a standalone `sorry`;
+- optionally produce a natural-language proof/explanation;
+- return structured `FormalizationResult` data, not arbitrary chat text.
+
+Non-responsibilities:
+
+- checking the generated Lean source;
+- solving the proof hole;
+- mutating source files.
+
+The OpenAI-compatible implementation asks for JSON with a required
+`proof_source` field. The CLI wires this stage only when the input kind is
+`natural_language` or a task config contains a prose problem without an inline
+Lean scaffold.
+
+CLI entry points:
+
+```text
+python solve_lean_task.py theorem.lean --candidate trivial
+python solve_lean_task.py problem.txt --input-kind natural_language --use-model
+python solve_lean_task.py --problem "Prove that True is true." --use-model
+python solve_lean_task.py --task-config data/tasks/natural_language.json --use-model
+```
+
+The first command bypasses formalization. The other forms call the formalizer
+first, then solve the generated Lean proof-completion task.
 
 Multiple source holes are opt-in through `TaskBuilderConfig`:
 

@@ -1,66 +1,24 @@
-"""OpenAI-compatible model adapter for generating proof actions."""
+"""Agent roles that propose Lean proof-hole completions."""
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Sequence
 
-from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from ..proof_system.base import ParsedFeedback, ProofTask
+from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from .openai import (
+    ChatTransport,
+    ModelAdapterError,
+    OpenAIChatConfig,
+    UrllibChatTransport,
+    chat_completions_url,
+    choice_content,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-class ModelAdapterError(RuntimeError):
-    """Raised when a model request cannot be completed or parsed."""
-
-
-class ChatTransport(Protocol):
-    """HTTP transport seam for tests and smoke runs."""
-
-    def post_json(
-        self,
-        url: str,
-        headers: Mapping[str, str],
-        payload: Mapping[str, Any],
-        timeout_seconds: float,
-    ) -> Mapping[str, Any]:
-        """POST JSON and return decoded JSON."""
-
-
-@dataclass(frozen=True)
-class OpenAIChatConfig:
-    """Configuration for OpenAI-compatible chat completions."""
-
-    api_key: str
-    model: str
-    base_url: str = "https://api.openai.com/v1"
-    timeout_seconds: float = 60.0
-    temperature: float = 0.2
-    max_tokens: int = 512
-    extra_body: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_env(cls) -> "OpenAIChatConfig":
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        model = os.environ.get("OPENAI_MODEL", "")
-        base_url = (
-            os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("OPENAI_API_BASE")
-            or "https://api.openai.com/v1"
-        )
-        if not api_key:
-            raise ModelAdapterError("OPENAI_API_KEY is not set.")
-        if not model:
-            raise ModelAdapterError("OPENAI_MODEL is not set.")
-        return cls(api_key=api_key, model=model, base_url=base_url)
 
 
 class OpenAIChatActionGenerator(ActionGenerator):
@@ -76,7 +34,7 @@ class OpenAIChatActionGenerator(ActionGenerator):
         self.transport = transport or UrllibChatTransport()
 
     def generate(self, request: ActionGenerationRequest) -> Sequence[ActionCandidate]:
-        url = _chat_completions_url(self.config.base_url)
+        url = chat_completions_url(self.config.base_url)
         logger.debug(
             "Requesting chat completions: model=%s url=%s task_id=%s max_candidates=%d",
             self.config.model,
@@ -110,8 +68,7 @@ class OpenAIChatActionGenerator(ActionGenerator):
         for index, choice in enumerate(choices[: request.max_candidates]):
             if not isinstance(choice, Mapping):
                 continue
-            content = _choice_content(choice)
-            proof_text = _clean_proof_text(content)
+            proof_text = _clean_proof_text(choice_content(choice))
             if not proof_text:
                 continue
             candidates.append(
@@ -134,41 +91,6 @@ class OpenAIChatActionGenerator(ActionGenerator):
         return tuple(candidates)
 
 
-class UrllibChatTransport:
-    """Small standard-library JSON transport."""
-
-    def post_json(
-        self,
-        url: str,
-        headers: Mapping[str, str],
-        payload: Mapping[str, Any],
-        timeout_seconds: float,
-    ) -> Mapping[str, Any]:
-        data = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
-        try:
-            logger.debug("POST model request: url=%s timeout=%s", url, timeout_seconds)
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                body = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            logger.warning("Model endpoint returned HTTP error: url=%s status=%s", url, exc.code)
-            raise ModelAdapterError(f"Model endpoint returned HTTP {exc.code}: {body}") from exc
-        except urllib.error.URLError as exc:
-            logger.warning("Model endpoint unavailable: url=%s reason=%s", url, exc.reason)
-            raise ModelAdapterError(f"Model endpoint is unavailable: {exc.reason}") from exc
-
-        try:
-            decoded = json.loads(body)
-        except json.JSONDecodeError as exc:
-            logger.warning("Model endpoint returned invalid JSON: url=%s", url)
-            raise ModelAdapterError("Model endpoint returned invalid JSON.") from exc
-        if not isinstance(decoded, Mapping):
-            logger.warning("Model endpoint returned non-object JSON: url=%s", url)
-            raise ModelAdapterError("Model endpoint returned a non-object JSON payload.")
-        return decoded
-
-
 def _build_messages(request: ActionGenerationRequest) -> list[dict[str, str]]:
     return [
         {
@@ -178,10 +100,7 @@ def _build_messages(request: ActionGenerationRequest) -> list[dict[str, str]]:
                 "that replaces the marker. Do not wrap it in markdown."
             ),
         },
-        {
-            "role": "user",
-            "content": _build_user_prompt(request),
-        },
+        {"role": "user", "content": _build_user_prompt(request)},
     ]
 
 
@@ -192,6 +111,17 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
         f"Task id: {task.task_id}",
         f"Replace exactly this marker: {task.hole_marker}",
     ]
+    problem = task.metadata.get("natural_language_problem")
+    if isinstance(problem, str) and problem.strip():
+        parts.extend(["Natural-language problem statement:", problem.strip()])
+    informal_proof = task.metadata.get("natural_language_proof")
+    if isinstance(informal_proof, str) and informal_proof.strip():
+        parts.extend(
+            [
+                "Candidate natural-language proof to preserve when it is mathematically sound:",
+                informal_proof.strip(),
+            ]
+        )
     meta_action = request.metadata.get("meta_action")
     if isinstance(meta_action, str):
         parts.append(f"Controller action: {meta_action}")
@@ -206,29 +136,16 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
             snippet = getattr(item, "snippet", None)
             if isinstance(name, str) and isinstance(snippet, str):
                 parts.extend([f"- {name}", "```lean", snippet, "```"])
-    parts.extend(
-        [
-        "Lean source template:",
-        "```lean",
-        task.source_template,
-        "```",
-        ]
-    )
+    parts.extend(["Lean source template:", "```lean", task.source_template, "```"])
     if feedback:
         parts.extend(["Previous checker feedback:"])
         for item in feedback[-3:]:
-            parts.append(f"- {item.category.value}: {item.message}")
+            parts.append(_feedback_line(item))
     return "\n".join(parts)
 
 
-def _choice_content(choice: Mapping[str, Any]) -> str:
-    message = choice.get("message")
-    if isinstance(message, Mapping):
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-    text = choice.get("text")
-    return text if isinstance(text, str) else ""
+def _feedback_line(feedback: ParsedFeedback) -> str:
+    return f"- {feedback.category.value}: {feedback.message}"
 
 
 def _clean_proof_text(content: str) -> str:
@@ -237,10 +154,3 @@ def _clean_proof_text(content: str) -> str:
     if fence:
         stripped = fence.group(1).strip()
     return stripped
-
-
-def _chat_completions_url(base_url: str) -> str:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/chat/completions"):
-        return normalized
-    return f"{normalized}/chat/completions"

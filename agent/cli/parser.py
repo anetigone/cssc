@@ -31,6 +31,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-multiple-sorry-tasks", action="store_true")
     parser.add_argument("--inactive-hole-fill", default="sorry")
     parser.add_argument("--pattern", default="*.lean", help="Directory scan pattern.")
+    parser.add_argument(
+        "--input-kind",
+        choices=("auto", "lean", "natural_language"),
+        default="auto",
+        help="Interpret source/task config as Lean, natural-language prose, or infer from extension/config.",
+    )
+    parser.add_argument("--problem", default=None, help="Natural-language problem statement.")
+    parser.add_argument(
+        "--problem-file",
+        default=None,
+        help="UTF-8 file containing a natural-language problem statement.",
+    )
 
     parser.add_argument("--candidate", action="append", default=[], help="Static proof candidate.")
     parser.add_argument(

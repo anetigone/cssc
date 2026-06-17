@@ -30,6 +30,12 @@ def result_payload(result: ControllerResult, *, include_candidate_file: bool = T
         payload["accepted_candidate_file"] = str(result.accepted_attempt.candidate_file)
     if result.accepted_attempt is not None:
         payload["accepted_proof"] = result.accepted_attempt.edit.text
+    problem = result.task.metadata.get("natural_language_problem")
+    if isinstance(problem, str) and problem:
+        payload["natural_language_problem"] = problem
+    informal_proof = result.task.metadata.get("natural_language_proof")
+    if isinstance(informal_proof, str) and informal_proof:
+        payload["natural_language_proof"] = informal_proof
     if result.attempts:
         last = result.attempts[-1].check_result
         payload["last_category"] = last.category.value

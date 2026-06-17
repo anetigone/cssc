@@ -11,11 +11,13 @@ from agent import (
     OpenAIChatActionGenerator,
     OpenAIChatConfig,
     StaticActionGenerator,
+    TaskInputKind,
     load_dotenv,
 )
+from agent.agents import OpenAIChatFormalizationAgent
 
 from .paths import resolve_agent_path
-from .tasks import _require_source
+from .tasks import classify_input, require_source
 
 
 logger = logging.getLogger(__name__)
@@ -42,11 +44,29 @@ def build_action_generator(args: Namespace):
     raise ValueError("Provide --candidate, --candidate-file, or --use-model.")
 
 
+def build_formalization_agent(args: Namespace) -> OpenAIChatFormalizationAgent | None:
+    if not _needs_formalizer(args):
+        return None
+    if not args.use_model:
+        raise ValueError("Natural-language tasks require --use-model so the formalizer can create Lean.")
+    env_path = Path(args.env_file)
+    if env_path.exists():
+        logger.debug("Loading environment file for formalizer: %s", env_path)
+        load_dotenv(env_path, override=False)
+    else:
+        logger.debug("Environment file does not exist for formalizer: %s", env_path)
+    return OpenAIChatFormalizationAgent(OpenAIChatConfig.from_env())
+
+
+def _needs_formalizer(args: Namespace) -> bool:
+    return classify_input(args) == TaskInputKind.NATURAL_LANGUAGE
+
+
 def build_retriever(args: Namespace) -> LexicalLeanRetriever | None:
     if not args.enable_retrieval and not args.retrieval_source:
         return None
     agent_root = Path(args.agent_root)
-    sources = args.retrieval_source or [_require_source(args)]
+    sources = args.retrieval_source or [require_source(args)]
     sources = [resolve_agent_path(agent_root, source) for source in sources]
     logger.debug("Building lexical retriever from %d source path(s)", len(sources))
     return LexicalLeanRetriever.from_paths(sources)

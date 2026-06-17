@@ -25,7 +25,7 @@ from agent.runtime.logging_config import configure_logging
 from agent.runtime.workspace import AttemptWorkspace
 
 from .config import apply_task_config
-from .generators import build_action_generator, build_retriever
+from .generators import build_action_generator, build_formalization_agent, build_retriever
 from .output import result_payload, task_summary
 from .parser import build_parser
 from .paths import find_lake_root, resolve_agent_path, resolve_agent_root
@@ -58,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("CLI started: source=%s task_config=%s use_model=%s", args.source, args.task_config, args.use_model)
 
     try:
-        tasks = build_tasks(args)
+        formalizer = build_formalization_agent(args)
+        tasks = build_tasks(args, formalizer=formalizer)
         logger.info("Built %d task(s) from task input", len(tasks))
         if args.list_tasks:
             payload = {"tasks": [task_summary(task, index) for index, task in enumerate(tasks)]}

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..proof_system.base import ProofTask
+from .types import ProofTask, TaskInputKind
 
 
 DEFAULT_HOLE_MARKER = "{{proof}}"
@@ -211,6 +211,7 @@ class LeanTaskBuilder:
                     source_template=template,
                     hole_marker=self.config.hole_marker,
                     imports=(),
+                    input_kind=_task_input_kind(metadata),
                     metadata=metadata,
                 )
             )
@@ -361,3 +362,15 @@ def _path_stem_id(path: Path) -> str:
 def _safe_task_id(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", ":"} else "_" for ch in value)
     return cleaned or "lean_task"
+
+
+def _task_input_kind(metadata: dict[str, Any]) -> TaskInputKind:
+    value = metadata.get("input_kind")
+    if isinstance(value, TaskInputKind):
+        return value
+    if isinstance(value, str):
+        try:
+            return TaskInputKind(value)
+        except ValueError:
+            return TaskInputKind.LEAN
+    return TaskInputKind.LEAN

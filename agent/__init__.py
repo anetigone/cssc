@@ -11,10 +11,18 @@ from .search.state_encoder import EncodedProofState, encode_proof_state
 from .runtime.env_loader import load_dotenv
 from .proof_system.lean import LeanAdapter
 from .retrieval import LexicalLeanRetriever, RetrievalResult
-from .model.openai_chat import (
+from .agents import (
+    AgentRole,
+    ChatTransport,
+    FormalizationAgent,
+    FormalizationRequest,
+    FormalizationResult,
     ModelAdapterError,
     OpenAIChatActionGenerator,
     OpenAIChatConfig,
+    OpenAIChatFormalizationAgent,
+    RoleModelConfig,
+    StaticFormalizationAgent,
     UrllibChatTransport,
 )
 from .proof_system.base import (
@@ -25,9 +33,9 @@ from .proof_system.base import (
     ParsedFeedback,
     ProgressSignal,
     ProofSystemAdapter,
-    ProofTask,
 )
 from .tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
+from .tasks.types import ProofTask, TaskInputKind, TaskInputSpec
 from .runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace, MaterializedCandidate
 from .runtime.trace_store import JsonlTraceStore, result_events
 
@@ -37,6 +45,7 @@ __all__ = [
     "ActionCandidate",
     "ActionGenerationRequest",
     "ActionGenerator",
+    "AgentRole",
     "AttemptRecord",
     "AttemptWorkspace",
     "BudgetConfig",
@@ -53,6 +62,9 @@ __all__ = [
     "EncodedProofState",
     "EphemeralCheckWorkspace",
     "FeedbackRepairGenerator",
+    "FormalizationAgent",
+    "FormalizationRequest",
+    "FormalizationResult",
     "LeanAdapter",
     "LeanTaskBuilder",
     "LexicalLeanRetriever",
@@ -62,6 +74,7 @@ __all__ = [
     "ModelAdapterError",
     "OpenAIChatActionGenerator",
     "OpenAIChatConfig",
+    "OpenAIChatFormalizationAgent",
     "ParsedFeedback",
     "ProofSnippet",
     "ProgressSignal",
@@ -69,10 +82,14 @@ __all__ = [
     "ProofSystemAdapter",
     "ProofTask",
     "RetrievalResult",
+    "RoleModelConfig",
     "result_events",
     "StaticActionGenerator",
+    "StaticFormalizationAgent",
     "TaskBuildError",
     "TaskBuilderConfig",
+    "TaskInputKind",
+    "TaskInputSpec",
     "UrllibChatTransport",
     "encode_proof_state",
 ]

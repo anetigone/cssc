@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ..tasks.types import ProofTask
+
 
 class DiagnosticCategory(str, Enum):
     """Normalized verifier outcomes used by the search controller."""
@@ -29,17 +31,6 @@ class DiagnosticCategory(str, Enum):
     TOOL_UNAVAILABLE = "tool_unavailable"
     CHECKER_ERROR = "checker_error"
     UNKNOWN = "unknown"
-
-
-@dataclass(frozen=True)
-class ProofTask:
-    """A proof-completion task with one active editable proof hole."""
-
-    task_id: str
-    source_template: str
-    hole_marker: str = "{{proof}}"
-    imports: tuple[str, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

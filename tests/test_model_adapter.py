@@ -6,13 +6,13 @@ from typing import Any, Mapping
 from unittest.mock import patch
 
 from agent.search.action import ActionGenerationRequest
-from agent.model.openai_chat import (
+from agent.agents import (
     ChatTransport,
     ModelAdapterError,
     OpenAIChatActionGenerator,
     OpenAIChatConfig,
-    _chat_completions_url,
 )
+from agent.agents.openai import chat_completions_url
 from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 
 
@@ -87,7 +87,7 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
 
     def test_chat_completions_url_accepts_full_endpoint(self) -> None:
         self.assertEqual(
-            _chat_completions_url("https://example.test/v1/chat/completions"),
+            chat_completions_url("https://example.test/v1/chat/completions"),
             "https://example.test/v1/chat/completions",
         )
 
