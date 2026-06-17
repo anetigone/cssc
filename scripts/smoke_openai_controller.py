@@ -28,9 +28,10 @@ from agent import (  # noqa: E402
     OpenAIChatConfig,
     ProofController,
     ProofTask,
+    ChatTransport,
+    ModelAdapterError,
+    load_dotenv,
 )
-from agent.runtime.env_loader import load_dotenv  # noqa: E402
-from agent.model.openai_chat import ChatTransport, ModelAdapterError  # noqa: E402
 from agent.runtime.workspace import AttemptWorkspace  # noqa: E402
 
 
