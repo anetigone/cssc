@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from ..input.validation import (
@@ -25,6 +27,7 @@ from .openai import (
 
 
 logger = logging.getLogger(__name__)
+PROMPT_VERSION = "formalization-v4-real-analysis-imports"
 
 
 @dataclass(frozen=True)
@@ -100,13 +103,25 @@ class OpenAIChatFormalizationAgent:
         transport: ChatTransport | None = None,
         checker: ScaffoldChecker | None = None,
         validation: ValidationConfig | None = None,
+        cache: "VerifiedFormalizationCache | None" = None,
     ) -> None:
         self.config = config
         self.transport = transport or UrllibChatTransport()
         self.checker = checker
         self.validation = validation or ValidationConfig()
+        self.cache = cache
 
     def formalize(self, request: FormalizationRequest) -> FormalizationResult:
+        if self.cache is not None and self.checker is not None:
+            cached = self.cache.get(request, model=self.config.model)
+            if cached is not None:
+                logger.info(
+                    "Using cached validated formalization: task_id=%s model=%s",
+                    request.task_id,
+                    self.config.model,
+                )
+                return cached
+
         messages = _build_messages(request)
         max_attempts = 1 + self.validation.max_retries
         last_validation_message = ""
@@ -142,6 +157,7 @@ class OpenAIChatFormalizationAgent:
                 context="Formalizer response",
             )
             proof_source, natural_language_proof = validate_scaffold_json(data)
+            proof_source = _normalize_scaffold_source(proof_source)
 
             if self.checker is None:
                 logger.info(
@@ -167,11 +183,14 @@ class OpenAIChatFormalizationAgent:
                     request.task_id,
                     self.config.model,
                 )
-                return FormalizationResult(
+                result = FormalizationResult(
                     proof_source=proof_source,
                     natural_language_proof=natural_language_proof,
                     metadata={"model": self.config.model},
                 )
+                if self.cache is not None:
+                    self.cache.put(request, result, model=self.config.model)
+                return result
 
             last_validation_message = validation_result.message
             logger.warning(
@@ -186,6 +205,86 @@ class OpenAIChatFormalizationAgent:
         )
 
 
+class VerifiedFormalizationCache:
+    """Disk cache for scaffolds that already passed Lean validation."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def get(self, request: FormalizationRequest, *, model: str) -> FormalizationResult | None:
+        path = self._path_for(request, model=model)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Ignoring unreadable formalization cache entry: %s", path, exc_info=True)
+            return None
+        if data.get("cache_key") != self._key_for(request, model=model):
+            return None
+        if not data.get("validated"):
+            return None
+        proof_source = data.get("proof_source")
+        if not isinstance(proof_source, str) or not proof_source.strip():
+            return None
+        natural_language_proof = data.get("natural_language_proof")
+        if natural_language_proof is not None and not isinstance(natural_language_proof, str):
+            natural_language_proof = None
+        metadata = data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata = {**metadata, "formalization_cache_hit": True}
+        return FormalizationResult(
+            proof_source=proof_source,
+            natural_language_proof=natural_language_proof,
+            metadata=metadata,
+        )
+
+    def put(self, request: FormalizationRequest, result: FormalizationResult, *, model: str) -> None:
+        key = self._key_for(request, model=model)
+        path = self._path_for(request, model=model)
+        payload = {
+            "cache_key": key,
+            "prompt_version": PROMPT_VERSION,
+            "validated": True,
+            "model": model,
+            "proof_source": result.proof_source,
+            "natural_language_proof": result.natural_language_proof,
+            "metadata": result.metadata,
+        }
+        tmp_path = path.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            tmp_path.replace(path)
+        except OSError:
+            logger.warning("Failed to write formalization cache entry: %s", path, exc_info=True)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _path_for(self, request: FormalizationRequest, *, model: str) -> Path:
+        return self.root / f"{self._key_for(request, model=model)}.json"
+
+    @staticmethod
+    def _key_for(request: FormalizationRequest, *, model: str) -> str:
+        payload = {
+            "prompt_version": PROMPT_VERSION,
+            "model": model,
+            "problem": request.problem,
+            "imports": request.imports,
+            "informal_proof": request.informal_proof,
+            "context": request.context,
+            "hole_marker": request.hole_marker,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _build_messages(request: FormalizationRequest) -> list[dict[str, str]]:
     return [
         {
@@ -194,7 +293,18 @@ def _build_messages(request: FormalizationRequest) -> list[dict[str, str]]:
                 "You convert natural-language mathematics tasks into Lean 4 proof-completion "
                 "scaffolds. Return only JSON with keys proof_source and optional "
                 "natural_language_proof. The Lean source must contain exactly one proof hole "
-                f"marker {request.hole_marker!r} or one standalone sorry."
+                f"marker {request.hole_marker!r} or one standalone sorry. Use the smallest "
+                "Lean imports that the statement needs. Do not use `import Mathlib` unless "
+                "no narrower Mathlib module is reasonable. If the task is in core Lean, use "
+                "no import. The scaffold must be self-contained: include every namespace "
+                "opening or use fully qualified names for symbols such as Filter.Tendsto, "
+                "Filter.atTop, Set.Nonempty, sSup, and neighborhood notation. For real-analysis "
+                "statements about `Set ℝ`, `sSup`, limits, filters, or neighborhood notation, "
+                "prefer precise imports such as `Mathlib.Topology.Algebra.Ring.Real` and "
+                "`Mathlib.Topology.Order.Real`. Do not import "
+                "`Mathlib.Topology.Instances.Real`; it is not available in the configured "
+                "mathlib version. Prefer `nhds (sSup E)` over Unicode neighborhood notation "
+                "when writing filter convergence targets."
             ),
         },
         {"role": "user", "content": _build_user_prompt(request)},
@@ -222,6 +332,41 @@ def _build_user_prompt(request: FormalizationRequest) -> str:
         ]
     )
     return "\n".join(parts)
+
+
+def _normalize_scaffold_source(source: str) -> str:
+    lines = source.splitlines()
+    normalized: list[str] = []
+    saw_ring_real = False
+    saw_order_real = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "import Mathlib.Topology.Instances.Real":
+            for replacement in (
+                "import Mathlib.Topology.Algebra.Ring.Real",
+                "import Mathlib.Topology.Order.Real",
+            ):
+                if replacement not in normalized:
+                    normalized.append(replacement)
+            saw_ring_real = True
+            saw_order_real = True
+            continue
+        if stripped == "import Mathlib.Topology.Algebra.Ring.Real":
+            saw_ring_real = True
+        elif stripped == "import Mathlib.Topology.Order.Real":
+            saw_order_real = True
+        normalized.append(line)
+
+    text = "\n".join(normalized)
+    if "Set ℝ" in text and "sSup" in text and ("Tendsto" in text or "Filter." in text):
+        import_lines: list[str] = []
+        if not saw_ring_real:
+            import_lines.append("import Mathlib.Topology.Algebra.Ring.Real")
+        if not saw_order_real:
+            import_lines.append("import Mathlib.Topology.Order.Real")
+        if import_lines:
+            text = "\n".join((*import_lines, text))
+    return text
 
 
 def _build_retry_prompt(validation_message: str) -> str:

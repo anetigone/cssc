@@ -188,6 +188,12 @@ class LeanAdapter(ProofSystemAdapter):
                 message="Lean accepted the file but the declaration uses 'sorry'.",
                 raw_output=raw,
             )
+        elif completed.returncode == 0 and not _contains_error_diagnostic(raw):
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.PROOF_ACCEPTED,
+                message="Proof accepted.",
+                raw_output=raw,
+            )
 
         accepted = (
             completed.returncode == 0
@@ -377,6 +383,12 @@ class LeanAdapter(ProofSystemAdapter):
                 message="Lean accepted the file but the declaration uses 'sorry'.",
                 raw_output=raw,
             )
+        elif server_result.exit_code == 0 and not _contains_error_diagnostic(raw):
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.PROOF_ACCEPTED,
+                message="Proof accepted.",
+                raw_output=raw,
+            )
 
         accepted = (
             server_result.exit_code == 0
@@ -427,6 +439,10 @@ def _contains_sorry_warning(raw_output: str) -> bool:
         or re.search(r"\bwarning\b.*\bsorry\b", normalized)
         or re.search(r"\bsorry\b.*\baxiom\b", normalized)
     )
+
+
+def _contains_error_diagnostic(raw_output: str) -> bool:
+    return bool(re.search(r"\berror:", raw_output.lower()))
 
 
 def _first_location(raw_output: str) -> tuple[int | None, int | None]:

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -58,7 +59,13 @@ class OpenAIChatConfig:
             raise ModelAdapterError("OPENAI_API_KEY is not set.")
         if not model:
             raise ModelAdapterError("OPENAI_MODEL is not set.")
-        return cls(api_key=api_key, model=model, base_url=base_url)
+        timeout_seconds = _float_from_env("OPENAI_TIMEOUT_SECONDS", cls.timeout_seconds)
+        return cls(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 class UrllibChatTransport:
@@ -84,6 +91,9 @@ class UrllibChatTransport:
         except urllib.error.URLError as exc:
             logger.warning("Model endpoint unavailable: url=%s reason=%s", url, exc.reason)
             raise ModelAdapterError(f"Model endpoint is unavailable: {exc.reason}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            logger.warning("Model endpoint timed out: url=%s timeout=%s", url, timeout_seconds)
+            raise ModelAdapterError(f"Model endpoint timed out after {timeout_seconds}s.") from exc
 
         try:
             decoded = json.loads(body)
@@ -94,6 +104,16 @@ class UrllibChatTransport:
             logger.warning("Model endpoint returned non-object JSON: url=%s", url)
             raise ModelAdapterError("Model endpoint returned a non-object JSON payload.")
         return decoded
+
+
+def _float_from_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ModelAdapterError(f"{name} must be a number.") from exc
 
 
 def chat_completions_url(base_url: str) -> str:

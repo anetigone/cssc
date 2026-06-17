@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from itertools import count
 from typing import Any, Protocol
 
 from ..proof_system.base import BudgetSlice, CheckResult, DiagnosticCategory
@@ -87,6 +88,7 @@ class LeanAdapterScaffoldChecker:
         self.adapter = adapter
         self.workspace = workspace
         self.validation = validation or ValidationConfig()
+        self._candidate_ids = count()
 
     def validate_scaffold(
         self,
@@ -117,7 +119,7 @@ class LeanAdapterScaffoldChecker:
         try:
             with workspace.materialize_candidate(
                 dummy_task,
-                candidate_id="scaffold_check",
+                candidate_id=f"scaffold_check_{next(self._candidate_ids)}",
                 source=filled,
             ) as candidate:
                 result = self.adapter.check(

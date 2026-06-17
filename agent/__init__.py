@@ -25,6 +25,7 @@ from .agents import (
     ScaffoldChecker,
     StaticFormalizationAgent,
     UrllibChatTransport,
+    VerifiedFormalizationCache,
 )
 from .input import (
     InputNormalizer,
@@ -109,5 +110,6 @@ __all__ = [
     "TaskInputKind",
     "TaskInputSpec",
     "UrllibChatTransport",
+    "VerifiedFormalizationCache",
     "encode_proof_state",
 ]

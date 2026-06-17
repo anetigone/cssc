@@ -77,8 +77,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Timeout in seconds for the formalizer's scaffold validation step. "
-            "Defaults to --lean-timeout. Scaffold checks run as fresh Lean processes, "
-            "so importing large libraries like Mathlib may need a larger value."
+            "Defaults to --lean-timeout. The validation checker uses the persistent "
+            "Lean server unless --no-lean-server is set."
+        ),
+    )
+    parser.add_argument(
+        "--formalization-cache-dir",
+        default=".runs/formalization_cache",
+        help=(
+            "Directory for Lean-validated natural-language formalization cache entries. "
+            "Set to an empty string to disable."
         ),
     )
     parser.add_argument("--max-elapsed-seconds", type=float, default=None)

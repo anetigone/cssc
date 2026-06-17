@@ -69,10 +69,9 @@ def _lean_services(
 ) -> Iterator[_LeanServices]:
     """Create Lean adapters for the run and ensure they are closed.
 
-    The main ``adapter`` is configured for proof search (potentially using a
-    persistent Lean server). The ``validation_adapter`` is a lightweight,
-    subprocess-only adapter used to validate formalized scaffolds; it tolerates
-    ``sorry`` placeholders and never starts the language server.
+    Both adapters can use the persistent Lean server. The validation adapter
+    tolerates ``sorry`` placeholders because scaffold validation checks the
+    generated declaration/import shape before proof search fills the hole.
     """
     kwargs = {
         "project_root": project_root,
@@ -87,7 +86,7 @@ def _lean_services(
         validation_adapter=LeanAdapter(
             **kwargs,
             disallow_sorry=False,
-            use_server=False,
+            use_server=not args.no_lean_server,
         ),
     )
     try:

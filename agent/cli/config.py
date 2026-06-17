@@ -46,6 +46,7 @@ CONFIG_FIELDS: frozenset[str] = frozenset(
         "retrieve_before_first_model_call",
         "input_kind",
         "problem_file",
+        "formalization_cache_dir",
     }
 )
 

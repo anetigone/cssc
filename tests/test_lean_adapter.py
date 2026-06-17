@@ -137,6 +137,29 @@ class LeanAdapterTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertEqual(result.category, DiagnosticCategory.UNSOLVED_GOALS)
 
+    def test_allows_sorry_warning_when_configured_for_scaffold_validation(self) -> None:
+        adapter = LeanAdapter(
+            prefer_lake=False,
+            disallow_sorry=False,
+            lean_executable="lean",
+            lake_executable=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Attempt.lean"
+            path.write_text("theorem sample : True := by\n  sorry\n", encoding="utf-8")
+            with patch("agent.proof_system.lean.subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    args=("lean", str(path)),
+                    returncode=0,
+                    stdout="Attempt.lean:1:9: warning: declaration uses `sorry`\n",
+                    stderr="",
+                )
+
+                result = adapter.check(path, BudgetSlice(timeout_seconds=1))
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.category, DiagnosticCategory.PROOF_ACCEPTED)
+
 
 if __name__ == "__main__":
     unittest.main()

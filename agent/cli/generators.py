@@ -14,7 +14,7 @@ from agent import (
     TaskInputKind,
     load_dotenv,
 )
-from agent.agents import OpenAIChatFormalizationAgent, ScaffoldChecker
+from agent.agents import OpenAIChatFormalizationAgent, ScaffoldChecker, VerifiedFormalizationCache
 
 from .paths import resolve_agent_path
 from .tasks import classify_input, require_source
@@ -28,8 +28,6 @@ def build_action_generator(args: Namespace):
     for path in args.candidate_file:
         candidates.append(Path(path).read_text(encoding="utf-8"))
 
-    if candidates and args.use_model:
-        raise ValueError("Use either static candidates or --use-model, not both.")
     if candidates:
         logger.debug("Using %d static candidate(s)", len(candidates))
         return StaticActionGenerator(candidates)
@@ -59,9 +57,15 @@ def build_formalization_agent(
         load_dotenv(env_path, override=False)
     else:
         logger.debug("Environment file does not exist for formalizer: %s", env_path)
+    cache = None
+    if args.formalization_cache_dir:
+        cache = VerifiedFormalizationCache(
+            resolve_agent_path(Path(args.agent_root), args.formalization_cache_dir)
+        )
     return OpenAIChatFormalizationAgent(
         OpenAIChatConfig.from_env(),
         checker=checker,
+        cache=cache,
     )
 
 

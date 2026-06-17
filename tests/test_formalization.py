@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 from typing import Any, Mapping
 
-from agent.agents import ChatTransport, FormalizationRequest, OpenAIChatConfig, OpenAIChatFormalizationAgent
+from agent.agents import (
+    ChatTransport,
+    FormalizationRequest,
+    FormalizationResult,
+    OpenAIChatConfig,
+    OpenAIChatFormalizationAgent,
+    VerifiedFormalizationCache,
+)
 from agent.input.validation import ScaffoldValidationResult, ValidationConfig
 
 
@@ -96,6 +105,28 @@ class FormalizationAgentTests(unittest.TestCase):
         self.assertIn("Prove True.", payload["messages"][1]["content"])
         self.assertEqual(timeout, 7.0)
 
+    def test_openai_formalizer_prompt_discourages_full_mathlib_import(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {"message": {"content": '{"proof_source":"theorem sample : True := by\\n  sorry"}'}}
+                ]
+            }
+        )
+        formalizer = OpenAIChatFormalizationAgent(
+            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+            transport=transport,
+        )
+
+        formalizer.formalize(FormalizationRequest(problem="Prove True."))
+
+        system_prompt = transport.calls[0][2]["messages"][0]["content"]
+        self.assertIn("smallest Lean imports", system_prompt)
+        self.assertIn("Do not use `import Mathlib`", system_prompt)
+        self.assertIn("Mathlib.Topology.Algebra.Ring.Real", system_prompt)
+        self.assertIn("Mathlib.Topology.Order.Real", system_prompt)
+        self.assertIn("Do not import `Mathlib.Topology.Instances.Real`", system_prompt)
+
     def test_openai_formalizer_validates_json_shape(self) -> None:
         from agent.input.validation import ScaffoldValidationError
 
@@ -152,6 +183,35 @@ class FormalizationAgentTests(unittest.TestCase):
         retry_prompt = transport.calls[1][2]["messages"][2]["content"]
         self.assertIn("syntax error", retry_prompt)
 
+    def test_openai_formalizer_normalizes_known_bad_real_topology_import(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"proof_source":"import Mathlib.Data.Real.Basic\\n'
+                                'import Mathlib.Topology.Instances.Real\\n\\n'
+                                'theorem sample {E : Set ℝ} : sSup E = sSup E := by\\n  sorry"}'
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+        checker = FakeChecker([True])
+        formalizer = OpenAIChatFormalizationAgent(
+            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+            transport=transport,
+            checker=checker,
+        )
+
+        result = formalizer.formalize(FormalizationRequest(problem="Prove a real supremum fact."))
+
+        self.assertIn("import Mathlib.Topology.Algebra.Ring.Real", result.proof_source)
+        self.assertIn("import Mathlib.Topology.Order.Real", result.proof_source)
+        self.assertNotIn("import Mathlib.Topology.Instances.Real", result.proof_source)
+
     def test_openai_formalizer_raises_after_max_retries(self) -> None:
         from agent.agents import ModelAdapterError
 
@@ -201,6 +261,78 @@ class FormalizationAgentTests(unittest.TestCase):
 
         self.assertEqual(result.proof_source, "theorem sample : True := by\n  sorry")
         self.assertEqual(len(transport.calls), 1)
+
+    def test_openai_formalizer_reads_validated_cache_before_model_call(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {"message": {"content": '{"proof_source":"theorem sample : True := by\\n  sorry"}'}}
+                ]
+            }
+        )
+        checker = FakeChecker([True])
+        request = FormalizationRequest(problem="Prove True.", task_id="sample")
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = VerifiedFormalizationCache(Path(tmp))
+            cache.put(
+                request,
+                FormalizationResult(
+                    "theorem cached : True := by\n  sorry",
+                    "Cached proof.",
+                    metadata={"model": "m"},
+                ),
+                model="m",
+            )
+            formalizer = OpenAIChatFormalizationAgent(
+                OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+                transport=transport,
+                checker=checker,
+                cache=cache,
+            )
+
+            result = formalizer.formalize(request)
+
+        self.assertEqual(result.proof_source, "theorem cached : True := by\n  sorry")
+        self.assertEqual(result.natural_language_proof, "Cached proof.")
+        self.assertTrue(result.metadata["formalization_cache_hit"])
+        self.assertEqual(len(transport.calls), 0)
+        self.assertEqual(len(checker.calls), 0)
+
+    def test_openai_formalizer_writes_cache_only_after_validation_success(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {"message": {"content": '{"proof_source":"theorem bad : True := by\\n  sorry"}'}}
+                    ]
+                },
+                {
+                    "choices": [
+                        {"message": {"content": '{"proof_source":"theorem good : True := by\\n  trivial"}'}}
+                    ]
+                },
+            ]
+        )
+        checker = FakeChecker([False, True])
+        request = FormalizationRequest(problem="Prove True.", task_id="sample")
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = VerifiedFormalizationCache(Path(tmp))
+            formalizer = OpenAIChatFormalizationAgent(
+                OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+                transport=transport,
+                checker=checker,
+                validation=ValidationConfig(max_retries=1),
+                cache=cache,
+            )
+
+            result = formalizer.formalize(request)
+            cached_files = list(Path(tmp).glob("*.json"))
+            cached_text = cached_files[0].read_text(encoding="utf-8")
+
+        self.assertEqual(result.proof_source, "theorem good : True := by\n  trivial")
+        self.assertEqual(len(cached_files), 1)
+        self.assertNotIn("theorem bad", cached_text)
+        self.assertIn("theorem good", cached_text)
 
 
 if __name__ == "__main__":

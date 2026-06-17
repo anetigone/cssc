@@ -8,6 +8,7 @@ from .formalization import (
     OpenAIChatFormalizationAgent,
     ScaffoldChecker,
     StaticFormalizationAgent,
+    VerifiedFormalizationCache,
 )
 from .openai import ChatTransport, ModelAdapterError, OpenAIChatConfig, UrllibChatTransport
 from .proof import OpenAIChatActionGenerator
@@ -26,4 +27,5 @@ __all__ = [
     "ScaffoldChecker",
     "StaticFormalizationAgent",
     "UrllibChatTransport",
+    "VerifiedFormalizationCache",
 ]

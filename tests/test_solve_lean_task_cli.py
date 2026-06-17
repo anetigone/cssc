@@ -54,6 +54,13 @@ class SolveLeanTaskCliTests(unittest.TestCase):
 
         self.assertIsInstance(generator, StaticActionGenerator)
 
+    def test_static_candidate_generator_wins_even_when_model_enabled_for_formalizer(self) -> None:
+        args = _args(candidate=["trivial"], use_model=True)
+
+        generator = build_action_generator(args)
+
+        self.assertIsInstance(generator, StaticActionGenerator)
+
     def test_model_generator_loads_env_only_when_file_exists(self) -> None:
         args = _args(use_model=True, env_file="missing.env")
         with patch("agent.cli.generators.load_dotenv") as load_mock:
