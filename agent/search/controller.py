@@ -9,7 +9,6 @@ from typing import Any, Protocol
 
 from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
-from .repair import FeedbackRepairGenerator
 from .state_encoder import encode_proof_state
 from ..proof_system.base import (
     CandidateEdit,
@@ -122,7 +121,7 @@ class ProofController:
         self.action_generator = action_generator
         self.workspace = workspace
         self.check_workspace = check_workspace
-        self.repair_generator = repair_generator or FeedbackRepairGenerator()
+        self.repair_generator = repair_generator or action_generator
         self.retriever = retriever
         self.budget = BudgetManager(budget_config)
         self.config = config or ControllerConfig()
@@ -150,6 +149,16 @@ class ProofController:
             if is_repair_iteration:
                 generator = self.repair_generator
                 max_candidates = self.config.max_candidates_per_model_call
+                if generator is self.action_generator:
+                    if not self.budget.can_call_model():
+                        state.stop_reason = "budget:model_calls"
+                        logger.info(
+                            "Controller stopped before repair model call: task_id=%s reason=%s",
+                            task.task_id,
+                            state.stop_reason,
+                        )
+                        break
+                    self.budget.reserve_model_call()
             else:
                 if not self.budget.can_call_model():
                     state.stop_reason = "budget:model_calls"
@@ -242,6 +251,15 @@ class ProofController:
             state.attempt_index,
             len(state.feedback_history),
         )
+        previous_attempt = None
+        if state.attempts:
+            last = state.attempts[-1]
+            previous_attempt = {
+                "attempt_index": last.attempt_index,
+                "proof_text": last.edit.text,
+                "category": last.check_result.category.value,
+                "raw_output": last.check_result.raw_output,
+            }
         return ActionGenerationRequest(
             task=task,
             attempt_index=state.attempt_index,
@@ -252,6 +270,7 @@ class ProofController:
                 "encoded_state": encoded_state,
                 "retrieved_results": state.current_retrieved,
                 "retrieved_history": tuple(state.retrieved_history),
+                "previous_attempt": previous_attempt,
                 "budget": budget_snapshot,
             },
         )

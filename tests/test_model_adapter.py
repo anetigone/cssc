@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from agent.search.action import ActionGenerationRequest
 from agent.agents import (
     ChatTransport,
+    FunctionTool,
     ModelAdapterError,
     OpenAIChatActionGenerator,
     OpenAIChatConfig,
@@ -31,6 +32,22 @@ class RecordingTransport(ChatTransport):
     ) -> Mapping[str, Any]:
         self.calls.append((url, headers, payload, timeout_seconds))
         return self.response
+
+
+class SequenceTransport(ChatTransport):
+    def __init__(self, responses: list[Mapping[str, Any]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[Mapping[str, Any]] = []
+
+    def post_json(
+        self,
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
+        self.calls.append(payload)
+        return self.responses.pop(0)
 
 
 class OpenAIChatActionGeneratorTests(unittest.TestCase):
@@ -80,6 +97,78 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
         self.assertEqual(payload["model"], "model")
         self.assertIn("unsolved goals", payload["messages"][1]["content"])
         self.assertEqual(timeout, 12.0)
+
+    def test_repair_prompt_contains_previous_proof_and_full_checker_output(self) -> None:
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
+        )
+        generator = OpenAIChatActionGenerator(
+            OpenAIChatConfig(api_key="key", model="model"), transport=transport
+        )
+        task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}")
+
+        generator.generate(
+            ActionGenerationRequest(
+                task=task,
+                attempt_index=1,
+                metadata={
+                    "previous_attempt": {
+                        "proof_text": "exact badLemma",
+                        "raw_output": "line 1 error\nline 2 error",
+                    }
+                },
+            )
+        )
+
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        self.assertIn("exact badLemma", prompt)
+        self.assertIn("line 1 error\nline 2 error", prompt)
+
+    def test_proof_generator_executes_environment_tool_calls(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {"name": "lookup", "arguments": "{}"},
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {"choices": [{"message": {"content": "trivial"}, "finish_reason": "stop"}]},
+            ]
+        )
+        tool = FunctionTool(
+            name="lookup",
+            description="Look up Lean names.",
+            parameters={"type": "object", "properties": {}},
+            _execute=lambda _: '{"found": true}',
+        )
+        generator = OpenAIChatActionGenerator(
+            OpenAIChatConfig(api_key="key", model="model"),
+            transport=transport,
+            tools=[tool],
+        )
+
+        actions = generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=0,
+            )
+        )
+
+        self.assertEqual(actions[0].proof_text, "trivial")
+        tool_messages = [m for m in transport.calls[1]["messages"] if m.get("role") == "tool"]
+        self.assertEqual(tool_messages[0]["tool_call_id"], "call_1")
 
     def test_from_env_requires_key_and_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

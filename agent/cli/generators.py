@@ -28,7 +28,7 @@ from .tasks import classify_input, require_source
 logger = logging.getLogger(__name__)
 
 
-def build_action_generator(args: Namespace):
+def build_action_generator(args: Namespace, *, project_root: Path | None = None):
     candidates = list(args.candidate)
     for path in args.candidate_file:
         candidates.append(Path(path).read_text(encoding="utf-8"))
@@ -43,7 +43,14 @@ def build_action_generator(args: Namespace):
         return StaticActionGenerator(candidates)
     if args.use_model:
         _ensure_env_loaded(args)
-        return OpenAIChatActionGenerator(_model_config(args))
+        tools = None
+        if project_root is not None:
+            tools = LeanEnvironmentToolProvider(
+                project_root=project_root,
+                lake_executable=getattr(args, "lake_executable", None),
+                lean_executable=getattr(args, "lean_executable", None),
+            ).tools()
+        return OpenAIChatActionGenerator(_model_config(args), tools=tools)
     raise ValueError("Provide --candidate, --candidate-file, or --use-model.")
 
 

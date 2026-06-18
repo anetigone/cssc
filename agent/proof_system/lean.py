@@ -45,6 +45,7 @@ class LeanAdapter(ProofSystemAdapter):
         lake_executable: str | None = None,
         use_server: bool = False,
         server_startup_timeout_seconds: float = 60.0,
+        server_timeout_retries: int = 1,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.prefer_lake = prefer_lake
@@ -53,6 +54,7 @@ class LeanAdapter(ProofSystemAdapter):
         self.lake_executable = _resolve_executable(lake_executable, "lake")
         self.use_server = use_server
         self.server_startup_timeout_seconds = server_startup_timeout_seconds
+        self.server_timeout_retries = server_timeout_retries
         self._server: LeanServerClient | None = None
         logger.debug(
             "Initialized LeanAdapter: project_root=%s prefer_lake=%s disallow_sorry=%s lean=%s lake=%s use_server=%s",
@@ -114,9 +116,23 @@ class LeanAdapter(ProofSystemAdapter):
                 progress=self.extract_progress(None, _minimal_result(feedback)),
             )
 
-        server_result = self._check_with_server(candidate_file, budget_slice)
-        if server_result is not None:
-            return server_result
+        for server_attempt in range(self.server_timeout_retries + 1):
+            server_result = self._check_with_server(candidate_file, budget_slice)
+            if server_result is None:
+                break
+            if (
+                server_result.category != DiagnosticCategory.TIMEOUT
+                or server_attempt >= self.server_timeout_retries
+            ):
+                return server_result
+            logger.warning(
+                "Lean server check timed out; restarting and retrying unchanged candidate "
+                "(%d/%d): candidate_file=%s",
+                server_attempt + 1,
+                self.server_timeout_retries,
+                candidate_file,
+            )
+            self.close()
 
         started = time.perf_counter()
         logger.debug(

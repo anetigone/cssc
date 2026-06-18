@@ -135,10 +135,13 @@ class ProofControllerTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         self.assertEqual(result.stop_reason, "accepted")
         self.assertIsNotNone(result.accepted_attempt)
-        self.assertEqual(len(result.attempts), 3)
-        self.assertEqual(result.budget.checks_used, 3)
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(result.budget.checks_used, 2)
         self.assertEqual(result.budget.model_calls_used, 2)
-        self.assertEqual(len(generator.requests[1].previous_feedback), 2)
+        self.assertEqual(len(generator.requests[1].previous_feedback), 1)
+        previous_attempt = generator.requests[1].metadata["previous_attempt"]
+        self.assertEqual(previous_attempt["proof_text"], "exact False.elim")
+        self.assertEqual(previous_attempt["raw_output"], "unsolved goals")
 
     def test_repairs_failed_candidate_before_next_model_call(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")

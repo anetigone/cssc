@@ -117,13 +117,13 @@ def _lean_services(
             **kwargs,
             disallow_sorry=not args.allow_sorry,
             use_server=not args.no_lean_server,
-            server_startup_timeout_seconds=args.lean_server_startup_timeout,
+            server_startup_timeout_seconds=getattr(args, "lean_server_startup_timeout", 60.0),
         ),
         validation_adapter=LeanAdapter(
             **kwargs,
             disallow_sorry=False,
             use_server=not args.no_lean_server,
-            server_startup_timeout_seconds=args.lean_server_startup_timeout,
+            server_startup_timeout_seconds=getattr(args, "lean_server_startup_timeout", 60.0),
         ),
     )
     try:
@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
 
             task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
             logger.info("Selected task: task_id=%s", task.task_id)
-            generator = build_action_generator(args)
+            generator = build_action_generator(args, project_root=project_root)
 
             logger.debug("Using attempt workspace: %s", work_dir)
             controller = ProofController(

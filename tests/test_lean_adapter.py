@@ -11,7 +11,9 @@ from agent.proof_system.lean import LeanAdapter
 from agent.proof_system.base import (
     BudgetSlice,
     CandidateEdit,
+    CheckResult,
     DiagnosticCategory,
+    ParsedFeedback,
     ProofTask,
 )
 from agent.runtime.workspace import AttemptWorkspace
@@ -32,6 +34,50 @@ def has_usable_lean() -> bool:
 
 
 class LeanAdapterTests(unittest.TestCase):
+    def test_restarts_server_and_retries_unchanged_candidate_after_timeout(self) -> None:
+        adapter = LeanAdapter(
+            use_server=True,
+            lean_executable="lean",
+            server_timeout_retries=1,
+        )
+        timeout_feedback = ParsedFeedback(
+            category=DiagnosticCategory.TIMEOUT,
+            message="timed out",
+            raw_output="timed out",
+        )
+        accepted_feedback = ParsedFeedback(
+            category=DiagnosticCategory.PROOF_ACCEPTED,
+            message="accepted",
+        )
+        timeout_result = CheckResult(
+            accepted=False,
+            category=DiagnosticCategory.TIMEOUT,
+            raw_output="timed out",
+            parsed_feedback=timeout_feedback,
+        )
+        accepted_result = CheckResult(
+            accepted=True,
+            category=DiagnosticCategory.PROOF_ACCEPTED,
+            raw_output="",
+            parsed_feedback=accepted_feedback,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Attempt.lean"
+            path.write_text("theorem sample : True := by trivial\n", encoding="utf-8")
+            with patch.object(adapter, "_build_command", return_value=["lean", str(path)]):
+                with patch.object(
+                    adapter,
+                    "_check_with_server",
+                    side_effect=[timeout_result, accepted_result],
+                ) as check_server:
+                    with patch.object(adapter, "close") as close:
+                        result = adapter.check(path, BudgetSlice(timeout_seconds=1))
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(check_server.call_count, 2)
+        close.assert_called_once()
+
     def test_render_candidate_replaces_single_hole(self) -> None:
         adapter = LeanAdapter()
         task = ProofTask(
