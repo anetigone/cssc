@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import http.client
 import unittest
 from typing import Any, Mapping
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent.search.action import ActionGenerationRequest
 from agent.agents import (
@@ -12,7 +13,7 @@ from agent.agents import (
     OpenAIChatActionGenerator,
     OpenAIChatConfig,
 )
-from agent.agents.openai import chat_completions_url
+from agent.agents.openai import UrllibChatTransport, chat_completions_url
 from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 
 
@@ -90,6 +91,40 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
             chat_completions_url("https://example.test/v1/chat/completions"),
             "https://example.test/v1/chat/completions",
         )
+
+    def test_transport_retries_remote_disconnect(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"choices": []}'
+        transport = UrllibChatTransport(max_retries=2, retry_backoff_seconds=0)
+
+        with patch(
+            "agent.agents.openai.urllib.request.urlopen",
+            side_effect=[http.client.RemoteDisconnected("closed"), response],
+        ) as urlopen:
+            result = transport.post_json(
+                "https://example.test/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                payload={"model": "m"},
+                timeout_seconds=10,
+            )
+
+        self.assertEqual(result, {"choices": []})
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_transport_wraps_remote_disconnect_after_retries(self) -> None:
+        transport = UrllibChatTransport(max_retries=1, retry_backoff_seconds=0)
+
+        with patch(
+            "agent.agents.openai.urllib.request.urlopen",
+            side_effect=http.client.RemoteDisconnected("closed"),
+        ):
+            with self.assertRaisesRegex(ModelAdapterError, "after 2 attempt"):
+                transport.post_json(
+                    "https://example.test/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    payload={"model": "m"},
+                    timeout_seconds=10,
+                )
 
 
 if __name__ == "__main__":

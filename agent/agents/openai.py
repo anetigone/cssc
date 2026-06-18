@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import http.client
 import logging
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -76,6 +78,10 @@ class OpenAIChatConfig:
 class UrllibChatTransport:
     """Small standard-library JSON transport."""
 
+    def __init__(self, *, max_retries: int = 2, retry_backoff_seconds: float = 1.0) -> None:
+        self.max_retries = max_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
+
     def post_json(
         self,
         url: str,
@@ -85,20 +91,51 @@ class UrllibChatTransport:
     ) -> Mapping[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
-        try:
-            logger.debug("POST model request: url=%s timeout=%s", url, timeout_seconds)
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                body = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            logger.warning("Model endpoint returned HTTP error: url=%s status=%s", url, exc.code)
-            raise ModelAdapterError(f"Model endpoint returned HTTP {exc.code}: {body}") from exc
-        except urllib.error.URLError as exc:
-            logger.warning("Model endpoint unavailable: url=%s reason=%s", url, exc.reason)
-            raise ModelAdapterError(f"Model endpoint is unavailable: {exc.reason}") from exc
-        except (TimeoutError, socket.timeout) as exc:
-            logger.warning("Model endpoint timed out: url=%s timeout=%s", url, timeout_seconds)
-            raise ModelAdapterError(f"Model endpoint timed out after {timeout_seconds}s.") from exc
+        transient_errors = (
+            urllib.error.URLError,
+            http.client.RemoteDisconnected,
+            ConnectionResetError,
+            BrokenPipeError,
+            TimeoutError,
+            socket.timeout,
+        )
+        for attempt in range(self.max_retries + 1):
+            try:
+                logger.debug(
+                    "POST model request: url=%s timeout=%s attempt=%d/%d",
+                    url,
+                    timeout_seconds,
+                    attempt + 1,
+                    self.max_retries + 1,
+                )
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    body = response.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                logger.warning("Model endpoint returned HTTP error: url=%s status=%s", url, exc.code)
+                raise ModelAdapterError(f"Model endpoint returned HTTP {exc.code}: {body}") from exc
+            except transient_errors as exc:
+                if attempt >= self.max_retries:
+                    logger.warning(
+                        "Model endpoint connection failed after %d attempt(s): url=%s error=%s",
+                        attempt + 1,
+                        url,
+                        exc,
+                    )
+                    raise ModelAdapterError(
+                        f"Model endpoint connection failed after {attempt + 1} attempt(s): {exc}"
+                    ) from exc
+                delay = self.retry_backoff_seconds * (2**attempt)
+                logger.warning(
+                    "Transient model endpoint error; retrying: url=%s attempt=%d/%d delay=%.1fs error=%s",
+                    url,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
 
         try:
             decoded = json.loads(body)
