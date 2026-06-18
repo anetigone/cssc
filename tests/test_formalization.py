@@ -10,11 +10,14 @@ from agent.agents import (
     ChatTransport,
     FormalizationRequest,
     FormalizationResult,
+    FunctionTool,
     OpenAIChatConfig,
     OpenAIChatFormalizationAgent,
+    ToolCall,
     VerifiedFormalizationCache,
 )
 from agent.input.validation import ScaffoldValidationResult, ValidationConfig
+from agent.proof_system.base import DiagnosticCategory
 
 
 class RecordingTransport(ChatTransport):
@@ -127,7 +130,8 @@ class FormalizationAgentTests(unittest.TestCase):
 
         system_prompt = transport.calls[0][2]["messages"][0]["content"]
         self.assertIn("smallest Lean imports", system_prompt)
-        self.assertIn("Do not use `import Mathlib`", system_prompt)
+        self.assertIn("Never use the bare `import Mathlib`", system_prompt)
+        self.assertIn("environment tools", system_prompt)
         self.assertIn("preferred imports", system_prompt)
 
     def test_openai_formalizer_validates_json_shape(self) -> None:
@@ -183,8 +187,75 @@ class FormalizationAgentTests(unittest.TestCase):
 
         self.assertEqual(result.proof_source, "theorem sample : True := by\n  trivial")
         self.assertEqual(len(transport.calls), 2)
-        retry_prompt = transport.calls[1][2]["messages"][2]["content"]
+        retry_prompt = transport.calls[1][2]["messages"][3]["content"]
         self.assertIn("syntax error", retry_prompt)
+
+    def test_checker_timeout_retries_same_scaffold_before_model_repair(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"proof_source":"theorem sample : True := by\\n  sorry"}'
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"proof_source":"theorem sample : True := by\\n  trivial"}'
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+
+        class TimeoutThenDiagnosticChecker:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def validate_scaffold(
+                self,
+                source: str,
+                *,
+                imports: tuple[str, ...] = (),
+                **kwargs: object,
+            ) -> ScaffoldValidationResult:
+                self.calls.append(source)
+                if len(self.calls) == 1:
+                    return ScaffoldValidationResult(
+                        ok=False,
+                        message="Lean checker timed out after 240.0s.",
+                        category=DiagnosticCategory.TIMEOUT,
+                    )
+                if len(self.calls) == 2:
+                    return ScaffoldValidationResult(
+                        ok=False,
+                        message="failed to synthesize Inhabited instance",
+                        category=DiagnosticCategory.TYPE_MISMATCH,
+                    )
+                return ScaffoldValidationResult(ok=True, message="ok")
+
+        checker = TimeoutThenDiagnosticChecker()
+        formalizer = OpenAIChatFormalizationAgent(
+            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+            transport=transport,
+            checker=checker,
+            validation=ValidationConfig(max_retries=1, check_timeout_retries=1),
+        )
+
+        result = formalizer.formalize(FormalizationRequest(problem="Prove True."))
+
+        self.assertEqual(result.proof_source, "theorem sample : True := by\n  trivial")
+        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(checker.calls[:2], [checker.calls[0], checker.calls[0]])
+        retry_prompt = transport.calls[1][2]["messages"][3]["content"]
+        self.assertIn("failed to synthesize Inhabited instance", retry_prompt)
+        self.assertNotIn("timed out", retry_prompt)
 
     def test_openai_formalizer_does_not_rewrite_scaffold_before_validation(self) -> None:
         source = (
@@ -330,6 +401,129 @@ class FormalizationAgentTests(unittest.TestCase):
         self.assertEqual(len(cached_files), 1)
         self.assertNotIn("theorem bad", cached_text)
         self.assertIn("theorem good", cached_text)
+
+    def test_openai_formalizer_executes_tool_calls_before_final_scaffold(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "list_available_modules",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"proof_source":"theorem sample : True := by\\n  trivial"}'
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+
+        tool_calls: list[ToolCall] = []
+
+        def list_modules(args: dict[str, object]) -> str:
+            tool_calls.append(ToolCall(id="recorded", name="list_available_modules", arguments=args))
+            return '{"modules": ["Init", "Std", "Lean"]}'
+
+        tools = [
+            FunctionTool(
+                name="list_available_modules",
+                description="List modules.",
+                parameters={"type": "object", "properties": {}},
+                _execute=list_modules,
+            )
+        ]
+        formalizer = OpenAIChatFormalizationAgent(
+            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+            transport=transport,
+            checker=None,
+            tools=tools,
+        )
+
+        result = formalizer.formalize(FormalizationRequest(problem="Prove True."))
+
+        self.assertEqual(result.proof_source, "theorem sample : True := by\n  trivial")
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(len(transport.calls), 2)
+        second_request_messages = transport.calls[1][2]["messages"]
+        tool_messages = [m for m in second_request_messages if m.get("role") == "tool"]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(tool_messages[0]["tool_call_id"], "call_1")
+
+    def test_openai_formalizer_retry_mentions_missing_imports(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"proof_source":"import Missing.Pkg\\ntheorem sample : True := by\\n  sorry"}'
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"proof_source":"theorem sample : True := by\\n  trivial"}'
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+
+        class MissingImportChecker:
+            def __init__(self) -> None:
+                self._call = 0
+
+            def validate_scaffold(
+                self,
+                source: str,
+                *,
+                imports: tuple[str, ...] = (),
+                **kwargs: object,
+            ) -> ScaffoldValidationResult:
+                self._call += 1
+                if self._call == 1:
+                    return ScaffoldValidationResult(
+                        ok=False,
+                        message="error: unknown package 'Missing.Pkg'",
+                    )
+                return ScaffoldValidationResult(ok=True, message="ok")
+
+        formalizer = OpenAIChatFormalizationAgent(
+            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+            transport=transport,
+            checker=MissingImportChecker(),
+            validation=ValidationConfig(max_retries=1),
+        )
+
+        result = formalizer.formalize(FormalizationRequest(problem="Prove True."))
+
+        self.assertEqual(result.proof_source, "theorem sample : True := by\n  trivial")
+        retry_prompt = transport.calls[1][2]["messages"][3]["content"]
+        self.assertIn("Missing.Pkg", retry_prompt)
+        self.assertIn("not available in the local Lean environment", retry_prompt)
 
 
 if __name__ == "__main__":

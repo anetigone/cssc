@@ -394,6 +394,8 @@ def _args(**overrides) -> Namespace:
         "check_work_dir": None,
         "keep_check_files": False,
         "model_timeout": 60.0,
+        "model_max_tokens": 16384,
+        "lean_server_startup_timeout": 60.0,
         "formalization_cache_dir": None,
         "formalization_cache": False,
         "no_formalization_cache": False,

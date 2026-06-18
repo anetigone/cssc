@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -27,9 +28,12 @@ logger = logging.getLogger(__name__)
 class ValidationConfig:
     """Configuration for formalization scaffold validation."""
 
-    max_retries: int = 1
+    max_retries: int = 10
     check_timeout_seconds: float = 10.0
     inactive_fill: str = "sorry"
+    max_tool_rounds: int = 10
+    check_timeout_retries: int = 1
+    disallow_full_mathlib_import: bool = True
 
 
 class ScaffoldValidationError(ValueError):
@@ -99,6 +103,16 @@ class LeanAdapterScaffoldChecker:
         inactive_fill: str = "sorry",
     ) -> ScaffoldValidationResult:
         """Return whether ``source`` compiles after filling the active hole."""
+        if self.validation.disallow_full_mathlib_import and _imports_full_mathlib(source):
+            return ScaffoldValidationResult(
+                ok=False,
+                message=(
+                    "Bare `import Mathlib` is not allowed because it makes cold-start "
+                    "validation too expensive. Use the Lean environment tools to select "
+                    "and verify the narrow Mathlib modules required by the statement."
+                ),
+                category=DiagnosticCategory.INVALID_REFERENCE,
+            )
         filled = _fill_hole(source, hole_marker=hole_marker, inactive_fill=inactive_fill)
         if imports:
             filled = "\n".join(f"import {module}" for module in imports) + "\n\n" + filled
@@ -156,3 +170,7 @@ def _fill_hole(source: str, *, hole_marker: str, inactive_fill: str) -> str:
     # Note: the checker runs with disallow_sorry disabled, so a ``sorry`` hole
     # compiles and the validation signal here is syntax/type/import errors only.
     return source
+
+
+def _imports_full_mathlib(source: str) -> bool:
+    return bool(re.search(r"(?m)^\s*import\s+Mathlib\s*(?:--.*)?$", source))

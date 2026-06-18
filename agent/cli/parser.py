@@ -57,7 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-model", action="store_true", help="Use OpenAI-compatible chat config.")
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
     parser.add_argument("--max-candidates", type=int, default=1)
-    parser.add_argument("--max-model-calls", type=int, default=1)
+    parser.add_argument("--max-model-calls", type=int, default=3)
+    parser.add_argument(
+        "--model-max-tokens",
+        type=int,
+        default=16384,
+        help="Maximum completion tokens per model call, including hidden reasoning tokens.",
+    )
     parser.add_argument("--max-repair-rounds", type=int, default=2)
 
     # --- Retrieval ---------------------------------------------------------
@@ -93,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=60.0,
         help="Timeout in seconds for each OpenAI-compatible model call.",
     )
-    parser.add_argument("--max-checks", type=int, default=1)
+    parser.add_argument("--max-checks", type=int, default=3)
     parser.add_argument("--max-elapsed-seconds", type=float, default=None)
 
     # --- Formalization cache ----------------------------------------------
@@ -123,6 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-lean-server",
         action="store_true",
         help="Disable the persistent Lean language server and run a fresh lean process per check.",
+    )
+    parser.add_argument(
+        "--lean-server-startup-timeout",
+        type=float,
+        default=60.0,
+        help="Timeout in seconds for the persistent Lean server initialize handshake.",
     )
     parser.add_argument("--allow-sorry", action="store_true", help="Do not reject remaining sorry warnings.")
     parser.add_argument(

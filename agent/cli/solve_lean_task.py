@@ -117,11 +117,13 @@ def _lean_services(
             **kwargs,
             disallow_sorry=not args.allow_sorry,
             use_server=not args.no_lean_server,
+            server_startup_timeout_seconds=args.lean_server_startup_timeout,
         ),
         validation_adapter=LeanAdapter(
             **kwargs,
             disallow_sorry=False,
             use_server=not args.no_lean_server,
+            server_startup_timeout_seconds=args.lean_server_startup_timeout,
         ),
     )
     try:
@@ -193,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             checker = _build_scaffold_checker(args, services, task_config, check_workspace)
 
-            formalizer = build_formalization_agent(args, checker=checker)
+            formalizer = build_formalization_agent(args, checker=checker, project_root=project_root)
             tasks = build_tasks(args, formalizer=formalizer)
             logger.info("Built %d task(s) from task input", len(tasks))
 

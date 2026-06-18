@@ -120,6 +120,29 @@ class LeanAdapterScaffoldCheckerTests(unittest.TestCase):
         self.assertEqual(result.category, DiagnosticCategory.PARSER_ERROR)
         self.assertIn("category=parser_error", result.message)
 
+    def test_rejects_bare_mathlib_import_without_running_lean(self) -> None:
+        adapter = FakeLeanAdapter(DiagnosticCategory.PROOF_ACCEPTED, accepted=True)
+        checker = LeanAdapterScaffoldChecker(adapter)
+
+        result = checker.validate_scaffold(
+            "import Mathlib\n\ntheorem sample : True := by\n  sorry\n"
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("Bare `import Mathlib` is not allowed", result.message)
+        self.assertEqual(adapter.calls, [])
+
+    def test_allows_narrow_mathlib_import(self) -> None:
+        adapter = FakeLeanAdapter(DiagnosticCategory.PROOF_ACCEPTED, accepted=True)
+        checker = LeanAdapterScaffoldChecker(adapter)
+
+        result = checker.validate_scaffold(
+            "import Mathlib.Data.Nat.Basic\n\ntheorem sample : True := by\n  sorry\n"
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(adapter.calls), 1)
+
     def test_skips_validation_when_tool_unavailable(self) -> None:
         adapter = FakeLeanAdapter(DiagnosticCategory.TOOL_UNAVAILABLE, accepted=False)
         checker = LeanAdapterScaffoldChecker(adapter)

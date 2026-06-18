@@ -14,7 +14,12 @@ from agent import (
     TaskInputKind,
     load_dotenv,
 )
-from agent.agents import OpenAIChatFormalizationAgent, ScaffoldChecker, VerifiedFormalizationCache
+from agent.agents import (
+    LeanEnvironmentToolProvider,
+    OpenAIChatFormalizationAgent,
+    ScaffoldChecker,
+    VerifiedFormalizationCache,
+)
 
 from .paths import resolve_agent_path
 from .tasks import classify_input, require_source
@@ -46,6 +51,7 @@ def build_formalization_agent(
     args: Namespace,
     *,
     checker: ScaffoldChecker | None = None,
+    project_root: Path | None = None,
 ) -> OpenAIChatFormalizationAgent | None:
     if not _needs_formalizer(args):
         return None
@@ -57,10 +63,18 @@ def build_formalization_agent(
         cache = VerifiedFormalizationCache(
             resolve_agent_path(Path(args.agent_root), args.formalization_cache_dir)
         )
+    tools = None
+    if project_root is not None:
+        tools = LeanEnvironmentToolProvider(
+            project_root=project_root,
+            lake_executable=getattr(args, "lake_executable", None),
+            lean_executable=getattr(args, "lean_executable", None),
+        ).tools()
     return OpenAIChatFormalizationAgent(
         _model_config(args),
         checker=checker,
         cache=cache,
+        tools=tools,
     )
 
 
@@ -74,7 +88,10 @@ def _ensure_env_loaded(args: Namespace) -> None:
 
 
 def _model_config(args: Namespace) -> OpenAIChatConfig:
-    return OpenAIChatConfig.from_env(timeout_seconds=args.model_timeout)
+    return OpenAIChatConfig.from_env(
+        timeout_seconds=args.model_timeout,
+        max_tokens=args.model_max_tokens,
+    )
 
 
 def _needs_formalizer(args: Namespace) -> bool:

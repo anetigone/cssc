@@ -44,6 +44,7 @@ class LeanAdapter(ProofSystemAdapter):
         lean_executable: str | None = None,
         lake_executable: str | None = None,
         use_server: bool = False,
+        server_startup_timeout_seconds: float = 60.0,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.prefer_lake = prefer_lake
@@ -51,6 +52,7 @@ class LeanAdapter(ProofSystemAdapter):
         self.lean_executable = _resolve_executable(lean_executable, "lean")
         self.lake_executable = _resolve_executable(lake_executable, "lake")
         self.use_server = use_server
+        self.server_startup_timeout_seconds = server_startup_timeout_seconds
         self._server: LeanServerClient | None = None
         logger.debug(
             "Initialized LeanAdapter: project_root=%s prefer_lake=%s disallow_sorry=%s lean=%s lake=%s use_server=%s",
@@ -315,6 +317,7 @@ class LeanAdapter(ProofSystemAdapter):
             server.start(timeout_seconds=timeout_seconds)
         except (OSError, LeanServerError):
             logger.warning("Failed to start Lean server; falling back to subprocess checks", exc_info=True)
+            server.close()
             self._server = None
             return False
         self._server = server
@@ -334,7 +337,7 @@ class LeanAdapter(ProofSystemAdapter):
         if not self.use_server:
             return None
         if self._server is None or not self._server.is_alive():
-            self.start_service(timeout_seconds=min(max(budget_slice.timeout_seconds, 1.0), 10.0))
+            self.start_service(timeout_seconds=self.server_startup_timeout_seconds)
         if self._server is None:
             return None
 

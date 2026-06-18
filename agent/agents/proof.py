@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Mapping, Sequence
@@ -88,6 +89,13 @@ class OpenAIChatActionGenerator(ActionGenerator):
             request.task.task_id,
             len(candidates),
         )
+        if not candidates:
+            logger.warning(
+                "Model response produced no proof candidates: model=%s task_id=%s response=%s",
+                self.config.model,
+                request.task.task_id,
+                json.dumps(response, ensure_ascii=False, default=str),
+            )
         return tuple(candidates)
 
 

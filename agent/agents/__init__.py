@@ -12,6 +12,15 @@ from .formalization import (
 )
 from .openai import ChatTransport, ModelAdapterError, OpenAIChatConfig, UrllibChatTransport
 from .proof import OpenAIChatActionGenerator
+from .tools import (
+    FunctionTool,
+    LeanEnvironmentToolProvider,
+    Tool,
+    ToolCall,
+    ToolResult,
+    extract_missing_imports,
+    extract_tool_calls,
+)
 
 __all__ = [
     "AgentRole",
@@ -19,6 +28,8 @@ __all__ = [
     "FormalizationAgent",
     "FormalizationRequest",
     "FormalizationResult",
+    "FunctionTool",
+    "LeanEnvironmentToolProvider",
     "ModelAdapterError",
     "OpenAIChatActionGenerator",
     "OpenAIChatConfig",
@@ -26,6 +37,11 @@ __all__ = [
     "RoleModelConfig",
     "ScaffoldChecker",
     "StaticFormalizationAgent",
+    "Tool",
+    "ToolCall",
+    "ToolResult",
     "UrllibChatTransport",
     "VerifiedFormalizationCache",
+    "extract_missing_imports",
+    "extract_tool_calls",
 ]

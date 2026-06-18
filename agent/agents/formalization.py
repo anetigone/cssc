@@ -7,7 +7,7 @@ import logging
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from ..input.validation import (
     ScaffoldValidationError,
@@ -15,6 +15,7 @@ from ..input.validation import (
     ValidationConfig,
     validate_scaffold_json,
 )
+from ..proof_system.base import DiagnosticCategory
 from .openai import (
     ChatTransport,
     ModelAdapterError,
@@ -23,6 +24,13 @@ from .openai import (
     chat_completions_url,
     first_choice_content,
     parse_json_object,
+)
+from .tools import (
+    Tool,
+    ToolCall,
+    ToolResult,
+    extract_missing_imports,
+    extract_tool_calls,
 )
 
 
@@ -108,12 +116,14 @@ class OpenAIChatFormalizationAgent:
         checker: ScaffoldChecker | None = None,
         validation: ValidationConfig | None = None,
         cache: "VerifiedFormalizationCache | None" = None,
+        tools: Sequence[Tool] | None = None,
     ) -> None:
         self.config = config
         self.transport = transport or UrllibChatTransport()
         self.checker = checker
         self.validation = validation or ValidationConfig()
         self.cache = cache
+        self.tools = tuple(tools or ())
 
     def formalize(self, request: FormalizationRequest) -> FormalizationResult:
         if self.cache is not None and self.checker is not None:
@@ -129,6 +139,7 @@ class OpenAIChatFormalizationAgent:
         messages = _build_messages(request)
         max_attempts = 1 + self.validation.max_retries
         last_validation_message = ""
+        missing_imports: tuple[str, ...] = ()
 
         for attempt in range(max_attempts):
             if attempt > 0:
@@ -136,28 +147,75 @@ class OpenAIChatFormalizationAgent:
                 messages.append(
                     {
                         "role": "user",
-                        "content": _build_retry_prompt(last_validation_message),
+                        "content": _build_retry_prompt(
+                            last_validation_message,
+                            missing_imports=missing_imports,
+                        ),
                     }
                 )
 
-            payload = {
-                "model": self.config.model,
-                "messages": messages,
-                "temperature": self.config.temperature,
-                "max_tokens": self.config.max_tokens,
-                **self.config.extra_body,
-            }
-            response = self.transport.post_json(
-                chat_completions_url(self.config.base_url),
-                headers={
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json",
-                },
-                payload=payload,
-                timeout_seconds=self.config.timeout_seconds,
-            )
+            # Inner loop: allow the model to call environment tools before it
+            # produces the final JSON scaffold.
+            message: dict[str, Any] | None = None
+            tool_rounds = 0
+            while tool_rounds < self.validation.max_tool_rounds:
+                payload = {
+                    "model": self.config.model,
+                    "messages": messages,
+                    "temperature": self.config.temperature,
+                    "max_tokens": self.config.max_tokens,
+                    **self.config.extra_body,
+                }
+                if self.tools:
+                    payload["tools"] = [tool.openai_schema() for tool in self.tools]
+                    payload["tool_choice"] = "auto"
+
+                response = self.transport.post_json(
+                    chat_completions_url(self.config.base_url),
+                    headers={
+                        "Authorization": f"Bearer {self.config.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    payload=payload,
+                    timeout_seconds=self.config.timeout_seconds,
+                )
+                message = self._assistant_message(response)
+                tool_calls = extract_tool_calls(message)
+
+                if not tool_calls:
+                    break
+
+                tool_rounds += 1
+                messages.append(message)
+                for call in tool_calls:
+                    result = self._execute_tool(call)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": result.call_id,
+                            "content": result.content,
+                        }
+                    )
+                    logger.debug(
+                        "Formalizer tool call: name=%s call_id=%s result_length=%d",
+                        call.name,
+                        result.call_id,
+                        len(result.content),
+                    )
+            else:
+                logger.warning(
+                    "Formalizer reached max tool rounds (%d) without producing a scaffold",
+                    self.validation.max_tool_rounds,
+                )
+
+            if message is None:
+                raise ModelAdapterError(
+                    "Formalizer produced no response after tool rounds."
+                )
+            messages.append(message)
+            content = message.get("content", "")
             data = parse_json_object(
-                first_choice_content(response),
+                content,
                 context="Formalizer response",
             )
             proof_source, natural_language_proof = validate_scaffold_json(data)
@@ -180,6 +238,24 @@ class OpenAIChatFormalizationAgent:
                 hole_marker=request.hole_marker,
                 inactive_fill=self.validation.inactive_fill,
             )
+            timeout_retry = 0
+            while (
+                validation_result.category == DiagnosticCategory.TIMEOUT
+                and timeout_retry < self.validation.check_timeout_retries
+            ):
+                timeout_retry += 1
+                logger.warning(
+                    "Lean scaffold check timed out; retrying unchanged scaffold "
+                    "(%d/%d) without consuming a model repair attempt",
+                    timeout_retry,
+                    self.validation.check_timeout_retries,
+                )
+                validation_result = self.checker.validate_scaffold(
+                    proof_source,
+                    imports=request.imports,
+                    hole_marker=request.hole_marker,
+                    inactive_fill=self.validation.inactive_fill,
+                )
             if validation_result.ok:
                 logger.info(
                     "Generated and validated formalization: task_id=%s model=%s",
@@ -196,6 +272,7 @@ class OpenAIChatFormalizationAgent:
                 return result
 
             last_validation_message = validation_result.message
+            missing_imports = extract_missing_imports(last_validation_message)
             logger.warning(
                 "Formalized scaffold failed validation (attempt %d/%d): %s",
                 attempt + 1,
@@ -206,6 +283,32 @@ class OpenAIChatFormalizationAgent:
         raise ModelAdapterError(
             f"Formalizer scaffold failed Lean validation after {max_attempts} attempt(s)."
         )
+
+    def _assistant_message(self, response: Mapping[str, Any]) -> dict[str, Any]:
+        """Return the assistant message from a chat-completions response."""
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ModelAdapterError("Model response is missing choices.")
+        first = choices[0]
+        if not isinstance(first, Mapping):
+            raise ModelAdapterError("Model choice is not an object.")
+        message = first.get("message")
+        if not isinstance(message, Mapping):
+            raise ModelAdapterError("Model choice is missing a message.")
+        return dict(message)
+
+    def _execute_tool(self, call: ToolCall) -> ToolResult:
+        for tool in self.tools:
+            if tool.name == call.name:
+                return ToolResult(
+                    call_id=call.id,
+                    content=tool.execute(call.arguments),
+                )
+        return ToolResult(
+            call_id=call.id,
+            content=json.dumps({"error": f"Unknown tool: {call.name}"}),
+        )
+
 
 
 class VerifiedFormalizationCache:
@@ -299,8 +402,10 @@ def _build_messages(request: FormalizationRequest) -> list[dict[str, str]]:
                 "scaffolds. Return only JSON with keys proof_source and optional "
                 "natural_language_proof. The Lean source must contain exactly one proof hole "
                 f"marker {request.hole_marker!r} or one standalone sorry. Use the smallest "
-                "Lean imports that the statement needs. Do not use `import Mathlib` unless "
-                "no narrower Mathlib module is reasonable. If the task is in core Lean, use "
+                "Lean imports that the statement needs. Never use the bare `import Mathlib`; "
+                "it is rejected by local validation because its cold start is too expensive. "
+                "Use the environment tools to select and verify narrow Mathlib modules before "
+                "returning the scaffold. If the task is in core Lean, use "
                 "no import. The scaffold must be self-contained: include every namespace "
                 "opening or use fully qualified names for symbols such as Filter.Tendsto, "
                 "Filter.atTop, Set.Nonempty, sSup, and neighborhood notation. If preferred "
@@ -335,9 +440,24 @@ def _build_user_prompt(request: FormalizationRequest) -> str:
     return "\n".join(parts)
 
 
-def _build_retry_prompt(validation_message: str) -> str:
-    return (
+def _build_retry_prompt(
+    validation_message: str,
+    *,
+    missing_imports: tuple[str, ...] = (),
+) -> str:
+    parts = [
         "The previous scaffold failed to compile or validate. "
-        "Please fix the Lean source and return corrected JSON.\n\n"
-        f"Validation feedback:\n{validation_message}"
-    )
+        "Please fix the Lean source and return corrected JSON.",
+        "",
+        f"Validation feedback:\n{validation_message}",
+    ]
+    if missing_imports:
+        parts.extend(
+            [
+                "",
+                "The following imports are not available in the local Lean environment. "
+                "Do not use them; pick alternatives from the available modules or omit imports if possible:",
+                "\n".join(f"- {name}" for name in missing_imports),
+            ]
+        )
+    return "\n".join(parts)

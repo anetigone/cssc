@@ -43,11 +43,16 @@ class OpenAIChatConfig:
     base_url: str = "https://api.openai.com/v1"
     timeout_seconds: float = 60.0
     temperature: float = 0.2
-    max_tokens: int = 4096
+    max_tokens: int = 16384
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_env(cls, *, timeout_seconds: float) -> "OpenAIChatConfig":
+    def from_env(
+        cls,
+        *,
+        timeout_seconds: float,
+        max_tokens: int = 16384,
+    ) -> "OpenAIChatConfig":
         api_key = os.environ.get("OPENAI_API_KEY", "")
         model = os.environ.get("OPENAI_MODEL", "")
         base_url = (
@@ -64,6 +69,7 @@ class OpenAIChatConfig:
             model=model,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
         )
 
 
