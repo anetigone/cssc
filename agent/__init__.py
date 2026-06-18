@@ -13,6 +13,10 @@ from .proof_system.lean import LeanAdapter
 from .retrieval import LexicalLeanRetriever, RetrievalResult
 from .agents import (
     AgentRole,
+    ChatActionGenerator,
+    ChatConfig,
+    ChatDriver,
+    ChatFormalizationAgent,
     ChatTransport,
     FormalizationAgent,
     FormalizationRequest,
@@ -33,6 +37,7 @@ from .agents import (
     VerifiedFormalizationCache,
     extract_missing_imports,
     extract_tool_calls,
+    first_choice_message,
 )
 from .input import (
     InputNormalizer,
@@ -40,7 +45,6 @@ from .input import (
     NormalizedInput,
     ScaffoldValidationError,
     ValidationConfig,
-    prepare_tasks,
     validate_scaffold_json,
 )
 from .proof_system.base import (
@@ -73,6 +77,10 @@ __all__ = [
     "BudgetSnapshot",
     "CandidateEdit",
     "CandidateLibraryGenerator",
+    "ChatActionGenerator",
+    "ChatConfig",
+    "ChatDriver",
+    "ChatFormalizationAgent",
     "CheckResult",
     "ControllerConfig",
     "ControllerResult",
@@ -95,7 +103,6 @@ __all__ = [
     "MaterializedCandidate",
     "ModelAdapterError",
     "NormalizedInput",
-    "prepare_tasks",
     "ScaffoldChecker",
     "ScaffoldValidationError",
     "Tool",
@@ -126,4 +133,5 @@ __all__ = [
     "encode_proof_state",
     "extract_missing_imports",
     "extract_tool_calls",
+    "first_choice_message",
 ]

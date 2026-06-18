@@ -22,10 +22,10 @@ if str(ROOT) not in sys.path:
 
 from agent import (  # noqa: E402
     BudgetConfig,
+    ChatActionGenerator,
+    ChatConfig,
     ControllerConfig,
     LeanAdapter,
-    OpenAIChatActionGenerator,
-    OpenAIChatConfig,
     ProofController,
     ProofTask,
     ChatTransport,
@@ -76,16 +76,16 @@ def main() -> int:
 
     try:
         if args.mock_model:
-            config = OpenAIChatConfig(
+            config = ChatConfig(
                 api_key="mock-key",
                 model="mock-openai-compatible-model",
                 base_url="https://mock.local/v1",
                 timeout_seconds=5.0,
             )
-            generator = OpenAIChatActionGenerator(config, transport=MockOpenAITransport())
+            generator = ChatActionGenerator(config, transport=MockOpenAITransport())
         else:
-            generator = OpenAIChatActionGenerator(
-                OpenAIChatConfig.from_env(timeout_seconds=args.model_timeout)
+            generator = ChatActionGenerator(
+                ChatConfig.from_env(timeout_seconds=args.model_timeout)
             )
     except ModelAdapterError as exc:
         print(json.dumps({"ok": False, "stage": "model_config", "error": str(exc)}, indent=2))

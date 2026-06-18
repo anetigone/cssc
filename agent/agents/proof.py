@@ -9,26 +9,27 @@ from typing import Any, Mapping, Sequence
 
 from ..proof_system.base import ParsedFeedback, ProofTask
 from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from .chat_driver import ChatDriver
 from .openai import (
+    ChatConfig,
     ChatTransport,
     ModelAdapterError,
-    OpenAIChatConfig,
     UrllibChatTransport,
     chat_completions_url,
     choice_content,
 )
-from .tools import Tool, ToolResult, run_tool_loop
+from .tools import Tool
 
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAIChatActionGenerator(ActionGenerator):
-    """Generate proof edits through an OpenAI-compatible chat endpoint."""
+class ChatActionGenerator(ActionGenerator):
+    """Generate proof edits through a chat-completion endpoint."""
 
     def __init__(
         self,
-        config: OpenAIChatConfig,
+        config: ChatConfig,
         *,
         transport: ChatTransport | None = None,
         tools: Sequence[Tool] | None = None,
@@ -36,8 +37,12 @@ class OpenAIChatActionGenerator(ActionGenerator):
     ) -> None:
         self.config = config
         self.transport = transport or UrllibChatTransport()
-        self.tools = tuple(tools or ())
-        self.max_tool_rounds = max_tool_rounds
+        self.driver = ChatDriver(
+            config=config,
+            transport=self.transport,
+            tools=tools or (),
+            max_tool_rounds=max_tool_rounds,
+        )
 
     def generate(self, request: ActionGenerationRequest) -> Sequence[ActionCandidate]:
         url = chat_completions_url(self.config.base_url)
@@ -49,23 +54,7 @@ class OpenAIChatActionGenerator(ActionGenerator):
             request.max_candidates,
         )
         messages: list[dict[str, Any]] = list(_build_messages(request))
-        base_payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
-            **self.config.extra_body,
-        }
-        response = run_tool_loop(
-            self.transport,
-            self.config,
-            messages,
-            self.tools,
-            self.max_tool_rounds,
-            self._execute_tool,
-            base_payload=base_payload,
-            final_n=request.max_candidates,
-        )
+        response = self.driver.complete(messages, final_n=request.max_candidates)
         choices = response.get("choices")
         if not isinstance(choices, list):
             logger.error("Model response missing choices list: model=%s", self.config.model)
@@ -103,15 +92,6 @@ class OpenAIChatActionGenerator(ActionGenerator):
                 json.dumps(response, ensure_ascii=False, default=str),
             )
         return tuple(candidates)
-
-    def _execute_tool(self, call: Any) -> ToolResult:
-        for tool in self.tools:
-            if tool.name == call.name:
-                return ToolResult(call_id=call.id, content=tool.execute(call.arguments))
-        return ToolResult(
-            call_id=call.id,
-            content=json.dumps({"error": f"Unknown tool: {call.name}"}),
-        )
 
 
 def _build_messages(request: ActionGenerationRequest) -> list[dict[str, str]]:
@@ -202,3 +182,7 @@ def _clean_proof_text(content: str) -> str:
     if fence:
         stripped = fence.group(1).strip()
     return stripped
+
+
+# Backwards-compatible alias for code that still uses the old, longer name.
+OpenAIChatActionGenerator = ChatActionGenerator

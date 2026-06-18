@@ -66,7 +66,7 @@ class SolveLeanTaskCliTests(unittest.TestCase):
         args = _args(use_model=True, env_file="missing.env")
         with patch("agent.cli.generators.load_dotenv") as load_mock:
             with patch(
-                "agent.cli.generators.OpenAIChatConfig.from_env",
+                "agent.cli.generators.ChatConfig.from_env",
                 side_effect=RuntimeError("stop"),
             ):
                 with self.assertRaises(RuntimeError):

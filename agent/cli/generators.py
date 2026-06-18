@@ -7,16 +7,16 @@ from argparse import Namespace
 from pathlib import Path
 
 from agent import (
+    ChatActionGenerator,
+    ChatConfig,
+    ChatFormalizationAgent,
     LexicalLeanRetriever,
-    OpenAIChatActionGenerator,
-    OpenAIChatConfig,
     StaticActionGenerator,
     TaskInputKind,
     load_dotenv,
 )
 from agent.agents import (
     LeanEnvironmentToolProvider,
-    OpenAIChatFormalizationAgent,
     ScaffoldChecker,
     VerifiedFormalizationCache,
 )
@@ -50,7 +50,7 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
                 lake_executable=getattr(args, "lake_executable", None),
                 lean_executable=getattr(args, "lean_executable", None),
             ).tools()
-        return OpenAIChatActionGenerator(_model_config(args), tools=tools)
+        return ChatActionGenerator(_model_config(args), tools=tools)
     raise ValueError("Provide --candidate, --candidate-file, or --use-model.")
 
 
@@ -59,7 +59,7 @@ def build_formalization_agent(
     *,
     checker: ScaffoldChecker | None = None,
     project_root: Path | None = None,
-) -> OpenAIChatFormalizationAgent | None:
+) -> ChatFormalizationAgent | None:
     if not _needs_formalizer(args):
         return None
     if not args.use_model:
@@ -77,7 +77,7 @@ def build_formalization_agent(
             lake_executable=getattr(args, "lake_executable", None),
             lean_executable=getattr(args, "lean_executable", None),
         ).tools()
-    return OpenAIChatFormalizationAgent(
+    return ChatFormalizationAgent(
         _model_config(args),
         checker=checker,
         cache=cache,
@@ -94,8 +94,8 @@ def _ensure_env_loaded(args: Namespace) -> None:
         logger.debug("Environment file does not exist: %s", env_path)
 
 
-def _model_config(args: Namespace) -> OpenAIChatConfig:
-    return OpenAIChatConfig.from_env(
+def _model_config(args: Namespace) -> ChatConfig:
+    return ChatConfig.from_env(
         timeout_seconds=args.model_timeout,
         max_tokens=args.model_max_tokens,
     )

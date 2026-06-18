@@ -7,7 +7,7 @@ import logging
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Protocol, Sequence
 
 from ..input.validation import (
     ScaffoldValidationError,
@@ -16,20 +16,17 @@ from ..input.validation import (
     validate_scaffold_json,
 )
 from ..proof_system.base import DiagnosticCategory
+from .chat_driver import ChatDriver, first_choice_message
 from .openai import (
+    ChatConfig,
     ChatTransport,
     ModelAdapterError,
-    OpenAIChatConfig,
     UrllibChatTransport,
     parse_json_object,
 )
-
 from .tools import (
     Tool,
-    ToolCall,
-    ToolResult,
     extract_missing_imports,
-    run_tool_loop,
 )
 
 
@@ -100,8 +97,8 @@ class StaticFormalizationAgent:
         return self.result
 
 
-class OpenAIChatFormalizationAgent:
-    """Generate a Lean scaffold from prose through an OpenAI-compatible endpoint.
+class ChatFormalizationAgent:
+    """Generate a Lean scaffold from prose through a chat-completion endpoint.
 
     When a ``checker`` is configured, the agent validates the scaffold with Lean
     and retries a bounded number of times if the scaffold does not compile.
@@ -109,7 +106,7 @@ class OpenAIChatFormalizationAgent:
 
     def __init__(
         self,
-        config: OpenAIChatConfig,
+        config: ChatConfig,
         *,
         transport: ChatTransport | None = None,
         checker: ScaffoldChecker | None = None,
@@ -122,7 +119,12 @@ class OpenAIChatFormalizationAgent:
         self.checker = checker
         self.validation = validation or ValidationConfig()
         self.cache = cache
-        self.tools = tuple(tools or ())
+        self.driver = ChatDriver(
+            config=config,
+            transport=self.transport,
+            tools=tools or (),
+            max_tool_rounds=self.validation.max_tool_rounds,
+        )
 
     def formalize(self, request: FormalizationRequest) -> FormalizationResult:
         if self.cache is not None and self.checker is not None:
@@ -153,26 +155,9 @@ class OpenAIChatFormalizationAgent:
                     }
                 )
 
-            # Inner loop: allow the model to call environment tools before it
-            # produces the final JSON scaffold.
-            base_payload = {
-                "model": self.config.model,
-                "messages": messages,
-                "temperature": self.config.temperature,
-                "max_tokens": self.config.max_tokens,
-                **self.config.extra_body,
-            }
-            response = run_tool_loop(
-                self.transport,
-                self.config,
-                messages,
-                self.tools,
-                self.validation.max_tool_rounds,
-                self._execute_tool,
-                base_payload=base_payload,
-                final_n=1,
-            )
-            message = self._assistant_message(response)
+            # Let the driver run the chat completion (including any tool calls).
+            response = self.driver.complete(messages, final_n=1)
+            message = first_choice_message(response)
             messages.append(message)
             content = message.get("content", "")
             data = parse_json_object(
@@ -244,32 +229,6 @@ class OpenAIChatFormalizationAgent:
         raise ModelAdapterError(
             f"Formalizer scaffold failed Lean validation after {max_attempts} attempt(s)."
         )
-
-    def _assistant_message(self, response: Mapping[str, Any]) -> dict[str, Any]:
-        """Return the assistant message from a chat-completions response."""
-        choices = response.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ModelAdapterError("Model response is missing choices.")
-        first = choices[0]
-        if not isinstance(first, Mapping):
-            raise ModelAdapterError("Model choice is not an object.")
-        message = first.get("message")
-        if not isinstance(message, Mapping):
-            raise ModelAdapterError("Model choice is missing a message.")
-        return dict(message)
-
-    def _execute_tool(self, call: ToolCall) -> ToolResult:
-        for tool in self.tools:
-            if tool.name == call.name:
-                return ToolResult(
-                    call_id=call.id,
-                    content=tool.execute(call.arguments),
-                )
-        return ToolResult(
-            call_id=call.id,
-            content=json.dumps({"error": f"Unknown tool: {call.name}"}),
-        )
-
 
 
 class VerifiedFormalizationCache:
@@ -422,3 +381,7 @@ def _build_retry_prompt(
             ]
         )
     return "\n".join(parts)
+
+
+# Backwards-compatible alias for code that still uses the old, longer name.
+OpenAIChatFormalizationAgent = ChatFormalizationAgent

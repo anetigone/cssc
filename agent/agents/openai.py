@@ -37,7 +37,7 @@ class ChatTransport(Protocol):
 
 
 @dataclass(frozen=True)
-class OpenAIChatConfig:
+class ChatConfig:
     """Configuration for OpenAI-compatible chat completions."""
 
     api_key: str
@@ -54,7 +54,7 @@ class OpenAIChatConfig:
         *,
         timeout_seconds: float,
         max_tokens: int = 16384,
-    ) -> "OpenAIChatConfig":
+    ) -> "ChatConfig":
         api_key = os.environ.get("OPENAI_API_KEY", "")
         model = os.environ.get("OPENAI_MODEL", "")
         base_url = (
@@ -198,3 +198,7 @@ def parse_json_object(content: str, *, context: str = "Model response") -> Mappi
     if not isinstance(decoded, Mapping):
         raise ModelAdapterError(f"{context} JSON must be an object.")
     return decoded
+
+
+# Backwards-compatible alias for code that still uses the old, longer name.
+OpenAIChatConfig = ChatConfig

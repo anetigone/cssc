@@ -19,9 +19,9 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..utils import resolve_executable
 from .openai import (
+    ChatConfig,
     ChatTransport,
     ModelAdapterError,
-    OpenAIChatConfig,
     chat_completions_url,
 )
 
@@ -398,7 +398,7 @@ def extract_missing_imports(raw_output: str) -> tuple[str, ...]:
 
 def run_tool_loop(
     transport: ChatTransport,
-    config: OpenAIChatConfig,
+    config: ChatConfig,
     messages: list[dict[str, Any]],
     tools: Sequence[Tool],
     max_rounds: int,

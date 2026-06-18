@@ -8,11 +8,11 @@ from unittest.mock import MagicMock, patch
 
 from agent.search.action import ActionGenerationRequest
 from agent.agents import (
+    ChatActionGenerator,
+    ChatConfig,
     ChatTransport,
     FunctionTool,
     ModelAdapterError,
-    OpenAIChatActionGenerator,
-    OpenAIChatConfig,
 )
 from agent.agents.openai import UrllibChatTransport, chat_completions_url
 from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
@@ -50,7 +50,7 @@ class SequenceTransport(ChatTransport):
         return self.responses.pop(0)
 
 
-class OpenAIChatActionGeneratorTests(unittest.TestCase):
+class ChatActionGeneratorTests(unittest.TestCase):
     def test_generates_action_from_chat_completion_response(self) -> None:
         transport = RecordingTransport(
             {
@@ -62,8 +62,8 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
                 ]
             }
         )
-        generator = OpenAIChatActionGenerator(
-            OpenAIChatConfig(
+        generator = ChatActionGenerator(
+            ChatConfig(
                 api_key="key",
                 model="model",
                 base_url="https://example.test/openai/v1/",
@@ -102,8 +102,8 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
         transport = RecordingTransport(
             {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
         )
-        generator = OpenAIChatActionGenerator(
-            OpenAIChatConfig(api_key="key", model="model"), transport=transport
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
         )
         task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}")
 
@@ -155,8 +155,8 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
             parameters={"type": "object", "properties": {}},
             _execute=lambda _: '{"found": true}',
         )
-        generator = OpenAIChatActionGenerator(
-            OpenAIChatConfig(api_key="key", model="model"),
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"),
             transport=transport,
             tools=[tool],
         )
@@ -175,7 +175,7 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
     def test_from_env_requires_key_and_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ModelAdapterError):
-                OpenAIChatConfig.from_env(timeout_seconds=60.0)
+                ChatConfig.from_env(timeout_seconds=60.0)
 
     def test_chat_completions_url_accepts_full_endpoint(self) -> None:
         self.assertEqual(

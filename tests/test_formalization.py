@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from agent.agents import (
+    ChatConfig,
     ChatTransport,
     FormalizationRequest,
     FormalizationResult,
     FunctionTool,
-    OpenAIChatConfig,
-    OpenAIChatFormalizationAgent,
+    ChatFormalizationAgent,
     ToolCall,
     VerifiedFormalizationCache,
 )
@@ -90,8 +90,8 @@ class FormalizationAgentTests(unittest.TestCase):
                 ]
             }
         )
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(
                 api_key="key",
                 model="formalizer-model",
                 base_url="https://example.test/v1",
@@ -121,8 +121,8 @@ class FormalizationAgentTests(unittest.TestCase):
                 ]
             }
         )
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
         )
 
@@ -144,8 +144,8 @@ class FormalizationAgentTests(unittest.TestCase):
                 ]
             }
         )
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
         )
 
@@ -176,8 +176,8 @@ class FormalizationAgentTests(unittest.TestCase):
             ]
         )
         checker = FakeChecker([False, True])
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=checker,
             validation=ValidationConfig(max_retries=1),
@@ -241,8 +241,8 @@ class FormalizationAgentTests(unittest.TestCase):
                 return ScaffoldValidationResult(ok=True, message="ok")
 
         checker = TimeoutThenDiagnosticChecker()
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=checker,
             validation=ValidationConfig(max_retries=1, check_timeout_retries=1),
@@ -266,8 +266,8 @@ class FormalizationAgentTests(unittest.TestCase):
             {"choices": [{"message": {"content": _json_response(source)}}]}
         )
         checker = FakeChecker([False])
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=checker,
             validation=ValidationConfig(max_retries=0),
@@ -295,8 +295,8 @@ class FormalizationAgentTests(unittest.TestCase):
             }
         )
         checker = FakeChecker([False])
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=checker,
             validation=ValidationConfig(max_retries=0),
@@ -319,8 +319,8 @@ class FormalizationAgentTests(unittest.TestCase):
                 ]
             }
         )
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=None,
         )
@@ -351,8 +351,8 @@ class FormalizationAgentTests(unittest.TestCase):
                 ),
                 model="m",
             )
-            formalizer = OpenAIChatFormalizationAgent(
-                OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+            formalizer = ChatFormalizationAgent(
+                ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
                 transport=transport,
                 checker=checker,
                 cache=cache,
@@ -385,8 +385,8 @@ class FormalizationAgentTests(unittest.TestCase):
         request = FormalizationRequest(problem="Prove True.", task_id="sample")
         with tempfile.TemporaryDirectory() as tmp:
             cache = VerifiedFormalizationCache(Path(tmp))
-            formalizer = OpenAIChatFormalizationAgent(
-                OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+            formalizer = ChatFormalizationAgent(
+                ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
                 transport=transport,
                 checker=checker,
                 validation=ValidationConfig(max_retries=1),
@@ -460,8 +460,8 @@ class FormalizationAgentTests(unittest.TestCase):
                 _execute=list_modules,
             )
         ]
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=None,
             tools=tools,
@@ -520,8 +520,8 @@ class FormalizationAgentTests(unittest.TestCase):
                     )
                 return ScaffoldValidationResult(ok=True, message="ok")
 
-        formalizer = OpenAIChatFormalizationAgent(
-            OpenAIChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
+        formalizer = ChatFormalizationAgent(
+            ChatConfig(api_key="key", model="m", base_url="https://example.test/v1"),
             transport=transport,
             checker=MissingImportChecker(),
             validation=ValidationConfig(max_retries=1),
