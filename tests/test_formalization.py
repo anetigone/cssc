@@ -434,6 +434,15 @@ class FormalizationAgentTests(unittest.TestCase):
                         }
                     ]
                 },
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"proof_source":"theorem sample : True := by\\n  trivial"}'
+                            }
+                        }
+                    ]
+                },
             ]
         )
 
@@ -462,7 +471,7 @@ class FormalizationAgentTests(unittest.TestCase):
 
         self.assertEqual(result.proof_source, "theorem sample : True := by\n  trivial")
         self.assertEqual(len(tool_calls), 1)
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 3)
         second_request_messages = transport.calls[1][2]["messages"]
         tool_messages = [m for m in second_request_messages if m.get("role") == "tool"]
         self.assertEqual(len(tool_messages), 1)

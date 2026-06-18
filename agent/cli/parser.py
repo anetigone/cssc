@@ -57,14 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-model", action="store_true", help="Use OpenAI-compatible chat config.")
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
     parser.add_argument("--max-candidates", type=int, default=1)
-    parser.add_argument("--max-model-calls", type=int, default=20)
+    parser.add_argument("--max-model-calls", type=int, default=3)
+
     parser.add_argument(
         "--model-max-tokens",
         type=int,
         default=16384,
         help="Maximum completion tokens per model call, including hidden reasoning tokens.",
     )
-    parser.add_argument("--max-repair-rounds", type=int, default=19)
+    parser.add_argument("--max-repair-rounds", type=int, default=2)
+
 
     # --- Retrieval ---------------------------------------------------------
     parser.add_argument("--enable-retrieval", action="store_true", help="Use lexical retrieval over local Lean files.")
@@ -99,7 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=60.0,
         help="Timeout in seconds for each OpenAI-compatible model call.",
     )
-    parser.add_argument("--max-checks", type=int, default=20)
+    parser.add_argument("--max-checks", type=int, default=3)
+
     parser.add_argument("--max-elapsed-seconds", type=float, default=None)
 
     # --- Formalization cache ----------------------------------------------

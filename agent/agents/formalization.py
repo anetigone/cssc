@@ -21,16 +21,15 @@ from .openai import (
     ModelAdapterError,
     OpenAIChatConfig,
     UrllibChatTransport,
-    chat_completions_url,
-    first_choice_content,
     parse_json_object,
 )
+
 from .tools import (
     Tool,
     ToolCall,
     ToolResult,
     extract_missing_imports,
-    extract_tool_calls,
+    run_tool_loop,
 )
 
 
@@ -156,62 +155,24 @@ class OpenAIChatFormalizationAgent:
 
             # Inner loop: allow the model to call environment tools before it
             # produces the final JSON scaffold.
-            message: dict[str, Any] | None = None
-            tool_rounds = 0
-            while tool_rounds < self.validation.max_tool_rounds:
-                payload = {
-                    "model": self.config.model,
-                    "messages": messages,
-                    "temperature": self.config.temperature,
-                    "max_tokens": self.config.max_tokens,
-                    **self.config.extra_body,
-                }
-                if self.tools:
-                    payload["tools"] = [tool.openai_schema() for tool in self.tools]
-                    payload["tool_choice"] = "auto"
-
-                response = self.transport.post_json(
-                    chat_completions_url(self.config.base_url),
-                    headers={
-                        "Authorization": f"Bearer {self.config.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    payload=payload,
-                    timeout_seconds=self.config.timeout_seconds,
-                )
-                message = self._assistant_message(response)
-                tool_calls = extract_tool_calls(message)
-
-                if not tool_calls:
-                    break
-
-                tool_rounds += 1
-                messages.append(message)
-                for call in tool_calls:
-                    result = self._execute_tool(call)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": result.call_id,
-                            "content": result.content,
-                        }
-                    )
-                    logger.debug(
-                        "Formalizer tool call: name=%s call_id=%s result_length=%d",
-                        call.name,
-                        result.call_id,
-                        len(result.content),
-                    )
-            else:
-                logger.warning(
-                    "Formalizer reached max tool rounds (%d) without producing a scaffold",
-                    self.validation.max_tool_rounds,
-                )
-
-            if message is None:
-                raise ModelAdapterError(
-                    "Formalizer produced no response after tool rounds."
-                )
+            base_payload = {
+                "model": self.config.model,
+                "messages": messages,
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_tokens,
+                **self.config.extra_body,
+            }
+            response = run_tool_loop(
+                self.transport,
+                self.config,
+                messages,
+                self.tools,
+                self.validation.max_tool_rounds,
+                self._execute_tool,
+                base_payload=base_payload,
+                final_n=1,
+            )
+            message = self._assistant_message(response)
             messages.append(message)
             content = message.get("content", "")
             data = parse_json_object(

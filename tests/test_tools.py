@@ -79,6 +79,16 @@ class ExtractMissingImportsTests(unittest.TestCase):
     def test_returns_empty_when_no_match(self) -> None:
         self.assertEqual(extract_missing_imports("type mismatch application"), ())
 
+    def test_does_not_extract_non_import_could_not_find(self) -> None:
+        self.assertEqual(
+            extract_missing_imports("could not find instance 'Foo'"),
+            (),
+        )
+        self.assertEqual(
+            extract_missing_imports("could not find local declaration 'foo'"),
+            (),
+        )
+
 
 class FunctionToolTests(unittest.TestCase):
     def test_openai_schema(self) -> None:

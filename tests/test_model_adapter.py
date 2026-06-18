@@ -145,8 +145,10 @@ class OpenAIChatActionGeneratorTests(unittest.TestCase):
                     ]
                 },
                 {"choices": [{"message": {"content": "trivial"}, "finish_reason": "stop"}]},
+                {"choices": [{"message": {"content": "trivial"}, "finish_reason": "stop"}]},
             ]
         )
+
         tool = FunctionTool(
             name="lookup",
             description="Look up Lean names.",

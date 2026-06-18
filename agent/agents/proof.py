@@ -17,7 +17,7 @@ from .openai import (
     chat_completions_url,
     choice_content,
 )
-from .tools import Tool, ToolResult, extract_tool_calls
+from .tools import Tool, ToolResult, run_tool_loop
 
 
 logger = logging.getLogger(__name__)
@@ -49,49 +49,23 @@ class OpenAIChatActionGenerator(ActionGenerator):
             request.max_candidates,
         )
         messages: list[dict[str, Any]] = list(_build_messages(request))
-        tool_rounds = 0
-        while True:
-            payload = {
-                "model": self.config.model,
-                "messages": messages,
-                "temperature": self.config.temperature,
-                "max_tokens": self.config.max_tokens,
-                "n": request.max_candidates,
-                **self.config.extra_body,
-            }
-            if self.tools:
-                payload["tools"] = [tool.openai_schema() for tool in self.tools]
-                payload["tool_choice"] = "auto"
-            response = self.transport.post_json(
-                url,
-                headers={
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json",
-                },
-                payload=payload,
-                timeout_seconds=self.config.timeout_seconds,
-            )
-            choices = response.get("choices")
-            first = choices[0] if isinstance(choices, list) and choices else None
-            message = first.get("message") if isinstance(first, Mapping) else None
-            tool_calls = extract_tool_calls(message) if isinstance(message, Mapping) else ()
-            if not tool_calls:
-                break
-            if tool_rounds >= self.max_tool_rounds:
-                raise ModelAdapterError(
-                    f"Proof proposer exceeded {self.max_tool_rounds} tool-call round(s)."
-                )
-            tool_rounds += 1
-            messages.append(dict(message))
-            for call in tool_calls:
-                result = self._execute_tool(call)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": result.call_id,
-                        "content": result.content,
-                    }
-                )
+        base_payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+            **self.config.extra_body,
+        }
+        response = run_tool_loop(
+            self.transport,
+            self.config,
+            messages,
+            self.tools,
+            self.max_tool_rounds,
+            self._execute_tool,
+            base_payload=base_payload,
+            final_n=request.max_candidates,
+        )
         choices = response.get("choices")
         if not isinstance(choices, list):
             logger.error("Model response missing choices list: model=%s", self.config.model)
@@ -181,7 +155,8 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
     if encoded_state is not None and hasattr(encoded_state, "to_prompt_context"):
         parts.extend(["Controller state:", str(encoded_state.to_prompt_context())])
     previous_attempt = request.metadata.get("previous_attempt")
-    if isinstance(previous_attempt, Mapping):
+    has_previous_attempt = isinstance(previous_attempt, Mapping)
+    if has_previous_attempt:
         previous_proof = previous_attempt.get("proof_text")
         raw_output = previous_attempt.get("raw_output")
         if isinstance(previous_proof, str) and previous_proof.strip():
@@ -208,7 +183,11 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
     parts.extend(["Lean source template:", "```lean", task.source_template, "```"])
     if feedback:
         parts.extend(["Previous checker feedback:"])
-        for item in feedback[-3:]:
+        # If the previous attempt's full output is already shown above, the
+        # most recent feedback entry repeats the same diagnosis; keep the
+        # older history instead.
+        feedback_slice = feedback[:-1] if has_previous_attempt else feedback[-3:]
+        for item in feedback_slice:
             parts.append(_feedback_line(item))
     return "\n".join(parts)
 

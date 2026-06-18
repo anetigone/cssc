@@ -11,12 +11,19 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
+
+from ..utils import resolve_executable
+from .openai import (
+    ChatTransport,
+    ModelAdapterError,
+    OpenAIChatConfig,
+    chat_completions_url,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +35,10 @@ _MISSING_IMPORT_RES = (
     re.compile(r"unknown module ['\"](?P<name>[^'\"]+)['\"]"),
     re.compile(r"unknown package\s+(?P<name>\S+)"),
     re.compile(r"unknown module\s+(?P<name>\S+)"),
-    re.compile(r"could not find\s+(?P<name>\S+)"),
+    # Keep "could not find" narrow so that messages such as
+    # "could not find instance ..." are not reported as missing imports.
+    re.compile(r"could not find\s+(?:module|import|package)\s+['\"](?P<name>[^'\"]+)['\"]"),
+    re.compile(r"could not find\s+(?:module|import|package)\s+(?P<name>\S+)"),
 )
 
 
@@ -110,8 +120,8 @@ class LeanEnvironmentToolProvider:
         import_check_timeout_seconds: float = 60.0,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else None
-        self.lake_executable = _resolve_executable(lake_executable, "lake")
-        self.lean_executable = _resolve_executable(lean_executable, "lean")
+        self.lake_executable = resolve_executable(lake_executable, "lake")
+        self.lean_executable = resolve_executable(lean_executable, "lean")
         self.import_check_timeout_seconds = import_check_timeout_seconds
 
     def tools(self) -> tuple[Tool, ...]:
@@ -264,7 +274,14 @@ class LeanEnvironmentToolProvider:
         return packages
 
     def _check_import_compiles(self, module: str) -> bool | None:
-        """Verify a module by compiling a temporary file containing only its import."""
+        """Verify a module by compiling a temporary file containing only its import.
+
+        Returns ``True`` when the import resolves cleanly, ``False`` when Lean
+        reports the package/module as unknown, and ``None`` when the check could
+        not be performed (missing executable, timeout, or ambiguous build
+        failure). ``None`` prevents the agent from rejecting imports that might
+        actually be available.
+        """
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".lean",
@@ -284,7 +301,7 @@ class LeanEnvironmentToolProvider:
 
         try:
             if command is None:
-                return False
+                return None
             result = subprocess.run(
                 command,
                 cwd=cwd,
@@ -295,7 +312,14 @@ class LeanEnvironmentToolProvider:
                 timeout=self.import_check_timeout_seconds,
                 check=False,
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+            combined = "\n".join(
+                part for part in (result.stdout, result.stderr) if part
+            )
+            if extract_missing_imports(combined):
+                return False
+            return None
         except subprocess.TimeoutExpired:
             logger.warning(
                 "Lean module check timed out: module=%s timeout=%s",
@@ -303,8 +327,13 @@ class LeanEnvironmentToolProvider:
                 self.import_check_timeout_seconds,
             )
             return None
-        except OSError:
-            return False
+        except OSError as exc:
+            logger.warning(
+                "Lean module check could not run: module=%s error=%s",
+                module,
+                exc,
+            )
+            return None
         finally:
             try:
                 tmp_path.unlink(missing_ok=True)
@@ -367,7 +396,95 @@ def extract_missing_imports(raw_output: str) -> tuple[str, ...]:
     return tuple(missing)
 
 
-def _resolve_executable(explicit: str | None, fallback_name: str) -> str | None:
-    if explicit is not None:
-        return shutil.which(explicit) or (explicit if Path(explicit).exists() else None)
-    return shutil.which(fallback_name)
+def run_tool_loop(
+    transport: ChatTransport,
+    config: OpenAIChatConfig,
+    messages: list[dict[str, Any]],
+    tools: Sequence[Tool],
+    max_rounds: int,
+    execute_tool: Callable[[ToolCall], ToolResult],
+    *,
+    base_payload: Mapping[str, Any],
+    final_n: int = 1,
+) -> Mapping[str, Any]:
+    """Run a chat completion, allowing the model to call tools first.
+
+    Tool-call rounds use ``n=1`` so that the single stream of tool messages is
+    well defined. When the model returns a message without tool calls, a final
+    request with ``n=final_n`` and no tools is issued so callers can obtain
+    multiple candidates. Raises ``ModelAdapterError`` if the model keeps
+    emitting tool calls after ``max_rounds`` rounds.
+    """
+    if not tools:
+        payload = dict(base_payload)
+        payload["n"] = final_n
+        return transport.post_json(
+            chat_completions_url(config.base_url),
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout_seconds=config.timeout_seconds,
+        )
+
+    tool_rounds = 0
+    while True:
+        payload = dict(base_payload)
+        payload["n"] = 1
+        payload["tools"] = [tool.openai_schema() for tool in tools]
+        payload["tool_choice"] = "auto"
+        response = transport.post_json(
+            chat_completions_url(config.base_url),
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout_seconds=config.timeout_seconds,
+        )
+        message = _first_message(response)
+        calls = extract_tool_calls(message)
+        if not calls:
+            break
+        if tool_rounds >= max_rounds:
+            raise ModelAdapterError(
+                f"Tool-call loop exceeded {max_rounds} round(s) without producing a final answer."
+            )
+        tool_rounds += 1
+        messages.append(dict(message))
+        for call in calls:
+            result = execute_tool(call)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": result.call_id,
+                    "content": result.content,
+                }
+            )
+
+    final_payload = dict(base_payload)
+    final_payload["n"] = final_n
+    return transport.post_json(
+        chat_completions_url(config.base_url),
+        headers={
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        },
+        payload=final_payload,
+        timeout_seconds=config.timeout_seconds,
+    )
+
+
+def _first_message(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the first assistant message from a chat-completions response."""
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ModelAdapterError("Model response is missing a choices list.")
+    first = choices[0]
+    if not isinstance(first, Mapping):
+        raise ModelAdapterError("Model choice is not an object.")
+    message = first.get("message")
+    if not isinstance(message, Mapping):
+        raise ModelAdapterError("Model choice is missing a message.")
+    return dict(message)

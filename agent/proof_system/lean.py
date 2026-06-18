@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
+from ..utils import resolve_executable
 from .base import (
     BudgetSlice,
     CandidateEdit,
@@ -50,8 +50,8 @@ class LeanAdapter(ProofSystemAdapter):
         self.project_root = Path(project_root).resolve() if project_root else None
         self.prefer_lake = prefer_lake
         self.disallow_sorry = disallow_sorry
-        self.lean_executable = _resolve_executable(lean_executable, "lean")
-        self.lake_executable = _resolve_executable(lake_executable, "lake")
+        self.lean_executable = resolve_executable(lean_executable, "lean")
+        self.lake_executable = resolve_executable(lake_executable, "lake")
         self.use_server = use_server
         self.server_startup_timeout_seconds = server_startup_timeout_seconds
         self.server_timeout_retries = server_timeout_retries
@@ -324,6 +324,7 @@ class LeanAdapter(ProofSystemAdapter):
         command = self._build_server_command()
         if command is None:
             return False
+        server: LeanServerClient | None = None
         try:
             server = LeanServerClient(
                 command,
@@ -333,9 +334,11 @@ class LeanAdapter(ProofSystemAdapter):
             server.start(timeout_seconds=timeout_seconds)
         except (OSError, LeanServerError):
             logger.warning("Failed to start Lean server; falling back to subprocess checks", exc_info=True)
-            server.close()
+            if server is not None:
+                server.close()
             self._server = None
             return False
+
         self._server = server
         logger.info("Started Lean server: command=%s cwd=%s", command, self.project_root)
         return True
@@ -445,10 +448,6 @@ def _combine_output(stdout: str | bytes | None, stderr: str | bytes | None) -> s
     return "\n".join(parts).strip()
 
 
-def _resolve_executable(explicit: str | None, fallback_name: str) -> str | None:
-    if explicit is not None:
-        return shutil.which(explicit) or (explicit if Path(explicit).exists() else None)
-    return shutil.which(fallback_name)
 
 
 def _contains_sorry_warning(raw_output: str) -> bool:
