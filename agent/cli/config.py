@@ -50,6 +50,15 @@ CONFIG_FIELDS: frozenset[str] = frozenset(
         "formalization_cache",
         "no_formalization_cache",
         "model_timeout",
+        "model",
+        "temperature",
+        "max_tokens",
+        "formalizer_model",
+        "formalizer_temperature",
+        "formalizer_max_tokens",
+        "proof_model",
+        "proof_temperature",
+        "proof_max_tokens",
         "run_name",
     }
 )
@@ -68,6 +77,11 @@ STRUCTURAL_FIELDS: frozenset[str] = frozenset(
         "proof_source",
         "source_template",
         "lean",
+        "schema_version",
+        "artifact_type",
+        "metadata",
+        "ok",
+        "stage",
     }
 )
 
@@ -93,6 +107,10 @@ def apply_task_config(args: Namespace) -> Namespace:
         )
 
     for key, value in config.items():
+        if key in STRUCTURAL_FIELDS:
+            continue
+        if key in getattr(args, "_cli_fields", set()):
+            continue
         if key == "retrieval_source":
             setattr(args, key, _coerce_retrieval_source(value))
         else:

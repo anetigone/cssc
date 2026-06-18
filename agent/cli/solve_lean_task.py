@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,12 +36,19 @@ from agent import (
     TaskBuildError,
     TaskInputKind,
 )
+from agent.agents import FormalizationRequest
+from agent.input.normalizer import InputNormalizer
 from agent.input.validation import LeanAdapterScaffoldChecker, ValidationConfig
 from agent.runtime.logging_config import configure_logging
 from agent.runtime.workspace import AttemptWorkspace
 
 from .config import apply_task_config
-from .generators import build_action_generator, build_formalization_agent, build_retriever
+from .artifacts import formalization_artifact, formalization_payload
+from .generators import (
+    build_action_generator,
+    build_formalization_agent,
+    build_retriever,
+)
 from .output import result_payload, task_summary
 from .parser import build_parser
 from .paths import find_lake_root, resolve_agent_path, resolve_agent_root
@@ -139,7 +147,7 @@ def _build_scaffold_checker(
     check_workspace: EphemeralCheckWorkspace | None,
 ) -> LeanAdapterScaffoldChecker | None:
     """Build a scaffold checker only when the input is natural language."""
-    if classify_input(args, task_config) != TaskInputKind.NATURAL_LANGUAGE:
+    if getattr(args, "no_check", False) or classify_input(args, task_config) != TaskInputKind.NATURAL_LANGUAGE:
         return None
     scaffold_timeout = args.scaffold_timeout
     if scaffold_timeout is None:
@@ -151,29 +159,63 @@ def _build_scaffold_checker(
     )
 
 
+def _fail(stage: str, exc: BaseException) -> int:
+    print(json.dumps({"ok": False, "stage": stage, "error": str(exc)}, indent=2))
+    return 2
+
+
+def _normalize_input(args: Namespace) -> Any:
+    """Normalize raw input into natural-language/Lean specs (no task building)."""
+    return InputNormalizer().normalize(
+        source=getattr(args, "source", None),
+        problem=getattr(args, "problem", None),
+        problem_file=getattr(args, "problem_file", None),
+        input_kind=getattr(args, "input_kind", "auto"),
+        task_config=getattr(args, "_task_config_data", None),
+        task_config_path=getattr(args, "_task_config_path", None),
+        agent_root=args.agent_root,
+        pattern=args.pattern,
+        split=args.split,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(argv)
+    defaults = parser.parse_args([args.command])
+    args._cli_fields = {
+        key
+        for key, value in vars(args).items()
+        if key != "command" and value != getattr(defaults, key, None)
+    }
     try:
+        _promote_positional_artifact(args)
         args = apply_task_config(args)
         agent_root = resolve_agent_root(args.agent_root)
         args.agent_root = str(agent_root)
-        args.formalization_cache_dir = _resolve_formalization_cache_dir(args)
-        if args.log_file:
+        if hasattr(args, "formalization_cache_dir"):
+            args.formalization_cache_dir = _resolve_formalization_cache_dir(args)
+        if getattr(args, "log_file", None):
             args.log_file = str(_run_artifact_path(agent_root, args.log_file, args.run_name))
-        if args.trace_jsonl:
+        if getattr(args, "trace_jsonl", None):
             args.trace_jsonl = str(_run_artifact_path(agent_root, args.trace_jsonl, args.run_name))
     except (OSError, ValueError) as exc:
-        print(json.dumps({"ok": False, "stage": "task_config", "error": str(exc)}, indent=2))
-        return 2
+        return _fail("task_config", exc)
 
     try:
         configure_logging(level=args.log_level, log_file=args.log_file)
     except ValueError as exc:
-        print(json.dumps({"ok": False, "stage": "logging_config", "error": str(exc)}, indent=2))
-        return 2
+        return _fail("logging_config", exc)
 
-    logger.info("CLI started: source=%s task_config=%s use_model=%s", args.source, args.task_config, args.use_model)
+    command = args.command
+    logger.info(
+        "CLI started: command=%s source=%s task_config=%s use_model=%s",
+        command,
+        args.source,
+        args.task_config,
+        args.use_model,
+    )
 
     agent_root = Path(args.agent_root)
     if args.project_root:
@@ -184,6 +226,22 @@ def main(argv: list[str] | None = None) -> int:
         project_root = None
     logger.debug("Using project_root=%s", project_root)
 
+    if command == "formalize":
+        return run_formalize(args, agent_root=agent_root, project_root=project_root)
+    if command == "prove":
+        return run_prove(args, agent_root=agent_root, project_root=project_root)
+    return run_solve(args, agent_root=agent_root, project_root=project_root)
+
+
+def _promote_positional_artifact(args: Namespace) -> None:
+    """Treat a positional JSON input to ``prove`` as its task config."""
+    source = getattr(args, "source", None)
+    if args.command == "prove" and not args.task_config and source and Path(source).suffix.lower() == ".json":
+        args.task_config = source
+        args.source = None
+
+
+def run_solve(args: Namespace, *, agent_root: Path, project_root: Path | None) -> int:
     with (
         _workspace_context(args.work_dir, agent_root=agent_root) as work_dir,
         _lean_services(args, project_root) as services,
@@ -206,39 +264,12 @@ def main(argv: list[str] | None = None) -> int:
 
             task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
             logger.info("Selected task: task_id=%s", task.task_id)
-            generator = build_action_generator(args, project_root=project_root)
-
             logger.debug("Using attempt workspace: %s", work_dir)
-            controller = ProofController(
-                adapter=services.adapter,
-                action_generator=generator,
-                workspace=AttemptWorkspace(work_dir),
-                check_workspace=check_workspace,
-                retriever=build_retriever(args),
-                budget_config=BudgetConfig(
-                    max_checks=args.max_checks,
-                    max_model_calls=args.max_model_calls,
-                    per_check_timeout_seconds=args.lean_timeout,
-                    max_elapsed_seconds=args.max_elapsed_seconds,
-                ),
-                config=ControllerConfig(
-                    max_candidates_per_model_call=args.max_candidates,
-                    max_repair_rounds=args.max_repair_rounds,
-                    max_retrieval_results=args.max_retrieval_results,
-                    retrieve_before_first_model_call=args.retrieve_before_first_model_call,
-                ),
-            )
-            try:
-                result = controller.run(task)
-            except ModelAdapterError as exc:
-                logger.exception("Controller run failed during model call")
-                print(json.dumps({"ok": False, "stage": "run", "error": str(exc)}, indent=2))
-                return 2
+            result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
 
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
-            logger.exception("CLI setup failed")
-            print(json.dumps({"ok": False, "stage": "setup", "error": str(exc)}, indent=2))
-            return 2
+            logger.debug("CLI setup failed", exc_info=True)
+            return _fail("setup", exc)
 
     if args.trace_jsonl:
         trace_path = resolve_agent_path(agent_root, args.trace_jsonl)
@@ -252,5 +283,166 @@ def main(argv: list[str] | None = None) -> int:
         result.stop_reason,
         len(result.attempts),
     )
-    print(json.dumps(result_payload(result, include_candidate_file=True), indent=2))
+    payload = result_payload(result, include_candidate_file=True)
+    payload["stage"] = "solve"
+    _emit_payload(args, payload, agent_root)
     return 0 if result.accepted else 1
+
+
+def run_prove(args: Namespace, *, agent_root: Path, project_root: Path | None) -> int:
+    """Run proof search without invoking the formalizer."""
+    task_config = getattr(args, "_task_config_data", None)
+    if classify_input(args, task_config) != TaskInputKind.LEAN:
+        return _fail("input_kind", ValueError("prove requires a Lean source or formalization artifact."))
+
+    with (
+        _workspace_context(args.work_dir, agent_root=agent_root) as work_dir,
+        _lean_services(args, project_root) as services,
+    ):
+        try:
+            check_workspace = build_check_workspace(args, agent_root=agent_root, project_root=project_root)
+            tasks = build_tasks(args, formalizer=None)
+            if args.list_tasks:
+                _emit_payload(
+                    args,
+                    {"tasks": [task_summary(task, index) for index, task in enumerate(tasks)]},
+                    agent_root,
+                )
+                return 0
+            task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
+            result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
+        except (TaskBuildError, ValueError, ModelAdapterError) as exc:
+            logger.debug("prove failed", exc_info=True)
+            return _fail("prove", exc)
+
+    if args.trace_jsonl:
+        JsonlTraceStore(
+            resolve_agent_path(agent_root, args.trace_jsonl),
+            include_raw_output=args.trace_raw_output,
+        ).append_result(result)
+    payload = result_payload(result, include_candidate_file=True)
+    payload["stage"] = "prove"
+    _emit_payload(args, payload, agent_root)
+    return 0 if result.accepted else 1
+
+
+def _run_controller(
+    args: Namespace,
+    task: Any,
+    services: _LeanServices,
+    work_dir: Path,
+    check_workspace: EphemeralCheckWorkspace | None,
+    project_root: Path | None,
+) -> Any:
+    generator = build_action_generator(args, project_root=project_root)
+    controller = ProofController(
+        adapter=services.adapter,
+        action_generator=generator,
+        workspace=AttemptWorkspace(work_dir),
+        check_workspace=check_workspace,
+        retriever=build_retriever(args),
+        budget_config=BudgetConfig(
+            max_checks=args.max_checks,
+            max_model_calls=args.max_model_calls,
+            per_check_timeout_seconds=args.lean_timeout,
+            max_elapsed_seconds=args.max_elapsed_seconds,
+        ),
+        config=ControllerConfig(
+            max_candidates_per_model_call=args.max_candidates,
+            max_repair_rounds=args.max_repair_rounds,
+            max_retrieval_results=args.max_retrieval_results,
+            retrieve_before_first_model_call=args.retrieve_before_first_model_call,
+        ),
+    )
+    return controller.run(task)
+
+
+def run_formalize(args: Namespace, *, agent_root: Path, project_root: Path | None) -> int:
+    """Run only the formalizer and print the validated Lean scaffold(s)."""
+    task_config = getattr(args, "_task_config_data", None)
+    if classify_input(args, task_config) != TaskInputKind.NATURAL_LANGUAGE:
+        return _fail(
+            "input_kind",
+            ValueError("formalize requires natural-language input; use 'solve' for Lean sources."),
+        )
+
+    try:
+        normalized = _normalize_input(args)
+        if args.list_tasks:
+            payload = {
+                "tasks": [
+                    {
+                        "index": index,
+                        "task_id": spec.task_id,
+                        "imports": list(spec.imports),
+                        "problem_excerpt": spec.text[:200],
+                    }
+                    for index, spec in enumerate(normalized.specs)
+                ]
+            }
+            _emit_payload(args, payload, agent_root)
+            return 0
+        specs = _select_specs(
+            normalized.specs,
+            task_id=args.task_id,
+            task_index=args.task_index,
+            all_tasks=getattr(args, "all_tasks", False),
+        )
+        if getattr(args, "no_check", False):
+            results = _formalize_specs(args, specs, checker=None, project_root=project_root)
+        else:
+            with _lean_services(args, project_root) as services:
+                check_workspace = build_check_workspace(args, agent_root=agent_root, project_root=project_root)
+                checker = _build_scaffold_checker(args, services, task_config, check_workspace)
+                results = _formalize_specs(args, specs, checker=checker, project_root=project_root)
+    except (TaskBuildError, ValueError, ModelAdapterError) as exc:
+        logger.debug("formalize failed", exc_info=True)
+        return _fail("formalize", exc)
+
+    payload = formalization_payload(results)
+    _emit_payload(args, payload, agent_root)
+    return 0
+
+
+def _select_specs(specs: tuple[Any, ...], *, task_id: str | None, task_index: int, all_tasks: bool) -> list[Any]:
+    if all_tasks:
+        return list(specs)
+    if task_id is not None:
+        for spec in specs:
+            if spec.task_id == task_id:
+                return [spec]
+        raise ValueError(f"Task id not found: {task_id}")
+    if task_index < 0 or task_index >= len(specs):
+        raise ValueError(f"Task index {task_index} is out of range for {len(specs)} tasks.")
+    return [specs[task_index]]
+
+
+def _formalize_specs(args: Namespace, specs: list[Any], *, checker: Any, project_root: Path | None) -> list[dict[str, Any]]:
+    formalizer = build_formalization_agent(args, checker=checker, project_root=project_root)
+    if formalizer is None:
+        raise ValueError("formalize requires natural-language input.")
+    artifacts: list[dict[str, Any]] = []
+    for spec in specs:
+        outcome = formalizer.formalize(
+            FormalizationRequest(
+                problem=spec.text,
+                task_id=spec.task_id,
+                imports=spec.imports,
+                informal_proof=spec.informal_proof,
+                context=spec.context,
+                hole_marker=args.hole_marker,
+                metadata=spec.metadata,
+            )
+        )
+        artifacts.append(formalization_artifact(spec, outcome, hole_marker=args.hole_marker))
+    return artifacts
+
+
+def _emit_payload(args: Namespace, payload: dict[str, Any], agent_root: Path) -> None:
+    rendered = json.dumps(payload, indent=2, ensure_ascii=False)
+    output = getattr(args, "output", None)
+    if output:
+        path = resolve_agent_path(agent_root, output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)

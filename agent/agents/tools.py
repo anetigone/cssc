@@ -410,10 +410,11 @@ def run_tool_loop(
     """Run a chat completion, allowing the model to call tools first.
 
     Tool-call rounds use ``n=1`` so that the single stream of tool messages is
-    well defined. When the model returns a message without tool calls, a final
-    request with ``n=final_n`` and no tools is issued so callers can obtain
-    multiple candidates. Raises ``ModelAdapterError`` if the model keeps
-    emitting tool calls after ``max_rounds`` rounds.
+    well defined. A tool-capable response that already contains a final answer
+    is returned directly when ``final_n == 1``. A separate tool-free request is
+    only needed for multiple candidates or when the tool-capable response has
+    no usable content. Raises ``ModelAdapterError`` if the model keeps emitting
+    tool calls after ``max_rounds`` rounds.
     """
     if not tools:
         payload = dict(base_payload)
@@ -446,6 +447,9 @@ def run_tool_loop(
         message = _first_message(response)
         calls = extract_tool_calls(message)
         if not calls:
+            content = message.get("content")
+            if final_n == 1 and isinstance(content, str) and content.strip():
+                return response
             break
         if tool_rounds >= max_rounds:
             raise ModelAdapterError(

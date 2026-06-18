@@ -1,4 +1,4 @@
-"""Argument parser for the Lean task-solving CLI."""
+"""Argument parser for the staged Lean proof-agent CLI."""
 
 from __future__ import annotations
 
@@ -9,171 +9,148 @@ from .paths import ROOT
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Extract Lean proof-completion tasks and solve one selected task."
+        prog="cssc",
+        description="Formalize natural-language mathematics and search for Lean proofs.",
     )
+    subcommands = parser.add_subparsers(dest="command", required=True)
 
-    # --- Input source & task selection -------------------------------------
-    parser.add_argument("source", nargs="?", default=None, help="Lean file or directory to scan.")
-    parser.add_argument(
-        "--agent-root",
-        default=str(ROOT),
-        help="Root for agent-owned config, runs, traces, and relative paths.",
+    solve = subcommands.add_parser(
+        "solve",
+        help="Run the complete formalize -> prove pipeline.",
+        description="Solve a natural-language problem or Lean proof-completion task end to end.",
     )
-    parser.add_argument(
-        "--task-config",
-        default=None,
-        help="JSON task config, usually under data/tasks/, with source/project_root/retrieval_source fields.",
-    )
-    parser.add_argument("--list-tasks", action="store_true", help="List extracted tasks and exit.")
-    parser.add_argument("--task-index", type=int, default=0, help="Zero-based task index to solve.")
-    parser.add_argument("--task-id", default=None, help="Task id to solve; overrides --task-index.")
-    parser.add_argument("--split", default=None, help="Dataset split metadata for extracted tasks.")
-    parser.add_argument("--hole-marker", default="{{proof}}")
-    parser.add_argument("--allow-multiple-marker-tasks", action="store_true")
-    parser.add_argument("--allow-multiple-sorry-tasks", action="store_true")
-    parser.add_argument("--inactive-hole-fill", default="sorry")
-    parser.add_argument("--pattern", default="*.lean", help="Directory scan pattern.")
-    parser.add_argument(
-        "--input-kind",
-        choices=("auto", "lean", "natural_language"),
-        default="auto",
-        help="Interpret source/task config as Lean, natural-language prose, or infer from extension/config.",
-    )
-    parser.add_argument("--problem", default=None, help="Natural-language problem statement.")
-    parser.add_argument(
-        "--problem-file",
-        default=None,
-        help="UTF-8 file containing a natural-language problem statement.",
-    )
+    _add_input_args(solve)
+    _add_task_selection_args(solve, include_all=False)
+    _add_runtime_args(solve)
+    _add_formalization_args(solve, role_prefix=True)
+    _add_proof_args(solve, role_prefix=True)
+    _add_output_arg(solve)
 
-    # --- Candidate generation ---------------------------------------------
-    parser.add_argument("--candidate", action="append", default=[], help="Static proof candidate.")
-    parser.add_argument(
-        "--candidate-file",
-        action="append",
-        default=[],
-        help="UTF-8 file containing one static proof candidate.",
+    formalize = subcommands.add_parser(
+        "formalize",
+        help="Convert natural-language input into a Lean scaffold.",
+        description="Formalize one selected natural-language task, or all tasks with --all.",
     )
-    parser.add_argument("--use-model", action="store_true", help="Use OpenAI-compatible chat config.")
-    parser.add_argument("--env-file", default=str(ROOT / ".env"))
-    parser.add_argument("--max-candidates", type=int, default=1)
-    parser.add_argument("--max-model-calls", type=int, default=3)
+    _add_input_args(formalize)
+    _add_task_selection_args(formalize, include_all=True)
+    _add_runtime_args(formalize)
+    _add_formalization_args(formalize, role_prefix=False)
+    _add_output_arg(formalize)
 
-    parser.add_argument(
-        "--model-max-tokens",
-        type=int,
-        default=16384,
-        help="Maximum completion tokens per model call, including hidden reasoning tokens.",
+    prove = subcommands.add_parser(
+        "prove",
+        help="Run proof search on a Lean scaffold or formalization artifact.",
+        description="Prove one selected Lean task from a file, config, or formalization artifact.",
     )
-    parser.add_argument("--max-repair-rounds", type=int, default=2)
-
-
-    # --- Retrieval ---------------------------------------------------------
-    parser.add_argument("--enable-retrieval", action="store_true", help="Use lexical retrieval over local Lean files.")
-    parser.add_argument(
-        "--retrieval-source",
-        action="append",
-        default=[],
-        help="Lean file or directory to index for retrieval. Defaults to --source when retrieval is enabled.",
-    )
-    parser.add_argument("--max-retrieval-results", type=int, default=5)
-    parser.add_argument(
-        "--retrieve-before-first-model-call",
-        action="store_true",
-        help="Retrieve local snippets before the first model proposal.",
-    )
-
-    # --- Timeouts & budget -------------------------------------------------
-    parser.add_argument("--lean-timeout", type=float, default=10.0, help="Per-proof-check wall-clock timeout in seconds.")
-    parser.add_argument(
-        "--scaffold-timeout",
-        type=float,
-        default=None,
-        help=(
-            "Timeout in seconds for the formalizer's scaffold validation step. "
-            "Defaults to --lean-timeout. The validation checker uses the persistent "
-            "Lean server unless --no-lean-server is set."
-        ),
-    )
-    parser.add_argument(
-        "--model-timeout",
-        type=float,
-        default=60.0,
-        help="Timeout in seconds for each OpenAI-compatible model call.",
-    )
-    parser.add_argument("--max-checks", type=int, default=3)
-
-    parser.add_argument("--max-elapsed-seconds", type=float, default=None)
-
-    # --- Formalization cache ----------------------------------------------
-    parser.add_argument(
-        "--formalization-cache-dir",
-        default=None,
-        help=(
-            "Directory for Lean-validated natural-language formalization cache entries. "
-            "Disabled by default; set a path (or pass --formalization-cache) to enable."
-        ),
-    )
-    parser.add_argument(
-        "--formalization-cache",
-        action="store_true",
-        help="Enable the formalization cache at the default .runs/formalization_cache.",
-    )
-    parser.add_argument(
-        "--no-formalization-cache",
-        action="store_true",
-        help="Disable the formalization cache even if --formalization-cache-dir is set.",
-    )
-
-    # --- Lean execution ----------------------------------------------------
-    parser.add_argument("--project-root", default=None, help="Lake project root; auto-detected by default.")
-    parser.add_argument("--no-lake", action="store_true", help="Call lean directly instead of lake env lean.")
-    parser.add_argument(
-        "--no-lean-server",
-        action="store_true",
-        help="Disable the persistent Lean language server and run a fresh lean process per check.",
-    )
-    parser.add_argument(
-        "--lean-server-startup-timeout",
-        type=float,
-        default=60.0,
-        help="Timeout in seconds for the persistent Lean server initialize handshake.",
-    )
-    parser.add_argument("--allow-sorry", action="store_true", help="Do not reject remaining sorry warnings.")
-    parser.add_argument(
-        "--work-dir",
-        default=None,
-        help="Agent-side directory for archived candidates. Defaults to AGENT_ROOT/.runs.",
-    )
-    parser.add_argument(
-        "--check-work-dir",
-        default=None,
-        help=(
-            "Checker-side temporary directory, resolved under --project-root when relative. "
-            "Defaults to PROJECT_ROOT/.checks when a Lake project is used."
-        ),
-    )
-    parser.add_argument(
-        "--keep-check-files",
-        action="store_true",
-        help="Keep checker-side temporary Lean files for debugging.",
-    )
-
-    # --- Artifacts & logging ----------------------------------------------
-    parser.add_argument(
-        "--run-name",
-        default=None,
-        help=(
-            "Group log/trace artifacts under AGENT_ROOT/.runs/<run-name>/. "
-            "When set, --log-file/--trace-jsonl are written into that directory."
-        ),
-    )
-    parser.add_argument("--trace-jsonl", default=None, help="Append controller trace events to JSONL.")
-    parser.add_argument(
-        "--trace-raw-output",
-        action="store_true",
-        help="Include raw checker output in JSONL traces.",
-    )
-    parser.add_argument("--log-level", default="WARNING", help="Python logging level.")
-    parser.add_argument("--log-file", default=None, help="Optional file for debug logs.")
+    _add_input_args(prove, natural_language=False)
+    _add_task_selection_args(prove, include_all=False)
+    _add_runtime_args(prove)
+    _add_proof_args(prove, role_prefix=False)
+    _add_output_arg(prove)
     return parser
+
+
+def _add_input_args(parser: argparse.ArgumentParser, *, natural_language: bool = True) -> None:
+    group = parser.add_argument_group("input")
+    group.add_argument("source", nargs="?", default=None, help="Input file or directory.")
+    group.add_argument("--task-config", default=None, help="JSON task config or stage artifact.")
+    choices = ("auto", "lean", "natural_language") if natural_language else ("auto", "lean")
+    group.add_argument("--input-kind", choices=choices, default="auto")
+    if natural_language:
+        group.add_argument("--problem", default=None, help="Inline natural-language problem.")
+        group.add_argument("--problem-file", default=None, help="UTF-8 natural-language problem file.")
+    group.add_argument("--pattern", default="*.lean", help="Directory scan pattern.")
+    group.add_argument("--split", default=None)
+    group.add_argument("--hole-marker", default="{{proof}}")
+    group.add_argument("--allow-multiple-marker-tasks", action="store_true")
+    group.add_argument("--allow-multiple-sorry-tasks", action="store_true")
+    group.add_argument("--inactive-hole-fill", default="sorry")
+
+
+def _add_task_selection_args(parser: argparse.ArgumentParser, *, include_all: bool) -> None:
+    group = parser.add_argument_group("task selection")
+    group.add_argument("--list-tasks", action="store_true")
+    group.add_argument("--task-index", type=int, default=0)
+    group.add_argument("--task-id", default=None)
+    if include_all:
+        group.add_argument("--all", action="store_true", dest="all_tasks", help="Process every input task.")
+
+
+def _add_runtime_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("runtime")
+    group.add_argument("--agent-root", default=str(ROOT))
+    group.add_argument("--env-file", default=str(ROOT / ".env"))
+    group.add_argument("--project-root", default=None)
+    group.add_argument("--lean-timeout", type=float, default=10.0)
+    group.add_argument("--model-timeout", type=float, default=60.0)
+    group.add_argument("--scaffold-timeout", type=float, default=None)
+    group.add_argument("--no-lake", action="store_true")
+    group.add_argument("--no-lean-server", action="store_true")
+    group.add_argument("--lean-server-startup-timeout", type=float, default=60.0)
+    group.add_argument("--allow-sorry", action="store_true")
+    group.add_argument("--check-work-dir", default=None)
+    group.add_argument("--keep-check-files", action="store_true")
+    group.add_argument("--log-level", default="WARNING")
+    group.add_argument("--log-file", default=None)
+    group.add_argument("--run-name", default=None)
+
+
+def _add_model_args(parser: argparse.ArgumentParser, *, role: str | None) -> None:
+    prefix = f"{role}-" if role else ""
+    dest_prefix = f"{role}_" if role else ""
+    group = parser.add_argument_group(f"{role or 'stage'} model")
+    group.add_argument(f"--{prefix}model", dest=f"{dest_prefix}model", default=None)
+    group.add_argument(
+        f"--{prefix}temperature", dest=f"{dest_prefix}temperature", type=float, default=None
+    )
+    group.add_argument(
+        f"--{prefix}max-tokens", dest=f"{dest_prefix}max_tokens", type=int, default=None
+    )
+
+
+def _add_formalization_args(parser: argparse.ArgumentParser, *, role_prefix: bool) -> None:
+    group = parser.add_argument_group("formalization")
+    if not role_prefix:
+        _add_model_toggle(group)
+    group.add_argument("--no-check", action="store_true", help="Skip Lean scaffold validation.")
+    group.add_argument("--formalization-cache-dir", default=None)
+    group.add_argument("--formalization-cache", action="store_true")
+    group.add_argument("--no-formalization-cache", action="store_true")
+    _add_model_args(parser, role="formalizer" if role_prefix else None)
+
+
+def _add_proof_args(parser: argparse.ArgumentParser, *, role_prefix: bool) -> None:
+    group = parser.add_argument_group("proof search")
+    _add_model_toggle(group)
+    group.add_argument("--candidate", action="append", default=[])
+    group.add_argument("--candidate-file", action="append", default=[])
+    group.add_argument("--max-candidates", type=int, default=1)
+    group.add_argument("--max-model-calls", type=int, default=3)
+    group.add_argument("--max-repair-rounds", type=int, default=2)
+    group.add_argument("--max-checks", type=int, default=3)
+    group.add_argument("--max-elapsed-seconds", type=float, default=None)
+    group.add_argument("--enable-retrieval", action="store_true")
+    group.add_argument("--retrieval-source", action="append", default=[])
+    group.add_argument("--max-retrieval-results", type=int, default=5)
+    group.add_argument("--retrieve-before-first-model-call", action="store_true")
+    group.add_argument("--work-dir", default=None)
+    group.add_argument("--trace-jsonl", default=None)
+    group.add_argument("--trace-raw-output", action="store_true")
+    _add_model_args(parser, role="proof" if role_prefix else None)
+
+
+def _add_output_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("-o", "--output", default=None, help="Also write the JSON result to this file.")
+
+
+def _add_model_toggle(group: argparse._ArgumentGroup) -> None:
+    toggle = group.add_mutually_exclusive_group()
+    toggle.add_argument("--use-model", action="store_true", dest="use_model", help=argparse.SUPPRESS)
+    toggle.add_argument(
+        "--no-model",
+        "--no-use-model",
+        action="store_false",
+        dest="use_model",
+        help="Disable model calls; proof commands then require static candidates.",
+    )
+    group.set_defaults(use_model=None)

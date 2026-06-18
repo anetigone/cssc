@@ -117,6 +117,50 @@ class ChatDriverTests(unittest.TestCase):
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_1")
         self.assertNotIn("tools", transport.calls[2])
 
+    def test_complete_reuses_tool_capable_response_when_it_is_already_final(self) -> None:
+        tool = FunctionTool(
+            name="echo",
+            description="Echo.",
+            parameters={"type": "object", "properties": {}},
+            _execute=lambda args: json.dumps(args),
+        )
+        transport = RecordingTransport(
+            [{"choices": [{"message": {"role": "assistant", "content": "done"}}]}]
+        )
+        driver = ChatDriver(
+            ChatConfig(api_key="k", model="m"),
+            transport=transport,
+            tools=[tool],
+        )
+
+        response = driver.complete([{"role": "user", "content": "hi"}], final_n=1)
+
+        self.assertEqual(response["choices"][0]["message"]["content"], "done")
+        self.assertEqual(len(transport.calls), 1)
+        self.assertIn("tools", transport.calls[0])
+
+    def test_complete_keeps_final_request_for_multiple_candidates(self) -> None:
+        tool = FunctionTool(
+            name="echo",
+            description="Echo.",
+            parameters={"type": "object", "properties": {}},
+            _execute=lambda args: json.dumps(args),
+        )
+        transport = RecordingTransport(
+            [
+                {"choices": [{"message": {"content": "single"}}]},
+                {"choices": [{"message": {"content": "many"}}]},
+            ]
+        )
+        driver = ChatDriver(ChatConfig(api_key="k", model="m"), transport=transport, tools=[tool])
+
+        response = driver.complete([], final_n=3)
+
+        self.assertEqual(response["choices"][0]["message"]["content"], "many")
+        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(transport.calls[1]["n"], 3)
+        self.assertNotIn("tools", transport.calls[1])
+
     def test_execute_tool_returns_error_for_unknown_tool(self) -> None:
         driver = ChatDriver(ChatConfig(api_key="k", model="m"), transport=RecordingTransport([]))
         result = driver.execute_tool(ToolCall(id="c1", name="missing", arguments={}))

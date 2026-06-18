@@ -54,9 +54,17 @@ class ChatConfig:
         *,
         timeout_seconds: float,
         max_tokens: int = 16384,
+        model: str | None = None,
+        temperature: float | None = None,
     ) -> "ChatConfig":
+        """Build a config from environment, with optional per-call overrides.
+
+        ``model`` and ``temperature`` default to ``None``, meaning "use the
+        environment / dataclass default", so existing callers are unaffected.
+        Passing a value overrides it for this config only.
+        """
         api_key = os.environ.get("OPENAI_API_KEY", "")
-        model = os.environ.get("OPENAI_MODEL", "")
+        resolved_model = model or os.environ.get("OPENAI_MODEL", "")
         base_url = (
             os.environ.get("OPENAI_BASE_URL")
             or os.environ.get("OPENAI_API_BASE")
@@ -64,15 +72,18 @@ class ChatConfig:
         )
         if not api_key:
             raise ModelAdapterError("OPENAI_API_KEY is not set.")
-        if not model:
+        if not resolved_model:
             raise ModelAdapterError("OPENAI_MODEL is not set.")
-        return cls(
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            timeout_seconds=timeout_seconds,
-            max_tokens=max_tokens,
-        )
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "model": resolved_model,
+            "base_url": base_url,
+            "timeout_seconds": timeout_seconds,
+            "max_tokens": max_tokens,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        return cls(**kwargs)
 
 
 class UrllibChatTransport:

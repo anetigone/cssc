@@ -1,5 +1,25 @@
 # Cost-Sensitive Search Control for LLM-Guided Formal Proof Agents
 
+## CLI
+
+Run the complete natural-language-to-proof pipeline:
+
+```bash
+python -m agent.cli solve --problem "Prove True"
+```
+
+The same pipeline can be controlled as two explicit stages. The formalization
+output is a task-config-compatible JSON artifact that `prove` accepts directly:
+
+```bash
+python -m agent.cli formalize problem.md -o scaffold.json
+python -m agent.cli prove scaffold.json -o proof.json
+```
+
+Use `--formalizer-model` and `--proof-model` with `solve`, or the shorter
+`--model` option on an individual stage. Proof repair rounds reuse the proof
+model rather than having a separate model role.
+
 ## Project Positioning
 
 This project studies how an LLM-based formal proof agent should allocate a limited inference budget. Instead of improving theorem proving mainly through larger models, more samples, or expensive training, the focus is on search control: when to expand a branch, repair a failed proof step, retrieve supporting lemmas, backtrack, prune, or escalate to a stronger model.

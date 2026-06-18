@@ -34,24 +34,19 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
         candidates.append(Path(path).read_text(encoding="utf-8"))
 
     if candidates:
-        if args.use_model:
+        if args.use_model is True:
             logger.warning(
                 "Static candidates take precedence; --use-model is ignored. "
                 "Drop --candidate/--candidate-file to use the model."
             )
         logger.debug("Using %d static candidate(s)", len(candidates))
         return StaticActionGenerator(candidates)
-    if args.use_model:
+    if args.use_model is not False:
         _ensure_env_loaded(args)
-        tools = None
-        if project_root is not None:
-            tools = LeanEnvironmentToolProvider(
-                project_root=project_root,
-                lake_executable=getattr(args, "lake_executable", None),
-                lean_executable=getattr(args, "lean_executable", None),
-            ).tools()
-        return ChatActionGenerator(_model_config(args), tools=tools)
-    raise ValueError("Provide --candidate, --candidate-file, or --use-model.")
+        return ChatActionGenerator(_model_config(args, role="proof"), tools=_lean_tools(args, project_root))
+    raise ValueError(
+        "Model calls are disabled. Provide --candidate/--candidate-file or remove --no-model."
+    )
 
 
 def build_formalization_agent(
@@ -62,26 +57,21 @@ def build_formalization_agent(
 ) -> ChatFormalizationAgent | None:
     if not _needs_formalizer(args):
         return None
-    if not args.use_model:
-        raise ValueError("Natural-language tasks require --use-model so the formalizer can create Lean.")
+    if args.use_model is False:
+        raise ValueError(
+            "Natural-language formalization requires a model. Remove --no-model or provide Lean input."
+        )
     _ensure_env_loaded(args)
     cache = None
     if args.formalization_cache_dir:
         cache = VerifiedFormalizationCache(
             resolve_agent_path(Path(args.agent_root), args.formalization_cache_dir)
         )
-    tools = None
-    if project_root is not None:
-        tools = LeanEnvironmentToolProvider(
-            project_root=project_root,
-            lake_executable=getattr(args, "lake_executable", None),
-            lean_executable=getattr(args, "lean_executable", None),
-        ).tools()
     return ChatFormalizationAgent(
-        _model_config(args),
+        _model_config(args, role="formalizer"),
         checker=checker,
         cache=cache,
-        tools=tools,
+        tools=_lean_tools(args, project_root),
     )
 
 
@@ -94,11 +84,40 @@ def _ensure_env_loaded(args: Namespace) -> None:
         logger.debug("Environment file does not exist: %s", env_path)
 
 
-def _model_config(args: Namespace) -> ChatConfig:
-    return ChatConfig.from_env(
-        timeout_seconds=args.model_timeout,
-        max_tokens=args.model_max_tokens,
+def _model_config(args: Namespace, *, role: str = "proof") -> ChatConfig:
+    """Build a ChatConfig, honouring per-role overrides when they are set.
+
+    ``role`` selects the CLI override prefix (``--<role>-model`` etc.). The
+    ``getattr(..., None)`` defaults matter because callers (notably tests) build
+    a Namespace that does not carry the per-role destinations; absence means
+    "fall back to the global default / environment".
+    """
+    model = getattr(args, f"{role}_model", None) or getattr(args, "model", None)
+    temperature = getattr(args, f"{role}_temperature", None)
+    if temperature is None:
+        temperature = getattr(args, "temperature", None)
+    max_tokens = (
+        getattr(args, f"{role}_max_tokens", None)
+        or getattr(args, "max_tokens", None)
+        or getattr(args, "model_max_tokens", None)
+        or 16384
     )
+    return ChatConfig.from_env(
+        timeout_seconds=getattr(args, "model_timeout", 60.0),
+        max_tokens=max_tokens,
+        model=model,
+        temperature=temperature,
+    )
+
+
+def _lean_tools(args: Namespace, project_root: Path | None):
+    if project_root is None:
+        return None
+    return LeanEnvironmentToolProvider(
+        project_root=project_root,
+        lake_executable=getattr(args, "lake_executable", None),
+        lean_executable=getattr(args, "lean_executable", None),
+    ).tools()
 
 
 def _needs_formalizer(args: Namespace) -> bool:

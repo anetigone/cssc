@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from argparse import Namespace
@@ -11,6 +12,7 @@ from agent import TaskInputKind
 from agent.cli.output import result_payload
 from agent.cli.config import apply_task_config
 from agent.cli.generators import build_action_generator
+from agent.cli.parser import build_parser
 from agent.cli.paths import find_lake_root, resolve_agent_path
 from agent.cli.solve_lean_task import _run_artifact_path
 from agent.cli.tasks import build_tasks, classify_input, select_task
@@ -365,11 +367,201 @@ class SolveLeanTaskCliTests(unittest.TestCase):
         self.assertIn("natural-language problem", str(ctx.exception).lower())
 
 
+class CliSubcommandTests(unittest.TestCase):
+    def test_parser_exposes_three_stage_commands(self) -> None:
+        parser = build_parser()
+        top_help = _format_help(parser, ["--help"])
+        self.assertIn("solve", top_help)
+        self.assertIn("formalize", top_help)
+        self.assertIn("prove", top_help)
+
+    def test_parser_scopes_stage_model_flags(self) -> None:
+        parser = build_parser()
+        solve_help = _format_help(parser, ["solve", "--help"])
+        formalize_help = _format_help(parser, ["formalize", "--help"])
+        prove_help = _format_help(parser, ["prove", "--help"])
+
+        for flag in ("--formalizer-model", "--formalizer-temperature", "--formalizer-max-tokens"):
+            self.assertIn(flag, solve_help)
+            self.assertNotIn(flag, formalize_help)
+        for flag in ("--proof-model", "--proof-temperature", "--proof-max-tokens"):
+            self.assertIn(flag, solve_help)
+            self.assertNotIn(flag, formalize_help)
+        for stage_help in (formalize_help, prove_help):
+            self.assertIn("--model", stage_help)
+            self.assertIn("--temperature", stage_help)
+            self.assertIn("--max-tokens", stage_help)
+        self.assertNotIn("--repair-model", solve_help)
+
+    def test_parser_parses_per_role_overrides(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "solve",
+                "Basic.lean",
+                "--formalizer-model",
+                "f-model",
+                "--formalizer-temperature",
+                "0.1",
+                "--proof-model",
+                "p-model",
+            ]
+        )
+        self.assertEqual(args.command, "solve")
+        self.assertEqual(args.formalizer_model, "f-model")
+        self.assertAlmostEqual(args.formalizer_temperature, 0.1)
+        self.assertEqual(args.proof_model, "p-model")
+
+    def test_formalize_and_prove_use_generic_stage_model_flags(self) -> None:
+        parser = build_parser()
+        formalize = parser.parse_args(["formalize", "--problem", "x", "--model", "f-model"])
+        prove = parser.parse_args(["prove", "Basic.lean", "--model", "p-model"])
+        self.assertEqual(formalize.model, "f-model")
+        self.assertEqual(prove.model, "p-model")
+
+    def test_no_model_explicitly_disables_model_calls(self) -> None:
+        parser = build_parser()
+        for command in (
+            ["solve", "Basic.lean", "--no-model"],
+            ["formalize", "--problem", "x", "--no-use-model"],
+            ["prove", "Basic.lean", "--no-model"],
+        ):
+            self.assertIs(parser.parse_args(command).use_model, False)
+
+    def test_no_model_gives_friendly_formalization_error(self) -> None:
+        from agent.cli.generators import build_formalization_agent
+
+        args = _args(
+            source=None,
+            input_kind="natural_language",
+            problem="Prove True.",
+            use_model=False,
+        )
+        with self.assertRaisesRegex(ValueError, "formalization requires a model"):
+            build_formalization_agent(args)
+
+    def test_model_config_honours_role_overrides(self) -> None:
+        from agent.cli.generators import _model_config
+
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "k", "OPENAI_MODEL": "env-model"}),
+            patch("agent.cli.generators.load_dotenv"),
+        ):
+            formalizer_cfg = _model_config(_args(use_model=True, formalizer_model="f-model"), role="formalizer")
+            proof_cfg = _model_config(_args(use_model=True), role="proof")
+
+        self.assertEqual(formalizer_cfg.model, "f-model")
+        self.assertEqual(proof_cfg.model, "env-model")  # proof role falls back to env
+
+    def test_model_config_temperature_override_flows_into_config(self) -> None:
+        from agent.cli.generators import _model_config
+
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "k", "OPENAI_MODEL": "env-model"}),
+            patch("agent.cli.generators.load_dotenv"),
+        ):
+            cfg = _model_config(_args(use_model=True, formalizer_temperature=0.0), role="formalizer")
+
+        self.assertEqual(cfg.temperature, 0.0)
+
+    def test_run_formalize_rejects_lean_input(self) -> None:
+        from agent.cli import solve_lean_task as cli
+
+        args = _args(source="Basic.lean", input_kind="lean")
+        with patch.object(cli, "_lean_services") as services_ctx:
+            services_ctx.return_value.__enter__.return_value = cli._LeanServices(
+                adapter=object(), validation_adapter=object()
+            )
+            with patch.object(cli, "_workspace_context") as ws_ctx:
+                ws_ctx.return_value.__enter__.return_value = Path(".")
+                rc = cli.run_formalize(args, agent_root=Path("."), project_root=None)
+
+        self.assertEqual(rc, 2)
+
+    def test_run_formalize_prints_scaffold_for_natural_language(self) -> None:
+        from agent.cli import solve_lean_task as cli
+
+        args = _args(
+            command="formalize",
+            source=None,
+            input_kind="natural_language",
+            problem="Prove True.",
+            use_model=True,
+            no_check=True,
+            all_tasks=False,
+        )
+        formalizer = StaticFormalizationAgent(
+            FormalizationResult(
+                proof_source="theorem sample : True := by\n  sorry\n",
+                natural_language_proof="trivial",
+                metadata={"model": "static"},
+            )
+        )
+        with (
+            patch.object(cli, "build_formalization_agent", return_value=formalizer),
+            patch("builtins.print") as printed,
+        ):
+            rc = cli.run_formalize(args, agent_root=Path("."), project_root=None)
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(printed.call_args.args[0])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["stage"], "formalize")
+        artifact = payload["tasks"][0]
+        self.assertEqual(artifact["source_template"], "theorem sample : True := by\n  sorry\n")
+        self.assertEqual(artifact["metadata"]["natural_language_proof"], "trivial")
+
+    def test_formalize_list_tasks_does_not_build_model_or_lean(self) -> None:
+        from agent.cli import solve_lean_task as cli
+
+        args = _args(
+            command="formalize",
+            source=None,
+            input_kind="natural_language",
+            problem="Prove True.",
+            list_tasks=True,
+            all_tasks=False,
+        )
+        with (
+            patch.object(cli, "build_formalization_agent") as build_agent,
+            patch.object(cli, "_lean_services") as lean_services,
+            patch("builtins.print"),
+        ):
+            rc = cli.run_formalize(args, agent_root=Path("."), project_root=None)
+        self.assertEqual(rc, 0)
+        build_agent.assert_not_called()
+        lean_services.assert_not_called()
+
+    def test_positional_json_is_promoted_for_prove(self) -> None:
+        from agent.cli.solve_lean_task import _promote_positional_artifact
+
+        args = Namespace(command="prove", source="scaffold.json", task_config=None)
+        _promote_positional_artifact(args)
+        self.assertEqual(args.task_config, "scaffold.json")
+        self.assertIsNone(args.source)
+
+
+def _format_help(parser, argv) -> str:
+    """Render a subcommand help string without raising SystemExit."""
+    import io
+    from contextlib import redirect_stderr, redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf), redirect_stderr(buf):
+        try:
+            parser.parse_args(argv)
+        except SystemExit:
+            pass
+    return buf.getvalue()
+
+
 def _args(**overrides) -> Namespace:
     values = {
+        "command": "solve",
         "source": "Basic.lean",
         "agent_root": ".",
         "task_config": None,
+        "list_tasks": False,
         "project_root": None,
         "split": None,
         "task_id": None,
@@ -390,9 +582,19 @@ def _args(**overrides) -> Namespace:
         "retrieval_source": [],
         "max_retrieval_results": 5,
         "retrieve_before_first_model_call": False,
+        "max_candidates": 1,
+        "max_model_calls": 3,
+        "max_repair_rounds": 2,
         "no_lake": False,
+        "no_lean_server": False,
+        "allow_sorry": False,
+        "lean_timeout": 10.0,
+        "scaffold_timeout": None,
         "check_work_dir": None,
         "keep_check_files": False,
+        "max_checks": 3,
+        "max_elapsed_seconds": None,
+        "work_dir": None,
         "model_timeout": 60.0,
         "model_max_tokens": 16384,
         "lean_server_startup_timeout": 60.0,
@@ -400,14 +602,23 @@ def _args(**overrides) -> Namespace:
         "formalization_cache": False,
         "no_formalization_cache": False,
         "run_name": None,
+        "trace_jsonl": None,
+        "trace_raw_output": False,
+        "formalizer_model": None,
+        "formalizer_temperature": None,
+        "formalizer_max_tokens": None,
+        "proof_model": None,
+        "proof_temperature": None,
+        "proof_max_tokens": None,
+        "repair_model": None,
+        "repair_temperature": None,
+        "repair_max_tokens": None,
     }
     values.update(overrides)
     return Namespace(**values)
 
 
 def json_config(value: dict) -> str:
-    import json
-
     return json.dumps(value)
 
 
