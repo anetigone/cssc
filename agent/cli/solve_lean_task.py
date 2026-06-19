@@ -127,12 +127,14 @@ def _lean_services(
             disallow_sorry=not args.allow_sorry,
             use_server=not args.no_lean_server,
             server_startup_timeout_seconds=getattr(args, "lean_server_startup_timeout", 60.0),
+            server_fallback_seconds=getattr(args, "lean_server_fallback_seconds", 2.0),
         ),
         validation_adapter=LeanAdapter(
             **kwargs,
             disallow_sorry=False,
             use_server=not args.no_lean_server,
             server_startup_timeout_seconds=getattr(args, "lean_server_startup_timeout", 60.0),
+            server_fallback_seconds=getattr(args, "lean_server_fallback_seconds", 2.0),
         ),
     )
     try:

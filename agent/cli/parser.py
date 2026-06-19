@@ -90,6 +90,13 @@ def _add_runtime_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--no-lake", action="store_true")
     group.add_argument("--no-lean-server", action="store_true")
     group.add_argument("--lean-server-startup-timeout", type=float, default=60.0)
+    group.add_argument(
+        "--lean-server-fallback-seconds",
+        type=float,
+        default=2.0,
+        help="How long to wait after the latest diagnostics before accepting them "
+        "without an explicit fileProgress completion signal.",
+    )
     group.add_argument("--allow-sorry", action="store_true")
     group.add_argument("--check-work-dir", default=None)
     group.add_argument("--keep-check-files", action="store_true")

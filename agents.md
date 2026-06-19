@@ -151,4 +151,5 @@ python -m pytest tests/ -q
 
 - `ChatConfig` 是 OpenAI 兼容配置，可用于任意 OpenAI-compatible endpoint。
 - 真实 Lean checker 调用可能耗时较长，CLI/测试支持超时与重试。
+- 持久化 Lean server 完成信号不可靠时，会在 `--lean-server-fallback-seconds` 静默期后接受当前诊断，避免每次都回退到子进程。
 - `.env` 只由脚本消费，不要直接读取其内容写入日志。

@@ -42,7 +42,7 @@ class LeanServerClient:
         *,
         cwd: Path | None,
         root: Path | None,
-        diagnostics_fallback_seconds: float = 0.5,
+        diagnostics_fallback_seconds: float = 2.0,
     ) -> None:
         self.command = tuple(command)
         self.cwd = cwd
@@ -191,10 +191,21 @@ class LeanServerClient:
                 now = time.monotonic()
                 fallback_deadline = self._diagnostic_fallback_deadlines.get(uri)
                 if fallback_deadline is not None and now >= fallback_deadline:
-                    raise LeanServerAmbiguousCompletion(
-                        "Lean server published updated diagnostics but never emitted "
-                        "an explicit completion signal."
+                    # The server published diagnostics but never emitted an
+                    # explicit ``fileProgress=[]`` completion signal. Rather than
+                    # giving up and falling back to a subprocess check, trust the
+                    # latest diagnostics after a quiet period and return them.
+                    logger.debug(
+                        "Lean server check completed via diagnostic fallback: uri=%s "
+                        "publications=%d diagnostics=%d",
+                        uri,
+                        self._diagnostic_publications.get(uri, 0),
+                        len(self._diagnostics.get(uri, [])),
                     )
+                    self._processing_documents.discard(uri)
+                    self._diagnostic_publications.pop(uri, None)
+                    self._diagnostic_fallback_deadlines.pop(uri, None)
+                    return self._diagnostics.pop(uri, [])
                 remaining = deadline - now
                 if remaining <= 0:
                     if self._diagnostic_publications.get(uri, 0):
@@ -279,9 +290,9 @@ class LeanServerClient:
                     # so ``publications >= 2`` recognizes that replacement and a
                     # non-empty set is treated the same way. We then wait briefly
                     # for the authoritative ``fileProgress=[]``; if it never
-                    # comes, the adapter raises ``LeanServerAmbiguousCompletion``
-                    # so ``_check_with_server`` falls back to the subprocess
-                    # checker instead of accepting an unconfirmed result.
+                    # comes, we fall back to returning the latest diagnostics
+                    # after a quiet period rather than discarding the server
+                    # result and re-checking in a subprocess.
                     if publications >= 2 or diagnostics:
                         self._diagnostic_fallback_deadlines[uri] = (
                             time.monotonic() + self._diagnostics_fallback_seconds

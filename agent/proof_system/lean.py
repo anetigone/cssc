@@ -47,6 +47,7 @@ class LeanAdapter(ProofSystemAdapter):
         use_server: bool = False,
         server_startup_timeout_seconds: float = 60.0,
         server_timeout_retries: int = 1,
+        server_fallback_seconds: float = 2.0,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.prefer_lake = prefer_lake
@@ -54,6 +55,7 @@ class LeanAdapter(ProofSystemAdapter):
         self.use_server = use_server
         self.server_startup_timeout_seconds = server_startup_timeout_seconds
         self.server_timeout_retries = server_timeout_retries
+        self.server_fallback_seconds = server_fallback_seconds
         self._project = LakeProject(self.project_root)
         self._command_builder = LeanCommandBuilder(
             self._project,
@@ -296,6 +298,7 @@ class LeanAdapter(ProofSystemAdapter):
                 command,
                 cwd=self.project_root,
                 root=self.project_root,
+                diagnostics_fallback_seconds=self.server_fallback_seconds,
             )
             server.start(timeout_seconds=timeout_seconds)
         except (OSError, LeanServerError):
