@@ -229,7 +229,9 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
             )
     retrieved = request.metadata.get("retrieved_results") or ()
     if isinstance(retrieved, Sequence) and retrieved:
-        retained = summary.retained_retrieved if summary is not None else ()
+        # ``None`` means "no summary produced": keep every retrieved snippet.
+        # An empty tuple means the summarizer explicitly kept nothing: drop all.
+        retained = summary.retained_retrieved if summary is not None else None
         selected = _filter_retrieved(retrieved, retained)
         if selected:
             parts.append("Retrieved Lean snippets:")
@@ -252,7 +254,7 @@ def _feedback_line(feedback: ParsedFeedback) -> str:
 
 
 def _filter_retrieved(
-    retrieved: Sequence[Any], retained: tuple[str, ...]
+    retrieved: Sequence[Any], retained: tuple[str, ...] | None
 ) -> list[tuple[str, str]]:
     """Pick ``(name, snippet)`` pairs to show.
 
@@ -260,14 +262,22 @@ def _filter_retrieved(
     honor that allowlist so the prompt only carries what it judged useful.
     Otherwise fall back to the first few retrieved items.
     """
-    keep = {name.strip() for name in retained if isinstance(name, str) and name.strip()}
+    keep = (
+        None
+        if retained is None
+        else {
+            name.strip()
+            for name in retained
+            if isinstance(name, str) and name.strip()
+        }
+    )
     pairs: list[tuple[str, str]] = []
     for item in retrieved[:5]:
         name = getattr(item, "name", None)
         snippet = getattr(item, "snippet", None)
         if not (isinstance(name, str) and isinstance(snippet, str)):
             continue
-        if keep and name not in keep:
+        if keep is not None and name not in keep:
             continue
         pairs.append((name, snippet))
     return pairs

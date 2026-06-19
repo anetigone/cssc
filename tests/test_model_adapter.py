@@ -372,6 +372,80 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertIn("theorem Nat.add_comm ...", prompt)
         self.assertNotIn("Nat.mul_comm", prompt)
 
+    def test_empty_retained_retrieved_drops_all_snippets(self) -> None:
+        from agent.agents.context import SummarizationResult
+        from agent.retrieval import RetrievalResult
+
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+        retrieved = RetrievalResult(
+            name="Nat.add_comm",
+            source_path=None,
+            start_line=1,
+            snippet="theorem Nat.add_comm ...",
+            score=0.9,
+        )
+
+        generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                metadata={
+                    "proof_phase": "retry",
+                    "previous_attempt": {
+                        "proof_text": "exact badLemma",
+                        "raw_output": "unknown identifier badLemma",
+                    },
+                    "retrieved_results": (retrieved,),
+                    "summarized_context": SummarizationResult(
+                        concise_error="unknown identifier",
+                        retained_retrieved=(),
+                        was_summarized=True,
+                    ),
+                },
+            )
+        )
+
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        self.assertNotIn("Retrieved Lean snippets:", prompt)
+        self.assertNotIn("Nat.add_comm", prompt)
+
+    def test_no_summary_keeps_all_retrieved_snippets(self) -> None:
+        from agent.retrieval import RetrievalResult
+
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+        retrieved = (
+            RetrievalResult(
+                name="Nat.add_comm",
+                source_path=None,
+                start_line=1,
+                snippet="theorem Nat.add_comm ...",
+                score=0.9,
+            ),
+        )
+
+        # No summarized_context at all (first attempt or summarizer disabled).
+        generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=0,
+                metadata={"retrieved_results": retrieved},
+            )
+        )
+
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        self.assertIn("Retrieved Lean snippets:", prompt)
+        self.assertIn("Nat.add_comm", prompt)
+
     def test_from_env_requires_key_and_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ModelAdapterError):

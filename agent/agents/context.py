@@ -38,7 +38,7 @@ class SummarizationResult:
 
     concise_error: str = ""
     relevant_history: tuple[str, ...] = ()
-    retained_retrieved: tuple[str, ...] = ()
+    retained_retrieved: tuple[str, ...] | None = None
     strategy_hint: str = ""
     was_summarized: bool = False
 
@@ -142,7 +142,12 @@ class ChatContextSummarizer:
                 parts.append(f"Checker category: {category}")
             if isinstance(raw_output, str) and raw_output.strip():
                 parts.extend(
-                    ["Raw checker output:", "```text", raw_output.strip(), "```"]
+                    [
+                        "Raw checker output:",
+                        "```text",
+                        _truncate_text(raw_output.strip(), max_chars=6_000),
+                        "```",
+                    ]
                 )
 
         if request.feedback_history:
@@ -179,6 +184,8 @@ class ChatContextSummarizer:
 
     def _parse_summary(self, content: str) -> SummarizationResult:
         text = content.strip()
+        if not text:
+            return SummarizationResult()
         fence = _extract_json_fence(text)
         if fence:
             text = fence
@@ -196,13 +203,24 @@ class ChatContextSummarizer:
         if not isinstance(data, dict):
             return SummarizationResult(concise_error=text, was_summarized=True)
 
-        return SummarizationResult(
-            concise_error=_string_from(data, "concise_error", text),
+        result = SummarizationResult(
+            concise_error=_string_from(data, "concise_error", ""),
             relevant_history=_tuple_from(data, "relevant_history"),
-            retained_retrieved=_tuple_from(data, "retained_retrieved"),
+            retained_retrieved=(
+                _tuple_from(data, "retained_retrieved")
+                if "retained_retrieved" in data
+                else None
+            ),
             strategy_hint=_string_from(data, "strategy_hint", ""),
             was_summarized=True,
         )
+        if not (
+            result.concise_error
+            or result.relevant_history
+            or result.strategy_hint
+        ):
+            return SummarizationResult()
+        return result
 
 
 def _extract_json_fence(text: str) -> str | None:
@@ -236,6 +254,12 @@ def _tuple_from(data: dict[str, Any], key: str) -> tuple[str, ...]:
 
 def _indent(text: str) -> str:
     return "\n".join(f"  {line}" for line in text.splitlines())
+
+
+def _truncate_text(text: str, *, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n...[diagnostics truncated]"
 
 
 # Backwards-compatible alias for callers that used an earlier name.

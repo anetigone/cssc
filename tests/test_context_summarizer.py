@@ -121,6 +121,65 @@ class ChatContextSummarizerTests(unittest.TestCase):
         self.assertEqual(result.concise_error, "the proof failed because x is unknown")
         self.assertEqual(result.strategy_hint, "")
 
+    def test_empty_response_is_not_treated_as_a_summary(self) -> None:
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": ""}}]}
+        )
+        summarizer = ChatContextSummarizer(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        result = summarizer.summarize(
+            SummarizationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                previous_attempt={"proof_text": "exact x", "raw_output": "error"},
+            )
+        )
+
+        self.assertFalse(result.was_summarized)
+
+    def test_empty_json_is_not_treated_as_a_summary(self) -> None:
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "{}"}}]}
+        )
+        summarizer = ChatContextSummarizer(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        result = summarizer.summarize(
+            SummarizationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                previous_attempt={"proof_text": "exact x", "raw_output": "error"},
+            )
+        )
+
+        self.assertFalse(result.was_summarized)
+
+    def test_truncates_raw_checker_output(self) -> None:
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": '{"concise_error": "err"}'}}]}
+        )
+        summarizer = ChatContextSummarizer(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        summarizer.summarize(
+            SummarizationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                previous_attempt={
+                    "proof_text": "exact x",
+                    "raw_output": "x" * 10_000,
+                },
+            )
+        )
+
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        self.assertIn("...[diagnostics truncated]", prompt)
+        self.assertNotIn("x" * 6_001, prompt)
+
     def test_includes_feedback_history_in_prompt(self) -> None:
         transport = RecordingTransport(
             {
