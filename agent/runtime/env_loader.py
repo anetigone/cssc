@@ -93,14 +93,31 @@ def _find_close_quote(value: str, quote: str) -> int:
 
 
 def _decode_double_quote_escapes(value: str) -> str:
-    return (
-        value.replace("\\n", "\n")
-        .replace("\\t", "\t")
-        .replace("\\r", "\r")
-        .replace('\\"', '"')
-        .replace("\\'", "'")
-        .replace("\\\\", "\\")
-    )
+    # Decode in one pass. Chained replacements corrupt overlapping escapes:
+    # for example ``\\\\n`` must become a literal ``\\n``, not ``\\`` plus
+    # a newline produced by decoding the second backslash twice.
+    escapes = {
+        "n": "\n",
+        "t": "\t",
+        "r": "\r",
+        '"': '"',
+        "'": "'",
+        "\\": "\\",
+    }
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        ch = value[index]
+        if ch == "\\" and index + 1 < len(value):
+            escaped = value[index + 1]
+            replacement = escapes.get(escaped)
+            if replacement is not None:
+                decoded.append(replacement)
+                index += 2
+                continue
+        decoded.append(ch)
+        index += 1
+    return "".join(decoded)
 
 
 def _inline_comment_index(value: str) -> int:

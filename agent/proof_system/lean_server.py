@@ -23,6 +23,10 @@ class LeanServerTimeout(LeanServerError):
     pass
 
 
+class LeanServerAmbiguousCompletion(LeanServerError):
+    """Diagnostics arrived, but the server never emitted a conclusive end signal."""
+
+
 @dataclass(frozen=True)
 class LeanServerCheck:
     raw_output: str
@@ -38,6 +42,7 @@ class LeanServerClient:
         *,
         cwd: Path | None,
         root: Path | None,
+        diagnostics_fallback_seconds: float = 0.5,
     ) -> None:
         self.command = tuple(command)
         self.cwd = cwd
@@ -49,7 +54,11 @@ class LeanServerClient:
         self._responses: dict[Any, dict[str, Any]] = {}
         self._diagnostics: dict[str, list[dict[str, Any]]] = {}
         self._completed_documents: set[str] = set()
+        self._processing_documents: set[str] = set()
+        self._diagnostic_publications: dict[str, int] = {}
+        self._diagnostic_fallback_deadlines: dict[str, float] = {}
         self._document_version: dict[str, int] = {}
+        self._diagnostics_fallback_seconds = diagnostics_fallback_seconds
         self._stderr: list[str] = []
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
@@ -99,6 +108,9 @@ class LeanServerClient:
         with self._condition:
             self._diagnostics.pop(uri, None)
             self._completed_documents.discard(uri)
+            self._processing_documents.discard(uri)
+            self._diagnostic_publications.pop(uri, None)
+            self._diagnostic_fallback_deadlines.pop(uri, None)
             # Bump the version on every check. Reusing a fixed version means a
             # reopened URI can be served stale results, and some Lean versions
             # only emit progress for a version they consider new.
@@ -176,11 +188,28 @@ class LeanServerClient:
         with self._condition:
             while uri not in self._completed_documents:
                 self._raise_reader_error()
-                remaining = deadline - time.monotonic()
+                now = time.monotonic()
+                fallback_deadline = self._diagnostic_fallback_deadlines.get(uri)
+                if fallback_deadline is not None and now >= fallback_deadline:
+                    raise LeanServerAmbiguousCompletion(
+                        "Lean server published updated diagnostics but never emitted "
+                        "an explicit completion signal."
+                    )
+                remaining = deadline - now
                 if remaining <= 0:
+                    if self._diagnostic_publications.get(uri, 0):
+                        raise LeanServerAmbiguousCompletion(
+                            "Lean server published diagnostics but never emitted a "
+                            f"conclusive completion signal within {timeout_seconds}s."
+                        )
                     raise LeanServerTimeout(f"Lean checker timed out after {timeout_seconds}s.")
+                if fallback_deadline is not None:
+                    remaining = min(remaining, max(0.0, fallback_deadline - now))
                 self._condition.wait(remaining)
             self._completed_documents.discard(uri)
+            self._processing_documents.discard(uri)
+            self._diagnostic_publications.pop(uri, None)
+            self._diagnostic_fallback_deadlines.pop(uri, None)
             return self._diagnostics.pop(uri, [])
 
     def _read_stdout(self) -> None:
@@ -232,20 +261,47 @@ class LeanServerClient:
                 params = message.get("params", {})
                 uri = params.get("uri")
                 if isinstance(uri, str):
-                    self._diagnostics[uri] = list(params.get("diagnostics") or [])
-                    # A diagnostics publication marks the end of a check for that
-                    # document. Some Lean versions only emit this and never send
-                    # ``$/lean/fileProgress`` (e.g. when there is nothing to do),
-                    # so treating it as a completion signal avoids spurious
-                    # timeouts on accepted proofs.
-                    self._completed_documents.add(uri)
+                    published_version = params.get("version")
+                    current_version = self._document_version.get(uri)
+                    if (
+                        isinstance(published_version, int)
+                        and current_version is not None
+                        and published_version != current_version
+                    ):
+                        return
+                    diagnostics = list(params.get("diagnostics") or [])
+                    self._diagnostics[uri] = diagnostics
+                    publications = self._diagnostic_publications.get(uri, 0) + 1
+                    self._diagnostic_publications[uri] = publications
+                    # Push diagnostics are not a protocol-level completion
+                    # signal. The common Lean sequence is an empty placeholder
+                    # set on didOpen followed by the final set after elaboration,
+                    # so ``publications >= 2`` recognizes that replacement and a
+                    # non-empty set is treated the same way. We then wait briefly
+                    # for the authoritative ``fileProgress=[]``; if it never
+                    # comes, the adapter raises ``LeanServerAmbiguousCompletion``
+                    # so ``_check_with_server`` falls back to the subprocess
+                    # checker instead of accepting an unconfirmed result.
+                    if publications >= 2 or diagnostics:
+                        self._diagnostic_fallback_deadlines[uri] = (
+                            time.monotonic() + self._diagnostics_fallback_seconds
+                        )
                     self._condition.notify_all()
             elif message.get("method") == "$/lean/fileProgress":
                 params = message.get("params", {})
                 text_document = params.get("textDocument", {})
                 uri = text_document.get("uri")
-                if isinstance(uri, str) and not params.get("processing"):
-                    self._completed_documents.add(uri)
+                if isinstance(uri, str):
+                    if params.get("processing"):
+                        self._processing_documents.add(uri)
+                        # The server is actively elaborating this document, so
+                        # any pending diagnostic fallback deadline is stale:
+                        # we have an explicit progress signal now and must wait
+                        # for ``processing=[]`` rather than let a short fallback
+                        # timer declare an ambiguous completion mid-elaboration.
+                        self._diagnostic_fallback_deadlines.pop(uri, None)
+                    else:
+                        self._completed_documents.add(uri)
                     self._condition.notify_all()
 
     def _raise_reader_error(self) -> None:

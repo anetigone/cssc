@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.proof_system.base import (
     CandidateEdit,
@@ -43,12 +44,30 @@ class TraceStoreTests(unittest.TestCase):
             store = JsonlTraceStore(path)
 
             store.append_result(result)
+            store.append_result(result)
 
             rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 4)
         self.assertEqual(rows[0]["event"], "run_summary")
         self.assertEqual(rows[1]["event"], "attempt")
+
+    def test_atomic_append_preserves_old_file_when_replace_fails(self) -> None:
+        result = _sample_result()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.jsonl"
+            path.write_text('{"existing": true}\n', encoding="utf-8")
+            store = JsonlTraceStore(path)
+
+            with patch(
+                "agent.runtime.trace_store.os.replace",
+                side_effect=OSError("replace failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    store.append_result(result)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), '{"existing": true}\n')
+            self.assertEqual(list(path.parent.glob(".run.jsonl.*.tmp")), [])
 
 
 def _sample_result() -> ControllerResult:

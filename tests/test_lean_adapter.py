@@ -5,9 +5,10 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from agent.proof_system.lean import LeanAdapter
+from agent.proof_system.lean import LeanAdapter, _kill_process_tree, _run_subprocess_check
+from agent.proof_system.lean_server import LeanServerAmbiguousCompletion
 from agent.proof_system.base import (
     BudgetSlice,
     CandidateEdit,
@@ -34,6 +35,68 @@ def has_usable_lean() -> bool:
 
 
 class LeanAdapterTests(unittest.TestCase):
+    def test_ambiguous_server_completion_falls_back_from_server(self) -> None:
+        adapter = LeanAdapter(use_server=True)
+        server = MagicMock()
+        server.is_alive.return_value = True
+        server.command = ("lean", "--server")
+        server.check_file.side_effect = LeanServerAmbiguousCompletion("ambiguous")
+        adapter._server = server
+
+        result = adapter._check_with_server(
+            Path("Attempt.lean"), BudgetSlice(timeout_seconds=1)
+        )
+
+        self.assertIsNone(result)
+        server.close.assert_called_once()
+        self.assertIsNone(adapter._server)
+
+    def test_subprocess_timeout_kills_before_draining_output(self) -> None:
+        process = MagicMock()
+        process.returncode = -9
+        killed = False
+
+        def communicate(*, timeout: float | None = None):
+            nonlocal killed
+            if not killed:
+                raise subprocess.TimeoutExpired(
+                    cmd=["lean"], timeout=0.1, output="partial", stderr="warning"
+                )
+            return "drained", ""
+
+        def kill_tree(_process: object) -> None:
+            nonlocal killed
+            killed = True
+
+        process.communicate.side_effect = communicate
+        with (
+            patch("agent.proof_system.lean.subprocess.Popen", return_value=process),
+            patch("agent.proof_system.lean._kill_process_tree", side_effect=kill_tree) as kill,
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                _run_subprocess_check(
+                    ["lean", "Attempt.lean"],
+                    cwd=Path("."),
+                    timeout_seconds=0.1,
+                )
+
+        kill.assert_called_once_with(process)
+        self.assertEqual(caught.exception.output, "drained")
+
+    def test_windows_process_tree_uses_taskkill_tree_force(self) -> None:
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+        with (
+            patch("agent.proof_system.lean.sys.platform", "win32"),
+            patch("agent.proof_system.lean.subprocess.run") as run,
+        ):
+            _kill_process_tree(process)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command, ["taskkill", "/PID", "1234", "/T", "/F"])
+        process.kill.assert_called_once()
+
     def test_restarts_server_and_retries_unchanged_candidate_after_timeout(self) -> None:
         adapter = LeanAdapter(
             use_server=True,

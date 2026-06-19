@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
@@ -31,18 +34,12 @@ class JsonlTraceStore:
 
     def append_result(self, result: ControllerResult) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        count = 0
-        with self.path.open("a", encoding="utf-8") as handle:
-            for event in result_events(result, include_raw_output=self.include_raw_output):
-                # Build the whole line first, then write it in a single call so a
-                # mid-write interruption never leaves a truncated JSONL line that
-                # would corrupt the trace for downstream readers.
-                line = (
-                    json.dumps(event, ensure_ascii=False, sort_keys=True, default=_json_default)
-                    + "\n"
-                )
-                handle.write(line)
-                count += 1
+        lines = [
+            json.dumps(event, ensure_ascii=False, sort_keys=True, default=_json_default) + "\n"
+            for event in result_events(result, include_raw_output=self.include_raw_output)
+        ]
+        _atomic_append_text(self.path, "".join(lines))
+        count = len(lines)
         logger.info(
             "Appended trace events: path=%s task_id=%s events=%d include_raw_output=%s",
             self.path,
@@ -50,6 +47,37 @@ class JsonlTraceStore:
             count,
             self.include_raw_output,
         )
+
+
+def _atomic_append_text(path: Path, text: str) -> None:
+    """Append via same-directory replacement, leaving either old or new data.
+
+    A normal append can be interrupted after writing only part of a JSON line.
+    Here the existing file and new payload are assembled in a temporary file,
+    flushed to disk, and then installed with an atomic filesystem replacement.
+    """
+    fd, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as target:
+            if path.exists():
+                with path.open("rb") as source:
+                    shutil.copyfileobj(source, target)
+            target.write(text.encode("utf-8"))
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def result_events(

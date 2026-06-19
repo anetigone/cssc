@@ -424,6 +424,13 @@ class LeanAdapter(ProofSystemAdapter):
             )
             return _with_progress(self, result)
         except LeanServerError:
+            # Covers both an outright server error and
+            # ``LeanServerAmbiguousCompletion`` (diagnostics were published but
+            # no conclusive completion signal arrived). The ambiguous case is
+            # NOT retried in-place via ``server_timeout_retries`` — restarting
+            # the server and re-running is unlikely to change Lean's signaling,
+            # so we close the server and fall through to the authoritative
+            # subprocess checker, which has a deterministic exit code.
             logger.warning("Lean server check failed; falling back to subprocess check", exc_info=True)
             self.close()
             return None
@@ -512,13 +519,28 @@ def _popen_kwargs_for_process_group() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
-def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
+def _kill_process_tree(process: subprocess.Popen[Any]) -> None:
     """Best-effort termination of a process and all of its children."""
     if sys.platform == "win32":
         try:
-            process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
-        except (OSError, ValueError):
-            process.kill()
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5.0,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+            except (OSError, ValueError):
+                pass
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
         return
     try:
         os.killpg(os.getpgid(process.pid), signal.SIGKILL)
@@ -553,19 +575,25 @@ def _run_subprocess_check(
     )
     try:
         stdout, stderr = popen.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        # Drain whatever the process produced before we kill it.
+    except subprocess.TimeoutExpired as exc:
+        # Enforce the requested deadline first. Draining before termination
+        # would let an expensive Lean process continue beyond its budget.
+        partial_stdout = exc.output or ""
+        partial_stderr = exc.stderr or ""
+        _kill_process_tree(popen)
         try:
             stdout, stderr = popen.communicate(timeout=5.0)
         except subprocess.TimeoutExpired:
-            stdout, stderr = "", ""
-        _kill_process_tree(popen)
-        try:
-            popen.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            pass
+            try:
+                popen.kill()
+            except OSError:
+                pass
+            stdout, stderr = popen.communicate()
         raise subprocess.TimeoutExpired(
-            cmd=command, timeout=timeout_seconds, output=stdout, stderr=stderr
+            cmd=command,
+            timeout=timeout_seconds,
+            output=stdout or partial_stdout,
+            stderr=stderr or partial_stderr,
         )
     return subprocess.CompletedProcess(
         args=command,

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.runtime.env_loader import load_dotenv
+from agent.runtime.env_loader import _parse_value, load_dotenv
 
 
 class EnvLoaderTests(unittest.TestCase):
@@ -75,6 +75,12 @@ class EnvLoaderTests(unittest.TestCase):
                 self.assertEqual(loaded["OPENAI_BASE_URL"], "http://x.com/path#anchor")
                 self.assertEqual(loaded["WITH_COMMENT"], "value")
                 self.assertEqual(loaded["QUOTED"], "http://x.com/path#anchor")
+
+    def test_double_escaped_backslash_is_not_decoded_twice(self) -> None:
+        self.assertEqual(_parse_value(r'"a\\nb"'), r"a\nb")
+
+    def test_double_quoted_windows_path_preserves_literal_backslashes(self) -> None:
+        self.assertEqual(_parse_value(r'"C:\\new\\tool"'), r"C:\new\tool")
 
 
 if __name__ == "__main__":
