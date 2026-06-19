@@ -6,7 +6,6 @@ from .search.action import ActionCandidate, ActionGenerationRequest, ActionGener
 from .search.budget import BudgetConfig, BudgetExhausted, BudgetManager, BudgetSnapshot
 from .search.controller import AttemptRecord, ControllerConfig, ControllerResult, ProofController
 from .search.proposer import CandidateLibraryGenerator, ProofSnippet
-from .search.repair import FeedbackRepairGenerator
 from .search.state_encoder import EncodedProofState, encode_proof_state
 from .runtime.env_loader import load_dotenv
 from .proof_system.lean import LeanAdapter
@@ -88,7 +87,6 @@ __all__ = [
     "DiagnosticCategory",
     "EncodedProofState",
     "EphemeralCheckWorkspace",
-    "FeedbackRepairGenerator",
     "FormalizationAgent",
     "FormalizationRequest",
     "FormalizationResult",

@@ -125,7 +125,7 @@ class LeanAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Attempt.lean"
             path.write_text("theorem sample : True := by\n  exact False.elim\n", encoding="utf-8")
-            with patch("agent.proof_system.lean.subprocess.run") as run:
+            with patch("agent.proof_system.lean._run_subprocess_check") as run:
                 run.return_value = subprocess.CompletedProcess(
                     args=("lean", str(path)),
                     returncode=1,
@@ -137,6 +137,8 @@ class LeanAdapterTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.category, DiagnosticCategory.TYPE_MISMATCH)
+        # The subprocess helper is invoked with utf-8 / replace decoding so
+        # non-UTF-8 Lean output never raises during capture.
         self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run.call_args.kwargs["errors"], "replace")
 
@@ -149,7 +151,7 @@ class LeanAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Attempt.lean"
             path.write_text("theorem sample : True := by\n  exact False.elim\n", encoding="utf-8")
-            with patch("agent.proof_system.lean.subprocess.run") as run:
+            with patch("agent.proof_system.lean._run_subprocess_check") as run:
                 run.return_value = subprocess.CompletedProcess(
                     args=("lean", str(path)),
                     returncode=1,
@@ -205,7 +207,7 @@ class LeanAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Attempt.lean"
             path.write_text("theorem sample : True := by\n  sorry\n", encoding="utf-8")
-            with patch("agent.proof_system.lean.subprocess.run") as run:
+            with patch("agent.proof_system.lean._run_subprocess_check") as run:
                 run.return_value = subprocess.CompletedProcess(
                     args=("lean", str(path)),
                     returncode=0,

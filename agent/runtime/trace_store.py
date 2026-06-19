@@ -34,10 +34,14 @@ class JsonlTraceStore:
         count = 0
         with self.path.open("a", encoding="utf-8") as handle:
             for event in result_events(result, include_raw_output=self.include_raw_output):
-                handle.write(
+                # Build the whole line first, then write it in a single call so a
+                # mid-write interruption never leaves a truncated JSONL line that
+                # would corrupt the trace for downstream readers.
+                line = (
                     json.dumps(event, ensure_ascii=False, sort_keys=True, default=_json_default)
+                    + "\n"
                 )
-                handle.write("\n")
+                handle.write(line)
                 count += 1
         logger.info(
             "Appended trace events: path=%s task_id=%s events=%d include_raw_output=%s",

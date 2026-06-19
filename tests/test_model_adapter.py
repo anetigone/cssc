@@ -98,7 +98,7 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertIn("unsolved goals", payload["messages"][1]["content"])
         self.assertEqual(timeout, 12.0)
 
-    def test_repair_prompt_contains_previous_proof_and_relevant_checker_errors(self) -> None:
+    def test_retry_prompt_contains_previous_proof_and_relevant_checker_errors(self) -> None:
         transport = RecordingTransport(
             {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
         )
@@ -112,7 +112,7 @@ class ChatActionGeneratorTests(unittest.TestCase):
                 task=task,
                 attempt_index=1,
                 metadata={
-                    "proof_phase": "revise",
+                    "proof_phase": "retry",
                     "previous_attempt": {
                         "proof_text": "exact badLemma",
                         "raw_output": (
@@ -131,7 +131,7 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertNotIn("noisy #check", prompt)
         self.assertNotIn("noisy warning", prompt)
         system_prompt = transport.calls[0][2]["messages"][0]["content"]
-        self.assertIn("local revision round", system_prompt)
+        self.assertIn("previous attempt failed", system_prompt)
         self.assertIn("smallest change", system_prompt)
 
     def test_restart_prompt_allows_strategy_reconsideration(self) -> None:
@@ -146,7 +146,7 @@ class ChatActionGeneratorTests(unittest.TestCase):
             ActionGenerationRequest(
                 task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
                 attempt_index=2,
-                metadata={"proof_phase": "restart"},
+                metadata={"proof_phase": "retry"},
             )
         )
 

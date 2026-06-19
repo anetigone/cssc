@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -149,15 +152,12 @@ class LeanAdapter(ProofSystemAdapter):
             budget_slice.timeout_seconds,
         )
         try:
-            completed = subprocess.run(
+            completed = _run_subprocess_check(
                 command,
                 cwd=self.project_root or candidate_file.parent,
-                capture_output=True,
-                text=True,
+                timeout_seconds=budget_slice.timeout_seconds,
                 encoding="utf-8",
                 errors="replace",
-                timeout=budget_slice.timeout_seconds,
-                check=False,
             )
         except subprocess.TimeoutExpired as exc:
             elapsed = time.perf_counter() - started
@@ -180,6 +180,30 @@ class LeanAdapter(ProofSystemAdapter):
             result = CheckResult(
                 accepted=False,
                 category=DiagnosticCategory.TIMEOUT,
+                raw_output=raw,
+                candidate_file=candidate_file,
+                command=tuple(command),
+                exit_code=None,
+                elapsed_seconds=elapsed,
+                parsed_feedback=feedback,
+            )
+            return _with_progress(self, result)
+        except OSError as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "Lean checker failed to run: candidate_file=%s error=%s",
+                candidate_file,
+                exc,
+            )
+            raw = f"Lean checker failed to run: {exc}"
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.CHECKER_ERROR,
+                message=raw,
+                raw_output=raw,
+            )
+            result = CheckResult(
+                accepted=False,
+                category=DiagnosticCategory.CHECKER_ERROR,
                 raw_output=raw,
                 candidate_file=candidate_file,
                 command=tuple(command),
@@ -469,6 +493,86 @@ def _combine_output(stdout: str | bytes | None, stderr: str | bytes | None) -> s
 
     parts = [part for part in (as_text(stdout), as_text(stderr)) if part]
     return "\n".join(parts).strip()
+
+
+def _popen_kwargs_for_process_group() -> dict[str, Any]:
+    """Return platform-specific kwargs so we can kill the whole process tree.
+
+    ``lake env lean`` spawns ``lean`` as a child; killing only ``lake`` on a
+    timeout would orphan the expensive Lean process. Starting the subprocess in
+    its own session / process group lets us tear down the entire tree.
+    """
+    if sys.platform == "win32":
+        # CREATE_NEW_PROCESS_GROUP + CREATE_NO_WINDOW so Ctrl-Break reaches the
+        # whole group and no console window flashes up.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags |= subprocess.CREATE_NO_WINDOW
+        return {"creationflags": creationflags}
+    return {"start_new_session": True}
+
+
+def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Best-effort termination of a process and all of its children."""
+    if sys.platform == "win32":
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+        except (OSError, ValueError):
+            process.kill()
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        process.kill()
+
+
+def _run_subprocess_check(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: float,
+    encoding: str = "utf-8",
+    errors: str = "replace",
+) -> subprocess.CompletedProcess[str]:
+    """Run the Lean checker, killing the whole process tree on timeout.
+
+    Unlike ``subprocess.run``, this starts the checker in its own process
+    group so a timeout tears down ``lake`` and the ``lean`` child it spawned.
+    """
+    popen = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding=encoding,
+        errors=errors,
+        **_popen_kwargs_for_process_group(),
+    )
+    try:
+        stdout, stderr = popen.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        # Drain whatever the process produced before we kill it.
+        try:
+            stdout, stderr = popen.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", ""
+        _kill_process_tree(popen)
+        try:
+            popen.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            pass
+        raise subprocess.TimeoutExpired(
+            cmd=command, timeout=timeout_seconds, output=stdout, stderr=stderr
+        )
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=popen.returncode if popen.returncode is not None else 0,
+        stdout=stdout or "",
+        stderr=stderr or "",
+    )
 
 
 

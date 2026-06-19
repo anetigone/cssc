@@ -242,6 +242,7 @@ def _promote_positional_artifact(args: Namespace) -> None:
 
 
 def run_solve(args: Namespace, *, agent_root: Path, project_root: Path | None) -> int:
+    result: Any = None
     with (
         _workspace_context(args.work_dir, agent_root=agent_root) as work_dir,
         _lean_services(args, project_root) as services,
@@ -270,23 +271,14 @@ def run_solve(args: Namespace, *, agent_root: Path, project_root: Path | None) -
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("CLI setup failed", exc_info=True)
             return _fail("setup", exc)
+        except Exception:
+            # The controller / Lean server may raise something we don't model
+            # explicitly (subprocess crash, OSError, ...). Surface it instead of
+            # masking the real error with an UnboundLocalError on ``result``.
+            logger.exception("solve failed unexpectedly")
+            return _fail("solve", _UnexpectedError())
 
-    if args.trace_jsonl:
-        trace_path = resolve_agent_path(agent_root, args.trace_jsonl)
-        logger.info("Appending controller trace: %s", trace_path)
-        JsonlTraceStore(trace_path, include_raw_output=args.trace_raw_output).append_result(result)
-
-    logger.info(
-        "CLI finished: task_id=%s accepted=%s stop_reason=%s attempts=%d",
-        result.task.task_id,
-        result.accepted,
-        result.stop_reason,
-        len(result.attempts),
-    )
-    payload = result_payload(result, include_candidate_file=True)
-    payload["stage"] = "solve"
-    _emit_payload(args, payload, agent_root)
-    return 0 if result.accepted else 1
+    return _finalize_run(args, result, agent_root, stage="solve")
 
 
 def run_prove(args: Namespace, *, agent_root: Path, project_root: Path | None) -> int:
@@ -295,6 +287,7 @@ def run_prove(args: Namespace, *, agent_root: Path, project_root: Path | None) -
     if classify_input(args, task_config) != TaskInputKind.LEAN:
         return _fail("input_kind", ValueError("prove requires a Lean source or formalization artifact."))
 
+    result: Any = None
     with (
         _workspace_context(args.work_dir, agent_root=agent_root) as work_dir,
         _lean_services(args, project_root) as services,
@@ -314,16 +307,39 @@ def run_prove(args: Namespace, *, agent_root: Path, project_root: Path | None) -
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("prove failed", exc_info=True)
             return _fail("prove", exc)
+        except Exception:
+            logger.exception("prove failed unexpectedly")
+            return _fail("prove", _UnexpectedError())
 
+    return _finalize_run(args, result, agent_root, stage="prove")
+
+
+def _finalize_run(args: Namespace, result: Any, agent_root: Path, *, stage: str) -> int:
+    """Emit trace + payload for a completed run. Only called when result is set."""
     if args.trace_jsonl:
-        JsonlTraceStore(
-            resolve_agent_path(agent_root, args.trace_jsonl),
-            include_raw_output=args.trace_raw_output,
-        ).append_result(result)
+        trace_path = resolve_agent_path(agent_root, args.trace_jsonl)
+        logger.info("Appending controller trace: %s", trace_path)
+        JsonlTraceStore(trace_path, include_raw_output=args.trace_raw_output).append_result(result)
+
+    logger.info(
+        "CLI finished: task_id=%s accepted=%s stop_reason=%s attempts=%d",
+        result.task.task_id,
+        result.accepted,
+        result.stop_reason,
+        len(result.attempts),
+    )
     payload = result_payload(result, include_candidate_file=True)
-    payload["stage"] = "prove"
+    payload["stage"] = stage
     _emit_payload(args, payload, agent_root)
     return 0 if result.accepted else 1
+
+
+class _UnexpectedError(RuntimeError):
+    """Placeholder exception for unmapped controller failures."""
+
+    def __str__(self) -> str:  # pragma: no cover - cosmetic
+        return "Unexpected error during proof search; see logs for details."
+
 
 
 def _run_controller(
@@ -349,10 +365,6 @@ def _run_controller(
         ),
         config=ControllerConfig(
             max_candidates_per_model_call=args.max_candidates,
-            # This is not a separate repair agent: the same proof agent first
-            # proposes a proof, then performs bounded diagnostic-driven local
-            # revisions before the controller asks it to restart its strategy.
-            max_repair_rounds=args.max_repair_rounds,
             max_retrieval_results=args.max_retrieval_results,
             retrieve_before_first_model_call=args.retrieve_before_first_model_call,
         ),

@@ -49,6 +49,7 @@ class LeanServerClient:
         self._responses: dict[Any, dict[str, Any]] = {}
         self._diagnostics: dict[str, list[dict[str, Any]]] = {}
         self._completed_documents: set[str] = set()
+        self._document_version: dict[str, int] = {}
         self._stderr: list[str] = []
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
@@ -98,13 +99,18 @@ class LeanServerClient:
         with self._condition:
             self._diagnostics.pop(uri, None)
             self._completed_documents.discard(uri)
+            # Bump the version on every check. Reusing a fixed version means a
+            # reopened URI can be served stale results, and some Lean versions
+            # only emit progress for a version they consider new.
+            self._document_version[uri] = self._document_version.get(uri, 0) + 1
+            version = self._document_version[uri]
         self._notify(
             "textDocument/didOpen",
             {
                 "textDocument": {
                     "uri": uri,
                     "languageId": "lean",
-                    "version": 1,
+                    "version": version,
                     "text": text,
                 }
             },
@@ -211,11 +217,14 @@ class LeanServerClient:
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         logger.debug("Lean server message: %s", _message_summary(message))
+        # A server-initiated *request* carries both ``id`` and ``method``.
+        # Answer it and do not store it as a response to one of our requests.
         if "id" in message and "method" in message:
             self._send({"jsonrpc": "2.0", "id": message["id"], "result": None})
             return
         with self._condition:
-            if "id" in message:
+            # A *response* to one of our requests carries ``id`` but no ``method``.
+            if "id" in message and "method" not in message:
                 self._responses[message["id"]] = message
                 self._condition.notify_all()
                 return
@@ -224,6 +233,12 @@ class LeanServerClient:
                 uri = params.get("uri")
                 if isinstance(uri, str):
                     self._diagnostics[uri] = list(params.get("diagnostics") or [])
+                    # A diagnostics publication marks the end of a check for that
+                    # document. Some Lean versions only emit this and never send
+                    # ``$/lean/fileProgress`` (e.g. when there is nothing to do),
+                    # so treating it as a completion signal avoids spurious
+                    # timeouts on accepted proofs.
+                    self._completed_documents.add(uri)
                     self._condition.notify_all()
             elif message.get("method") == "$/lean/fileProgress":
                 params = message.get("params", {})

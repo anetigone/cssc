@@ -11,7 +11,6 @@ class AgentRole(str, Enum):
 
     FORMALIZER = "formalizer"
     PROOF_GENERATOR = "proof_generator"
-    REPAIR = "repair"
 
 
 @dataclass(frozen=True)

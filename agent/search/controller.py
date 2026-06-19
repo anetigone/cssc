@@ -47,7 +47,6 @@ class ControllerConfig:
     max_candidates_per_model_call: int = 1
     candidate_extension: str = ".lean"
     stop_on_tool_unavailable: bool = True
-    max_repair_rounds: int = 2
     max_feedback_history: int = 5
     max_retrieval_results: int = 5
     retrieve_before_first_model_call: bool = False
@@ -97,13 +96,17 @@ class _ControllerRunState:
     current_retrieved: tuple[RetrievalResult, ...] = ()
     stop_reason: str = "budget"
     attempt_index: int = 0
-    repair_rounds: int = 0
-    retrieved_this_episode: bool = False
-    next_meta_action: str = "expand"
+    retrieved_this_iteration: bool = False
 
 
 class ProofController:
-    """Coordinate action generation, rendering, materialization, and checking."""
+    """Coordinate action generation, rendering, materialization, and checking.
+
+    Single-proof loop: each model call proposes one (or a few) candidates,
+    the checker vets them, and the most recent failure feedback is fed back
+    into the next model call. Every model call and every check counts against
+    the budget. There is no separate repair agent.
+    """
 
     def __init__(
         self,
@@ -112,7 +115,6 @@ class ProofController:
         action_generator: ActionGenerator,
         workspace: AttemptWorkspace,
         check_workspace: EphemeralCheckWorkspace | None = None,
-        repair_generator: ActionGenerator | None = None,
         retriever: Retriever | None = None,
         budget_config: BudgetConfig | None = None,
         config: ControllerConfig | None = None,
@@ -121,7 +123,6 @@ class ProofController:
         self.action_generator = action_generator
         self.workspace = workspace
         self.check_workspace = check_workspace
-        self.repair_generator = repair_generator or action_generator
         self.retriever = retriever
         self.budget = BudgetManager(budget_config)
         self.config = config or ControllerConfig()
@@ -131,58 +132,29 @@ class ProofController:
         state = self._initial_state()
 
         while self.budget.can_check():
-            # Mark the start of a "retrieve + expand" cycle. The flag is reset
-            # below whenever we enter a plain expand iteration, so each expand
-            # cycle is allowed to retrieve at most once.
-            if state.next_meta_action == "retrieve":
-                state.retrieved_this_episode = True
-
+            # A fresh iteration starts here; allow this iteration to retrieve.
+            state.retrieved_this_iteration = False
             state.current_retrieved = self._maybe_retrieve(
                 task,
                 state.feedback_history[-1] if state.feedback_history else None,
-                state.next_meta_action,
+                is_first_iteration=not state.attempts,
             )
             if state.current_retrieved:
                 state.retrieved_history.extend(state.current_retrieved)
 
-            is_repair_iteration = state.next_meta_action == "repair"
-            if is_repair_iteration:
-                generator = self.repair_generator
-                max_candidates = self.config.max_candidates_per_model_call
-                if generator is self.action_generator:
-                    if not self.budget.can_call_model():
-                        state.stop_reason = "budget:model_calls"
-                        logger.info(
-                            "Controller stopped before repair model call: task_id=%s reason=%s",
-                            task.task_id,
-                            state.stop_reason,
-                        )
-                        break
-                    self.budget.reserve_model_call()
-            else:
-                if not self.budget.can_call_model():
-                    state.stop_reason = "budget:model_calls"
-                    logger.info(
-                        "Controller stopped before model call: task_id=%s reason=%s",
-                        task.task_id,
-                        state.stop_reason,
-                    )
-                    break
-                self.budget.reserve_model_call()
-                generator = self.action_generator
-                max_candidates = self.config.max_candidates_per_model_call
-                state.repair_rounds = 0
-                if state.next_meta_action != "retrieve":
-                    # A fresh expand cycle starts here; allow another retrieve.
-                    state.retrieved_this_episode = False
+            if not self.budget.can_call_model():
+                state.stop_reason = "budget:model_calls"
+                logger.info(
+                    "Controller stopped before model call: task_id=%s reason=%s",
+                    task.task_id,
+                    state.stop_reason,
+                )
+                break
+            self.budget.reserve_model_call()
 
-            actions = self._generate_actions(
-                state, task, generator, max_candidates
-            )
+            max_candidates = self.config.max_candidates_per_model_call
+            actions = self._generate_actions(state, task, max_candidates)
             if not actions:
-                if is_repair_iteration:
-                    state.next_meta_action = "expand"
-                    continue
                 state.stop_reason = "no_actions"
                 logger.info(
                     "Controller stopped: task_id=%s reason=%s",
@@ -191,9 +163,7 @@ class ProofController:
                 )
                 break
 
-            accepted_record = self._evaluate_candidates(
-                state, task, actions, max_candidates, is_repair_iteration
-            )
+            accepted_record = self._evaluate_candidates(state, task, actions, max_candidates)
             if accepted_record is not None:
                 return self._build_accepted_result(state, task, accepted_record)
             if state.stop_reason == "tool_unavailable":
@@ -204,30 +174,20 @@ class ProofController:
         return self._build_final_result(state, task)
 
     def _initial_state(self) -> _ControllerRunState:
-        return _ControllerRunState(
-            next_meta_action=(
-                "retrieve"
-                if self.config.retrieve_before_first_model_call
-                else "expand"
-            ),
-        )
+        return _ControllerRunState()
 
     def _generate_actions(
         self,
         state: _ControllerRunState,
         task: ProofTask,
-        generator: ActionGenerator,
         max_candidates: int,
     ) -> tuple[ActionCandidate, ...]:
-        request = self._build_generation_request(
-            state, task, generator, max_candidates
-        )
-        actions = tuple(generator.generate(request))
+        request = self._build_generation_request(state, task, max_candidates)
+        actions = tuple(self.action_generator.generate(request))
         logger.info(
-            "Proof generation completed: task_id=%s attempt_index=%d meta_action=%s candidates=%d",
+            "Proof generation completed: task_id=%s attempt_index=%d candidates=%d",
             task.task_id,
             state.attempt_index,
-            state.next_meta_action,
             len(actions),
         )
         return actions
@@ -236,7 +196,6 @@ class ProofController:
         self,
         state: _ControllerRunState,
         task: ProofTask,
-        generator: ActionGenerator,
         max_candidates: int,
     ) -> ActionGenerationRequest:
         budget_snapshot = self.budget.snapshot()
@@ -244,15 +203,13 @@ class ProofController:
             task,
             feedback_history=state.feedback_history,
             budget=budget_snapshot,
-            metadata={"next_meta_action": state.next_meta_action},
         )
         proof_phase = _proof_phase(state)
         logger.info(
-            "Proof generation started: task_id=%s attempt_index=%d phase=%s meta_action=%s previous_feedback=%d",
+            "Proof generation started: task_id=%s attempt_index=%d phase=%s previous_feedback=%d",
             task.task_id,
             state.attempt_index,
             proof_phase,
-            state.next_meta_action,
             len(state.feedback_history),
         )
         previous_attempt = None
@@ -270,7 +227,6 @@ class ProofController:
             previous_feedback=tuple(state.feedback_history),
             max_candidates=max_candidates,
             metadata={
-                "meta_action": state.next_meta_action,
                 "proof_phase": proof_phase,
                 "encoded_state": encoded_state,
                 "retrieved_results": state.current_retrieved,
@@ -286,7 +242,6 @@ class ProofController:
         task: ProofTask,
         actions: tuple[ActionCandidate, ...],
         max_candidates: int,
-        is_repair_iteration: bool,
     ) -> AttemptRecord | None:
         checked_any = False
         for action in actions[:max_candidates]:
@@ -350,22 +305,7 @@ class ProofController:
                 )
                 return None
 
-            # ``state.repair_rounds`` counts completed repair iterations for
-            # the current expand cycle. When we are inside a repair iteration we
-            # pass repair_rounds + 1 here so the boundary check in
-            # ``_choose_next_meta_action`` (``< max_repair_rounds``) matches the
-            # old pre-execution gate. Keep this aligned with the increment at
-            # the end of this method.
-            state.next_meta_action = self._choose_next_meta_action(
-                record.check_result.category,
-                state.repair_rounds + 1 if is_repair_iteration else state.repair_rounds,
-                retrieved_this_episode=state.retrieved_this_episode,
-            )
-
         if not checked_any:
-            if is_repair_iteration:
-                state.next_meta_action = "expand"
-                return None
             state.stop_reason = "no_new_actions"
             logger.info(
                 "Controller stopped: task_id=%s reason=%s",
@@ -373,11 +313,6 @@ class ProofController:
                 state.stop_reason,
             )
             return None
-
-        # Record that a repair iteration has completed. Must stay aligned with
-        # the +1 passed to ``_choose_next_meta_action`` above.
-        if is_repair_iteration:
-            state.repair_rounds += 1
         return None
 
     def _check_single_candidate(
@@ -388,7 +323,6 @@ class ProofController:
     ) -> AttemptRecord:
         edit = _edit_with_controller_metadata(
             action.to_edit(),
-            meta_action=state.next_meta_action,
             proof_phase=_proof_phase(state),
             retrieved=state.current_retrieved,
         )
@@ -484,7 +418,7 @@ class ProofController:
         task: ProofTask,
     ) -> ControllerResult:
         reason = self.budget.exhausted_reason()
-        if reason is not None:
+        if reason is not None and not state.stop_reason.startswith("budget:"):
             state.stop_reason = f"budget:{reason}"
         logger.info(
             "Controller run finished: task_id=%s accepted=False stop_reason=%s attempts=%d",
@@ -508,18 +442,19 @@ class ProofController:
         self,
         task: ProofTask,
         feedback: ParsedFeedback | None,
-        meta_action: str,
+        *,
+        is_first_iteration: bool,
     ) -> tuple[RetrievalResult, ...]:
         if self.retriever is None:
             return ()
-        if meta_action not in {"retrieve", "expand"}:
-            return ()
-        if meta_action == "expand" and feedback is not None:
+        if is_first_iteration:
+            if not self.config.retrieve_before_first_model_call:
+                return ()
+        elif feedback is None or feedback.category not in self.config.retrieve_on_categories:
             return ()
         logger.debug(
-            "Retrieving context: task_id=%s meta_action=%s feedback_category=%s",
+            "Retrieving context: task_id=%s feedback_category=%s",
             task.task_id,
-            meta_action,
             feedback.category.value if feedback else None,
         )
         return self.retriever.retrieve(
@@ -528,56 +463,19 @@ class ProofController:
             top_k=self.config.max_retrieval_results,
         )
 
-    def _choose_next_meta_action(
-        self,
-        category: DiagnosticCategory,
-        repair_rounds: int,
-        *,
-        retrieved_this_episode: bool,
-    ) -> str:
-        if (
-            category in self.config.retrieve_on_categories
-            and self.retriever is not None
-            and not retrieved_this_episode
-        ):
-            return "retrieve"
-        if repair_rounds < self.config.max_repair_rounds and category in _REPAIRABLE_CATEGORIES:
-            return "repair"
-        return "expand"
-
-
-_REPAIRABLE_CATEGORIES = {
-    DiagnosticCategory.PARSER_ERROR,
-    DiagnosticCategory.TYPE_MISMATCH,
-    DiagnosticCategory.UNSOLVED_GOALS,
-    DiagnosticCategory.TACTIC_FAILED,
-    DiagnosticCategory.TIMEOUT,
-    # Lean occasionally reports a specific syntax/elaboration failure under
-    # the generic checker bucket.  It still carries a source location and is
-    # usually cheaper to revise locally than to regenerate the whole proof.
-    DiagnosticCategory.CHECKER_ERROR,
-    DiagnosticCategory.UNKNOWN,
-}
-
 
 def _proof_phase(state: _ControllerRunState) -> str:
-    """Expose the proof loop's intent without changing legacy meta-actions."""
-    if not state.attempts:
-        return "propose"
-    if state.next_meta_action == "repair":
-        return "revise"
-    return "restart"
+    """Expose the loop's intent for prompts and traces."""
+    return "propose" if not state.attempts else "retry"
 
 
 def _edit_with_controller_metadata(
     edit: CandidateEdit,
     *,
-    meta_action: str,
     proof_phase: str,
     retrieved: tuple[RetrievalResult, ...],
 ) -> CandidateEdit:
     metadata = dict(edit.metadata)
-    metadata["meta_action"] = meta_action
     metadata["proof_phase"] = proof_phase
     if retrieved:
         metadata["retrieved_results"] = tuple(_retrieval_payload(item) for item in retrieved)

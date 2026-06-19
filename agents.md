@@ -29,7 +29,6 @@ agent/
 │   ├── action.py        # ActionGenerator 协议与 ActionCandidate
 │   ├── controller.py    # ProofController 主循环
 │   ├── budget.py        # 预算管理（checks / model calls / time）
-│   ├── repair.py        # 基于反馈的修复
 │   ├── proposer.py      # 候选库生成
 │   └── state_encoder.py # 证明状态编码
 ├── proof_system/        # Lean 适配层
@@ -49,7 +48,6 @@ agent/
 |---|---|---|---|---|
 | Formalizer | `ChatFormalizationAgent` | `FormalizationRequest` | `FormalizationResult` | 生成含 `{{proof}}` 的 Lean scaffold，可接 checker 做校验重试。 |
 | Proof Generator | `ChatActionGenerator` | `ActionGenerationRequest` | `Sequence[ActionCandidate]` | 根据当前 proof state 生成候选证明体。 |
-| Repair | `FeedbackRepairGenerator` | 同上 | 同上 | 在 `ProofController` 内部作为 `repair_generator` 使用，目前默认与 proof generator 相同。 |
 
 > 旧名保留兼容别名：`OpenAIChatConfig`、`OpenAIChatFormalizationAgent`、`OpenAIChatActionGenerator`。
 
@@ -107,7 +105,6 @@ class MyTacticGenerator(ActionGenerator):
 class AgentRole(str, Enum):
     FORMALIZER = "formalizer"
     PROOF_GENERATOR = "proof_generator"
-    REPAIR = "repair"
 ```
 
 后续可按 role 读取不同环境变量（如 `OPENAI_MODEL_FORMALIZER`、`OPENAI_MODEL_PROOF_GENERATOR`）实现“便宜模型 tactic + 贵模型 prove”。
@@ -126,7 +123,7 @@ class AgentRole(str, Enum):
 python -m agent.cli.solve_lean_task <source> --use-model
 ```
 
-常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--max-repair-rounds`、`--enable-retrieval`。
+常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`。
 
 ## 测试
 

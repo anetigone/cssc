@@ -135,17 +135,11 @@ def _build_messages(
         else ""
     )
     phase = request.metadata.get("proof_phase", "propose")
-    if phase == "revise":
+    if phase == "retry":
         phase_guidance = (
-            " This is a local revision round. Preserve the previous proof's structure and "
-            "all working lines; make the smallest change that resolves the reported Lean "
-            "errors. Re-check casts, equality orientation, and the exact expected type at "
-            "the reported location before changing earlier mathematics."
-        )
-    elif phase == "restart":
-        phase_guidance = (
-            " Earlier local revisions did not finish the proof. Reconsider the failing "
-            "subargument or proof strategy, while retaining verified parts when useful."
+            " A previous attempt failed Lean checking. Reconsider the failing subargument or "
+            "proof strategy, keeping verified parts when useful, and make the smallest change "
+            "that resolves the reported Lean errors."
         )
     else:
         phase_guidance = (
@@ -185,9 +179,6 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
                 informal_proof.strip(),
             ]
         )
-    meta_action = request.metadata.get("meta_action")
-    if isinstance(meta_action, str):
-        parts.append(f"Controller action: {meta_action}")
     proof_phase = request.metadata.get("proof_phase")
     if isinstance(proof_phase, str):
         parts.append(f"Proof loop phase: {proof_phase}")

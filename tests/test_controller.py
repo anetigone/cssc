@@ -81,19 +81,6 @@ class QueueGenerator:
         return [ActionCandidate(proof_text=text, action="queued") for text in self.batches.pop(0)]
 
 
-class RepairGenerator:
-    def __init__(self, candidates: list[str]) -> None:
-        self.candidates = candidates
-        self.requests: list[ActionGenerationRequest] = []
-
-    def generate(self, request: ActionGenerationRequest) -> list[ActionCandidate]:
-        self.requests.append(request)
-        return [
-            ActionCandidate(proof_text=text, action="repair")
-            for text in self.candidates[: request.max_candidates]
-        ]
-
-
 class FakeRetriever:
     def __init__(self) -> None:
         self.requests: list[tuple[ProofTask | None, ParsedFeedback | None, int]] = []
@@ -137,76 +124,38 @@ class ProofControllerTests(unittest.TestCase):
         self.assertIsNotNone(result.accepted_attempt)
         self.assertEqual(len(result.attempts), 2)
         self.assertEqual(result.budget.checks_used, 2)
+        # Every model call counts against the budget: one proposal + one retry.
         self.assertEqual(result.budget.model_calls_used, 2)
         self.assertEqual(len(generator.requests[1].previous_feedback), 1)
         previous_attempt = generator.requests[1].metadata["previous_attempt"]
         self.assertEqual(previous_attempt["proof_text"], "exact False.elim")
         self.assertEqual(previous_attempt["raw_output"], "unsolved goals")
         self.assertEqual(generator.requests[0].metadata["proof_phase"], "propose")
-        self.assertEqual(generator.requests[1].metadata["proof_phase"], "revise")
-        self.assertEqual(result.attempts[1].edit.metadata["proof_phase"], "revise")
+        self.assertEqual(generator.requests[1].metadata["proof_phase"], "retry")
+        self.assertEqual(result.attempts[1].edit.metadata["proof_phase"], "retry")
 
-    def test_restarts_after_local_revision_budget(self) -> None:
+    def test_retries_with_feedback_until_budget_exhausted(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
-        generator = QueueGenerator(
-            [["bad initial"], ["bad local revision"], ["trivial"]]
-        )
+        generator = QueueGenerator([["bad1"], ["bad2"], ["bad3"]])
         with tempfile.TemporaryDirectory() as tmp:
             controller = ProofController(
                 adapter=FakeAdapter(),
                 action_generator=generator,
                 workspace=AttemptWorkspace(tmp),
-                budget_config=BudgetConfig(max_checks=4, max_model_calls=4),
-                config=ControllerConfig(max_repair_rounds=1),
+                budget_config=BudgetConfig(max_checks=4, max_model_calls=2),
             )
 
             result = controller.run(task)
 
-        self.assertTrue(result.accepted)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.stop_reason, "budget:model_calls")
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(result.budget.model_calls_used, 2)
+        # Each retry carries the previous failure's feedback.
         self.assertEqual(
             [request.metadata["proof_phase"] for request in generator.requests],
-            ["propose", "revise", "restart"],
+            ["propose", "retry"],
         )
-        self.assertEqual(
-            [attempt.edit.metadata["proof_phase"] for attempt in result.attempts],
-            ["propose", "revise", "restart"],
-        )
-
-    def test_generic_checker_error_is_locally_repairable(self) -> None:
-        controller = ProofController(
-            adapter=FakeAdapter(),
-            action_generator=QueueGenerator([]),
-            workspace=AttemptWorkspace(tempfile.gettempdir()),
-            config=ControllerConfig(max_repair_rounds=2),
-        )
-
-        action = controller._choose_next_meta_action(
-            DiagnosticCategory.CHECKER_ERROR,
-            repair_rounds=0,
-            retrieved_this_episode=False,
-        )
-
-        self.assertEqual(action, "repair")
-
-    def test_repairs_failed_candidate_before_next_model_call(self) -> None:
-        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
-        generator = QueueGenerator([["exact False.elim"], ["bad"]])
-        repair_generator = RepairGenerator(["trivial"])
-        with tempfile.TemporaryDirectory() as tmp:
-            controller = ProofController(
-                adapter=FakeAdapter(),
-                action_generator=generator,
-                repair_generator=repair_generator,
-                workspace=AttemptWorkspace(tmp),
-                budget_config=BudgetConfig(max_checks=4, max_model_calls=4),
-            )
-
-            result = controller.run(task)
-
-        self.assertTrue(result.accepted)
-        self.assertEqual(result.budget.model_calls_used, 1)
-        self.assertEqual([attempt.edit.action for attempt in result.attempts], ["queued", "repair"])
-        self.assertEqual(repair_generator.requests[0].metadata["meta_action"], "repair")
 
     def test_retrieves_context_for_model_request(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
@@ -226,9 +175,7 @@ class ProofControllerTests(unittest.TestCase):
 
         self.assertTrue(result.accepted)
         self.assertEqual(len(retriever.requests), 1)
-        self.assertEqual(generator.requests[0].metadata["meta_action"], "retrieve")
         self.assertEqual(generator.requests[0].metadata["retrieved_results"][0].name, "true_intro")
-        self.assertEqual(result.attempts[0].edit.metadata["meta_action"], "retrieve")
         self.assertEqual(result.attempts[0].edit.metadata["retrieved_results"][0]["name"], "true_intro")
 
     def test_stops_when_check_budget_is_exhausted(self) -> None:
