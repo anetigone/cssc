@@ -213,6 +213,10 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
                         summary.strategy_hint,
                     ]
                 )
+            if summary.relevant_history:
+                parts.append("Key history from prior attempts:")
+                for line in summary.relevant_history:
+                    parts.append(f"- {line}")
         elif isinstance(raw_output, str) and raw_output.strip():
             compact_output = _compact_checker_output(raw_output)
             parts.extend(
@@ -225,11 +229,11 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
             )
     retrieved = request.metadata.get("retrieved_results") or ()
     if isinstance(retrieved, Sequence) and retrieved:
-        parts.append("Retrieved Lean snippets:")
-        for item in retrieved[:5]:
-            name = getattr(item, "name", None)
-            snippet = getattr(item, "snippet", None)
-            if isinstance(name, str) and isinstance(snippet, str):
+        retained = summary.retained_retrieved if summary is not None else ()
+        selected = _filter_retrieved(retrieved, retained)
+        if selected:
+            parts.append("Retrieved Lean snippets:")
+            for name, snippet in selected:
                 parts.extend([f"- {name}", "```lean", snippet, "```"])
     parts.extend(["Lean source template:", "```lean", task.source_template, "```"])
     if feedback:
@@ -245,6 +249,28 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
 
 def _feedback_line(feedback: ParsedFeedback) -> str:
     return f"- {feedback.category.value}: {feedback.message}"
+
+
+def _filter_retrieved(
+    retrieved: Sequence[Any], retained: tuple[str, ...]
+) -> list[tuple[str, str]]:
+    """Pick ``(name, snippet)`` pairs to show.
+
+    When the context summarizer named specific snippets to keep (``retained``),
+    honor that allowlist so the prompt only carries what it judged useful.
+    Otherwise fall back to the first few retrieved items.
+    """
+    keep = {name.strip() for name in retained if isinstance(name, str) and name.strip()}
+    pairs: list[tuple[str, str]] = []
+    for item in retrieved[:5]:
+        name = getattr(item, "name", None)
+        snippet = getattr(item, "snippet", None)
+        if not (isinstance(name, str) and isinstance(snippet, str)):
+            continue
+        if keep and name not in keep:
+            continue
+        pairs.append((name, snippet))
+    return pairs
 
 
 def _should_allow_tools(request: ActionGenerationRequest) -> bool:

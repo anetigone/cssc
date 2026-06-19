@@ -296,6 +296,82 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertIn("use a lemma from Mathlib", prompt)
         self.assertNotIn("very long diagnostic", prompt)
 
+    def test_summarized_relevant_history_appears_in_prompt(self) -> None:
+        from agent.agents.context import SummarizationResult
+
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                metadata={
+                    "proof_phase": "retry",
+                    "previous_attempt": {"proof_text": "exact badLemma"},
+                    "summarized_context": SummarizationResult(
+                        concise_error="unknown lemma",
+                        relevant_history=("unknown identifier badLemma",),
+                        was_summarized=True,
+                    ),
+                },
+            )
+        )
+
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        self.assertIn("Key history from prior attempts:", prompt)
+        self.assertIn("- unknown identifier badLemma", prompt)
+
+    def test_retained_retrieved_filters_snippets(self) -> None:
+        from agent.agents.context import SummarizationResult
+        from agent.retrieval import RetrievalResult
+
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        kept = RetrievalResult(
+            name="Nat.add_comm",
+            source_path=None,
+            start_line=1,
+            snippet="theorem Nat.add_comm ...",
+            score=0.9,
+        )
+        dropped = RetrievalResult(
+            name="Nat.mul_comm",
+            source_path=None,
+            start_line=1,
+            snippet="theorem Nat.mul_comm ...",
+            score=0.4,
+        )
+        generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                metadata={
+                    "proof_phase": "retry",
+                    "previous_attempt": {"proof_text": "exact badLemma"},
+                    "retrieved_results": (kept, dropped),
+                    "summarized_context": SummarizationResult(
+                        retained_retrieved=("Nat.add_comm",),
+                        was_summarized=True,
+                    ),
+                },
+            )
+        )
+
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        self.assertIn("Nat.add_comm", prompt)
+        self.assertIn("theorem Nat.add_comm ...", prompt)
+        self.assertNotIn("Nat.mul_comm", prompt)
+
     def test_from_env_requires_key_and_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ModelAdapterError):
