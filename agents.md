@@ -32,7 +32,11 @@ agent/
 │   ├── proposer.py      # 候选库生成
 │   └── state_encoder.py # 证明状态编码
 ├── proof_system/        # Lean 适配层
-│   ├── lean.py          # LeanAdapter
+│   ├── lean.py          # LeanAdapter 编排器
+│   ├── lean_project.py  # Lake 项目检测
+│   ├── lean_command.py  # lean / lake 命令行构建
+│   ├── lean_subprocess.py # 子进程执行与进程树清理
+│   ├── lean_feedback.py # Lean 诊断输出解析
 │   ├── lean_server.py   # 持久化 Lean server
 │   └── base.py          # ProofSystemAdapter / ProofTask / CheckResult
 ├── retrieval/           # 检索（当前为词法检索 LexicalLeanRetriever）

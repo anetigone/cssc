@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import logging
-import os
-import re
-import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from ..utils import resolve_executable
 from .base import (
     BudgetSlice,
     CandidateEdit,
@@ -23,17 +18,13 @@ from .base import (
     ProofSystemAdapter,
     ProofTask,
 )
+from .lean_command import LeanCommandBuilder
+from .lean_feedback import LeanFeedbackParser, contains_error_diagnostic, contains_sorry_warning
+from .lean_project import LakeProject
 from .lean_server import LeanServerClient, LeanServerError, LeanServerTimeout
+from .lean_subprocess import ProcessGroupRunner, combine_output
 
 
-_LOCATION_RE = re.compile(
-    r":(?P<line>\d+):(?P<column>\d+):\s+(?:error(?:\([^)]*\))?|warning):",
-    re.IGNORECASE,
-)
-_DIAGNOSTIC_LINE_RE = re.compile(
-    r"^.*?:\d+:\d+:\s+(?:error(?:\([^)]*\))?|warning|information|hint):",
-    re.IGNORECASE,
-)
 logger = logging.getLogger(__name__)
 
 
@@ -60,19 +51,26 @@ class LeanAdapter(ProofSystemAdapter):
         self.project_root = Path(project_root).resolve() if project_root else None
         self.prefer_lake = prefer_lake
         self.disallow_sorry = disallow_sorry
-        self.lean_executable = resolve_executable(lean_executable, "lean")
-        self.lake_executable = resolve_executable(lake_executable, "lake")
         self.use_server = use_server
         self.server_startup_timeout_seconds = server_startup_timeout_seconds
         self.server_timeout_retries = server_timeout_retries
+        self._project = LakeProject(self.project_root)
+        self._command_builder = LeanCommandBuilder(
+            self._project,
+            prefer_lake=prefer_lake,
+            lean_executable=lean_executable,
+            lake_executable=lake_executable,
+        )
+        self._feedback_parser = LeanFeedbackParser()
+        self._runner = ProcessGroupRunner()
         self._server: LeanServerClient | None = None
         logger.debug(
             "Initialized LeanAdapter: project_root=%s prefer_lake=%s disallow_sorry=%s lean=%s lake=%s use_server=%s",
             self.project_root,
             self.prefer_lake,
             self.disallow_sorry,
-            self.lean_executable,
-            self.lake_executable,
+            self._command_builder.lean_executable,
+            self._command_builder.lake_executable,
             self.use_server,
         )
 
@@ -152,7 +150,7 @@ class LeanAdapter(ProofSystemAdapter):
             budget_slice.timeout_seconds,
         )
         try:
-            completed = _run_subprocess_check(
+            completed = self._runner.run(
                 command,
                 cwd=self.project_root or candidate_file.parent,
                 timeout_seconds=budget_slice.timeout_seconds,
@@ -167,7 +165,7 @@ class LeanAdapter(ProofSystemAdapter):
                 budget_slice.timeout_seconds,
                 elapsed,
             )
-            raw = _combine_output(exc.stdout, exc.stderr)
+            raw = combine_output(exc.stdout, exc.stderr)
             if raw:
                 raw = f"{raw}\nLean checker timed out after {budget_slice.timeout_seconds}s."
             else:
@@ -214,7 +212,7 @@ class LeanAdapter(ProofSystemAdapter):
             return _with_progress(self, result)
 
         elapsed = time.perf_counter() - started
-        raw = _combine_output(completed.stdout, completed.stderr)
+        raw = combine_output(completed.stdout, completed.stderr)
         feedback = self.parse_feedback(raw)
         if completed.returncode != 0 and feedback.category == DiagnosticCategory.PROOF_ACCEPTED:
             feedback = ParsedFeedback(
@@ -230,24 +228,8 @@ class LeanAdapter(ProofSystemAdapter):
             elapsed,
         )
 
-        if self.disallow_sorry and _contains_sorry_warning(raw):
-            logger.info("Rejecting Lean candidate because it uses sorry: candidate_file=%s", candidate_file)
-            feedback = ParsedFeedback(
-                category=DiagnosticCategory.UNSOLVED_GOALS,
-                message="Lean accepted the file but the declaration uses 'sorry'.",
-                raw_output=raw,
-            )
-        elif completed.returncode == 0 and not _contains_error_diagnostic(raw):
-            feedback = ParsedFeedback(
-                category=DiagnosticCategory.PROOF_ACCEPTED,
-                message="Proof accepted.",
-                raw_output=raw,
-            )
-
-        accepted = (
-            completed.returncode == 0
-            and feedback.category == DiagnosticCategory.PROOF_ACCEPTED
-        )
+        feedback = self._finalize_feedback(feedback, raw, completed.returncode == 0)
+        accepted = completed.returncode == 0 and feedback.category == DiagnosticCategory.PROOF_ACCEPTED
 
         result = CheckResult(
             accepted=accepted,
@@ -262,49 +244,7 @@ class LeanAdapter(ProofSystemAdapter):
         return _with_progress(self, result)
 
     def parse_feedback(self, raw_output: str) -> ParsedFeedback:
-        primary_output = _primary_error_block(raw_output) or raw_output
-        normalized = primary_output.lower()
-        line, column = _first_location(primary_output)
-
-        if not raw_output.strip():
-            return ParsedFeedback(
-                category=DiagnosticCategory.PROOF_ACCEPTED,
-                message="Proof accepted.",
-                raw_output=raw_output,
-            )
-        if "no default toolchain configured" in normalized or "toolchain" in normalized and "not installed" in normalized:
-            category = DiagnosticCategory.TOOL_UNAVAILABLE
-        elif "unknown identifier" in normalized or "unknown constant" in normalized:
-            category = DiagnosticCategory.UNKNOWN_IDENTIFIER
-        elif "type mismatch" in normalized or "application type mismatch" in normalized:
-            category = DiagnosticCategory.TYPE_MISMATCH
-        elif "unsolved goals" in normalized or "goals unsolved" in normalized:
-            category = DiagnosticCategory.UNSOLVED_GOALS
-        elif "tactic" in normalized and ("failed" in normalized or "unsolved" in normalized):
-            category = DiagnosticCategory.TACTIC_FAILED
-        elif "failed to synthesize" in normalized:
-            category = DiagnosticCategory.TYPE_MISMATCH
-        elif "unexpected token" in normalized or "parser" in normalized:
-            category = DiagnosticCategory.PARSER_ERROR
-        elif "termination" in normalized or "failed to prove termination" in normalized:
-            category = DiagnosticCategory.TERMINATION_ISSUE
-        elif "invalid" in normalized and ("theorem" in normalized or "declaration" in normalized):
-            category = DiagnosticCategory.INVALID_REFERENCE
-        elif "error:" in normalized:
-            category = DiagnosticCategory.CHECKER_ERROR
-        elif _contains_sorry_warning(raw_output):
-            category = DiagnosticCategory.UNSOLVED_GOALS
-        else:
-            category = DiagnosticCategory.UNKNOWN
-
-        return ParsedFeedback(
-            category=category,
-            message=_first_meaningful_line(primary_output),
-            line=line,
-            column=column,
-            unsolved_goals=_extract_goal_blocks(raw_output),
-            raw_output=raw_output,
-        )
+        return self._feedback_parser.parse(raw_output)
 
     def extract_progress(
         self,
@@ -329,22 +269,13 @@ class LeanAdapter(ProofSystemAdapter):
         )
 
     def _build_command(self, candidate_file: Path) -> list[str] | None:
-        if self.prefer_lake and self.lake_executable and self._has_lake_project():
-            return [self.lake_executable, "env", "lean", str(candidate_file)]
-        if self.lean_executable:
-            return [self.lean_executable, str(candidate_file)]
-        if self.lake_executable and self._has_lake_project():
-            return [self.lake_executable, "env", "lean", str(candidate_file)]
-        return None
+        return self._command_builder.build_check_command(candidate_file)
 
     def _build_server_command(self) -> list[str] | None:
-        if self.prefer_lake and self.lake_executable and self._has_lake_project():
-            return [self.lake_executable, "env", "lean", "--server"]
-        if self.lean_executable:
-            return [self.lean_executable, "--server"]
-        if self.lake_executable and self._has_lake_project():
-            return [self.lake_executable, "env", "lean", "--server"]
-        return None
+        return self._command_builder.build_server_command()
+
+    def _has_lake_project(self) -> bool:
+        return self._project.is_lake_project
 
     def start_service(self, *, timeout_seconds: float = 10.0) -> bool:
         """Start a persistent Lean language server for repeated checks."""
@@ -452,20 +383,7 @@ class LeanAdapter(ProofSystemAdapter):
                 raw_output=raw,
             )
 
-        if self.disallow_sorry and _contains_sorry_warning(raw):
-            logger.info("Rejecting Lean candidate because it uses sorry: candidate_file=%s", candidate_file)
-            feedback = ParsedFeedback(
-                category=DiagnosticCategory.UNSOLVED_GOALS,
-                message="Lean accepted the file but the declaration uses 'sorry'.",
-                raw_output=raw,
-            )
-        elif server_result.exit_code == 0 and not _contains_error_diagnostic(raw):
-            feedback = ParsedFeedback(
-                category=DiagnosticCategory.PROOF_ACCEPTED,
-                message="Proof accepted.",
-                raw_output=raw,
-            )
-
+        feedback = self._finalize_feedback(feedback, raw, server_result.exit_code == 0)
         accepted = (
             server_result.exit_code == 0
             and feedback.category == DiagnosticCategory.PROOF_ACCEPTED
@@ -482,193 +400,26 @@ class LeanAdapter(ProofSystemAdapter):
         )
         return _with_progress(self, result)
 
-    def _has_lake_project(self) -> bool:
-        if self.project_root is None:
-            return False
-        return (self.project_root / "lakefile.lean").exists() or (
-            self.project_root / "lakefile.toml"
-        ).exists()
-
-
-def _combine_output(stdout: str | bytes | None, stderr: str | bytes | None) -> str:
-    def as_text(value: str | bytes | None) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            return value.decode(errors="replace")
-        return value
-
-    parts = [part for part in (as_text(stdout), as_text(stderr)) if part]
-    return "\n".join(parts).strip()
-
-
-def _popen_kwargs_for_process_group() -> dict[str, Any]:
-    """Return platform-specific kwargs so we can kill the whole process tree.
-
-    ``lake env lean`` spawns ``lean`` as a child; killing only ``lake`` on a
-    timeout would orphan the expensive Lean process. Starting the subprocess in
-    its own session / process group lets us tear down the entire tree.
-    """
-    if sys.platform == "win32":
-        # CREATE_NEW_PROCESS_GROUP + CREATE_NO_WINDOW so Ctrl-Break reaches the
-        # whole group and no console window flashes up.
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-        if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            creationflags |= subprocess.CREATE_NO_WINDOW
-        return {"creationflags": creationflags}
-    return {"start_new_session": True}
-
-
-def _kill_process_tree(process: subprocess.Popen[Any]) -> None:
-    """Best-effort termination of a process and all of its children."""
-    if sys.platform == "win32":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5.0,
-                check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    def _finalize_feedback(
+        self,
+        feedback: ParsedFeedback,
+        raw_output: str,
+        exit_zero: bool,
+    ) -> ParsedFeedback:
+        """Apply ``disallow_sorry`` and success-path normalization."""
+        if self.disallow_sorry and contains_sorry_warning(raw_output):
+            return ParsedFeedback(
+                category=DiagnosticCategory.UNSOLVED_GOALS,
+                message="Lean accepted the file but the declaration uses 'sorry'.",
+                raw_output=raw_output,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
-            except (OSError, ValueError):
-                pass
-        if process.poll() is None:
-            try:
-                process.kill()
-            except OSError:
-                pass
-        return
-    try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except OSError:
-        process.kill()
-
-
-def _run_subprocess_check(
-    command: list[str],
-    *,
-    cwd: Path,
-    timeout_seconds: float,
-    encoding: str = "utf-8",
-    errors: str = "replace",
-) -> subprocess.CompletedProcess[str]:
-    """Run the Lean checker, killing the whole process tree on timeout.
-
-    Unlike ``subprocess.run``, this starts the checker in its own process
-    group so a timeout tears down ``lake`` and the ``lean`` child it spawned.
-    """
-    popen = subprocess.Popen(
-        command,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding=encoding,
-        errors=errors,
-        **_popen_kwargs_for_process_group(),
-    )
-    try:
-        stdout, stderr = popen.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        # Enforce the requested deadline first. Draining before termination
-        # would let an expensive Lean process continue beyond its budget.
-        partial_stdout = exc.output or ""
-        partial_stderr = exc.stderr or ""
-        _kill_process_tree(popen)
-        try:
-            stdout, stderr = popen.communicate(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            try:
-                popen.kill()
-            except OSError:
-                pass
-            stdout, stderr = popen.communicate()
-        raise subprocess.TimeoutExpired(
-            cmd=command,
-            timeout=timeout_seconds,
-            output=stdout or partial_stdout,
-            stderr=stderr or partial_stderr,
-        )
-    return subprocess.CompletedProcess(
-        args=command,
-        returncode=popen.returncode if popen.returncode is not None else 0,
-        stdout=stdout or "",
-        stderr=stderr or "",
-    )
-
-
-
-
-def _contains_sorry_warning(raw_output: str) -> bool:
-    normalized = raw_output.lower()
-    return bool(
-        re.search(r"\bdeclaration\b.*\buses\b.*\bsorry\b", normalized)
-        or re.search(r"\bwarning\b.*\bsorry\b", normalized)
-        or re.search(r"\bsorry\b.*\baxiom\b", normalized)
-    )
-
-
-def _contains_error_diagnostic(raw_output: str) -> bool:
-    return bool(re.search(r"\berror(?:\([^)]*\))?:", raw_output, re.IGNORECASE))
-
-
-def _first_location(raw_output: str) -> tuple[int | None, int | None]:
-    match = _LOCATION_RE.search(raw_output)
-    if not match:
-        return None, None
-    return int(match.group("line")), int(match.group("column"))
-
-
-def _first_meaningful_line(raw_output: str) -> str:
-    for line in raw_output.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
-    return ""
-
-
-def _primary_error_block(raw_output: str) -> str:
-    """Return the first fatal diagnostic and its continuation lines."""
-    lines = raw_output.splitlines()
-    for index, line in enumerate(lines):
-        if not re.search(r":\s+error(?:\([^)]*\))?:", line, re.IGNORECASE):
-            continue
-        block = [line]
-        for continuation in lines[index + 1 :]:
-            if _DIAGNOSTIC_LINE_RE.match(continuation):
-                break
-            block.append(continuation)
-        return "\n".join(block).strip()
-    return ""
-
-
-def _extract_goal_blocks(raw_output: str) -> tuple[str, ...]:
-    blocks: list[str] = []
-    current: list[str] = []
-    capture = False
-    for line in raw_output.splitlines():
-        if "unsolved goals" in line.lower():
-            if current:
-                blocks.append("\n".join(current).strip())
-                current = []
-            capture = True
-            continue
-        if capture:
-            if line.strip().startswith("error:") and current:
-                blocks.append("\n".join(current).strip())
-                current = []
-                capture = False
-            else:
-                current.append(line)
-    if current:
-        blocks.append("\n".join(current).strip())
-    return tuple(block for block in blocks if block)
+        if exit_zero and not contains_error_diagnostic(raw_output):
+            return ParsedFeedback(
+                category=DiagnosticCategory.PROOF_ACCEPTED,
+                message="Proof accepted.",
+                raw_output=raw_output,
+            )
+        return feedback
 
 
 def _minimal_result(feedback: ParsedFeedback) -> CheckResult:

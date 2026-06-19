@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from ..proof_system.lean_project import LakeProject
 from ..utils import resolve_executable
 from .openai import (
     ChatConfig,
@@ -121,6 +122,7 @@ class LeanEnvironmentToolProvider:
         self.lake_executable = resolve_executable(lake_executable, "lake")
         self.lean_executable = resolve_executable(lean_executable, "lean")
         self.import_check_timeout_seconds = import_check_timeout_seconds
+        self._project = LakeProject(self.project_root)
 
     def tools(self) -> tuple[Tool, ...]:
         return (
@@ -291,7 +293,7 @@ class LeanEnvironmentToolProvider:
 
         command: list[str] | None = None
         cwd: str | Path | None = None
-        if self.project_root and self._has_lake_project():
+        if self.project_root and self._project.is_lake_project:
             command = [self.lake_executable or "lake", "env", "lean", str(tmp_path)]
             cwd = self.project_root
         elif self.lean_executable:
@@ -339,11 +341,7 @@ class LeanEnvironmentToolProvider:
                 pass
 
     def _has_lake_project(self) -> bool:
-        if self.project_root is None:
-            return False
-        return (self.project_root / "lakefile.lean").exists() or (
-            self.project_root / "lakefile.toml"
-        ).exists()
+        return self._project.is_lake_project
 
 
 class LeanProofToolProvider:
@@ -365,6 +363,7 @@ class LeanProofToolProvider:
         self.timeout_seconds = timeout_seconds
         self.max_source_chars = max_source_chars
         self.max_output_chars = max_output_chars
+        self._project = LakeProject(self.project_root)
 
     def tools(self) -> tuple[Tool, ...]:
         return (
@@ -406,7 +405,7 @@ class LeanProofToolProvider:
             )
 
         command_prefix: list[str] | None = None
-        if self.lake_executable and self._has_lake_project():
+        if self.lake_executable and self._project.is_lake_project:
             command_prefix = [self.lake_executable, "env", "lean"]
         elif self.lean_executable:
             command_prefix = [self.lean_executable]
@@ -471,9 +470,7 @@ class LeanProofToolProvider:
                 pass
 
     def _has_lake_project(self) -> bool:
-        return (self.project_root / "lakefile.lean").exists() or (
-            self.project_root / "lakefile.toml"
-        ).exists()
+        return self._project.is_lake_project
 
 
 def extract_tool_calls(message: Mapping[str, Any]) -> tuple[ToolCall, ...]:

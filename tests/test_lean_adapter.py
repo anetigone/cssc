@@ -7,8 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.proof_system.lean import LeanAdapter, _kill_process_tree, _run_subprocess_check
+from agent.proof_system.lean import LeanAdapter
 from agent.proof_system.lean_server import LeanServerAmbiguousCompletion
+from agent.proof_system.lean_subprocess import ProcessGroupRunner, kill_process_tree
 from agent.proof_system.base import (
     BudgetSlice,
     CandidateEdit,
@@ -70,11 +71,11 @@ class LeanAdapterTests(unittest.TestCase):
 
         process.communicate.side_effect = communicate
         with (
-            patch("agent.proof_system.lean.subprocess.Popen", return_value=process),
-            patch("agent.proof_system.lean._kill_process_tree", side_effect=kill_tree) as kill,
+            patch("agent.proof_system.lean_subprocess.subprocess.Popen", return_value=process),
+            patch("agent.proof_system.lean_subprocess.kill_process_tree", side_effect=kill_tree) as kill,
         ):
             with self.assertRaises(subprocess.TimeoutExpired) as caught:
-                _run_subprocess_check(
+                ProcessGroupRunner().run(
                     ["lean", "Attempt.lean"],
                     cwd=Path("."),
                     timeout_seconds=0.1,
@@ -88,10 +89,10 @@ class LeanAdapterTests(unittest.TestCase):
         process.pid = 1234
         process.poll.return_value = None
         with (
-            patch("agent.proof_system.lean.sys.platform", "win32"),
-            patch("agent.proof_system.lean.subprocess.run") as run,
+            patch("agent.proof_system.lean_subprocess.sys.platform", "win32"),
+            patch("agent.proof_system.lean_subprocess.subprocess.run") as run,
         ):
-            _kill_process_tree(process)
+            kill_process_tree(process)
 
         command = run.call_args.args[0]
         self.assertEqual(command, ["taskkill", "/PID", "1234", "/T", "/F"])
@@ -188,7 +189,7 @@ class LeanAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Attempt.lean"
             path.write_text("theorem sample : True := by\n  exact False.elim\n", encoding="utf-8")
-            with patch("agent.proof_system.lean._run_subprocess_check") as run:
+            with patch.object(adapter._runner, "run") as run:
                 run.return_value = subprocess.CompletedProcess(
                     args=("lean", str(path)),
                     returncode=1,
@@ -200,8 +201,8 @@ class LeanAdapterTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.category, DiagnosticCategory.TYPE_MISMATCH)
-        # The subprocess helper is invoked with utf-8 / replace decoding so
-        # non-UTF-8 Lean output never raises during capture.
+        # The runner is invoked with utf-8 / replace decoding so non-UTF-8
+        # Lean output never raises during capture.
         self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run.call_args.kwargs["errors"], "replace")
 
@@ -214,7 +215,7 @@ class LeanAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Attempt.lean"
             path.write_text("theorem sample : True := by\n  exact False.elim\n", encoding="utf-8")
-            with patch("agent.proof_system.lean._run_subprocess_check") as run:
+            with patch.object(adapter._runner, "run") as run:
                 run.return_value = subprocess.CompletedProcess(
                     args=("lean", str(path)),
                     returncode=1,
@@ -226,6 +227,7 @@ class LeanAdapterTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.category, DiagnosticCategory.CHECKER_ERROR)
+        assert result.parsed_feedback is not None
         self.assertIn("without diagnostic output", result.parsed_feedback.message)
 
     @unittest.skipIf(not has_usable_lean(), "Lean is not installed or no toolchain is configured")
@@ -270,7 +272,7 @@ class LeanAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Attempt.lean"
             path.write_text("theorem sample : True := by\n  sorry\n", encoding="utf-8")
-            with patch("agent.proof_system.lean._run_subprocess_check") as run:
+            with patch.object(adapter._runner, "run") as run:
                 run.return_value = subprocess.CompletedProcess(
                     args=("lean", str(path)),
                     returncode=0,
