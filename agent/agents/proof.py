@@ -134,15 +134,32 @@ def _build_messages(
         if has_tools
         else ""
     )
+    phase = request.metadata.get("proof_phase", "propose")
+    if phase == "revise":
+        phase_guidance = (
+            " This is a local revision round. Preserve the previous proof's structure and "
+            "all working lines; make the smallest change that resolves the reported Lean "
+            "errors. Re-check casts, equality orientation, and the exact expected type at "
+            "the reported location before changing earlier mathematics."
+        )
+    elif phase == "restart":
+        phase_guidance = (
+            " Earlier local revisions did not finish the proof. Reconsider the failing "
+            "subargument or proof strategy, while retaining verified parts when useful."
+        )
+    else:
+        phase_guidance = (
+            " First plan the mathematical construction and its Lean API usage, then return "
+            "one coherent proof body."
+        )
     return [
         {
             "role": "system",
             "content": (
                 "You iteratively complete Lean 4 proof holes. Return only the full Lean proof "
-                "body that replaces the marker; do not wrap it in markdown. On later attempts, "
-                "repair the previous proof using every compiler diagnostic instead of starting "
-                "over or replacing a substantial proof with a generic tactic. The final answer "
+                "body that replaces the marker; do not wrap it in markdown. The final answer "
                 "must not contain import, #check, #print, #eval, or #reduce commands."
+                + phase_guidance
                 + tool_guidance
             ),
         },
@@ -171,6 +188,9 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
     meta_action = request.metadata.get("meta_action")
     if isinstance(meta_action, str):
         parts.append(f"Controller action: {meta_action}")
+    proof_phase = request.metadata.get("proof_phase")
+    if isinstance(proof_phase, str):
+        parts.append(f"Proof loop phase: {proof_phase}")
     encoded_state = request.metadata.get("encoded_state")
     if encoded_state is not None and hasattr(encoded_state, "to_prompt_context"):
         parts.extend(["Controller state:", str(encoded_state.to_prompt_context())])

@@ -246,10 +246,12 @@ class ProofController:
             budget=budget_snapshot,
             metadata={"next_meta_action": state.next_meta_action},
         )
+        proof_phase = _proof_phase(state)
         logger.info(
-            "Proof generation started: task_id=%s attempt_index=%d meta_action=%s previous_feedback=%d",
+            "Proof generation started: task_id=%s attempt_index=%d phase=%s meta_action=%s previous_feedback=%d",
             task.task_id,
             state.attempt_index,
+            proof_phase,
             state.next_meta_action,
             len(state.feedback_history),
         )
@@ -269,6 +271,7 @@ class ProofController:
             max_candidates=max_candidates,
             metadata={
                 "meta_action": state.next_meta_action,
+                "proof_phase": proof_phase,
                 "encoded_state": encoded_state,
                 "retrieved_results": state.current_retrieved,
                 "retrieved_history": tuple(state.retrieved_history),
@@ -386,6 +389,7 @@ class ProofController:
         edit = _edit_with_controller_metadata(
             action.to_edit(),
             meta_action=state.next_meta_action,
+            proof_phase=_proof_phase(state),
             retrieved=state.current_retrieved,
         )
         logger.debug(
@@ -548,18 +552,33 @@ _REPAIRABLE_CATEGORIES = {
     DiagnosticCategory.UNSOLVED_GOALS,
     DiagnosticCategory.TACTIC_FAILED,
     DiagnosticCategory.TIMEOUT,
+    # Lean occasionally reports a specific syntax/elaboration failure under
+    # the generic checker bucket.  It still carries a source location and is
+    # usually cheaper to revise locally than to regenerate the whole proof.
+    DiagnosticCategory.CHECKER_ERROR,
     DiagnosticCategory.UNKNOWN,
 }
+
+
+def _proof_phase(state: _ControllerRunState) -> str:
+    """Expose the proof loop's intent without changing legacy meta-actions."""
+    if not state.attempts:
+        return "propose"
+    if state.next_meta_action == "repair":
+        return "revise"
+    return "restart"
 
 
 def _edit_with_controller_metadata(
     edit: CandidateEdit,
     *,
     meta_action: str,
+    proof_phase: str,
     retrieved: tuple[RetrievalResult, ...],
 ) -> CandidateEdit:
     metadata = dict(edit.metadata)
     metadata["meta_action"] = meta_action
+    metadata["proof_phase"] = proof_phase
     if retrieved:
         metadata["retrieved_results"] = tuple(_retrieval_payload(item) for item in retrieved)
     return CandidateEdit(

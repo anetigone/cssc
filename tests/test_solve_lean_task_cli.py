@@ -387,12 +387,23 @@ class CliSubcommandTests(unittest.TestCase):
         for flag in ("--proof-model", "--proof-temperature", "--proof-max-tokens"):
             self.assertIn(flag, solve_help)
             self.assertNotIn(flag, formalize_help)
-        self.assertNotIn("--max-repair-rounds", solve_help)
+        self.assertIn("--max-repair-rounds", solve_help)
+        self.assertIn("--max-repair-rounds", prove_help)
         for stage_help in (formalize_help, prove_help):
             self.assertIn("--model", stage_help)
             self.assertIn("--temperature", stage_help)
             self.assertIn("--max-tokens", stage_help)
         self.assertNotIn("--repair-model", solve_help)
+
+    def test_parser_configures_bounded_same_agent_revisions(self) -> None:
+        parser = build_parser()
+        default_args = parser.parse_args(["prove", "Basic.lean"])
+        custom_args = parser.parse_args(
+            ["prove", "Basic.lean", "--max-repair-rounds", "1"]
+        )
+
+        self.assertEqual(default_args.max_repair_rounds, 2)
+        self.assertEqual(custom_args.max_repair_rounds, 1)
 
     def test_parser_parses_per_role_overrides(self) -> None:
         parser = build_parser()

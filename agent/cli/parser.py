@@ -127,6 +127,15 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, role_prefix: bool) -> No
     group.add_argument("--max-candidates", type=int, default=1)
     group.add_argument("--max-model-calls", type=int, default=3)
     group.add_argument("--max-checks", type=int, default=3)
+    group.add_argument(
+        "--max-repair-rounds",
+        type=int,
+        default=2,
+        help=(
+            "Maximum consecutive local revisions by the proof agent before it "
+            "restarts the proof strategy."
+        ),
+    )
     group.add_argument("--max-elapsed-seconds", type=float, default=None)
     group.add_argument("--enable-retrieval", action="store_true")
     group.add_argument("--retrieval-source", action="append", default=[])

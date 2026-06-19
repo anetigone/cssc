@@ -142,6 +142,51 @@ class ProofControllerTests(unittest.TestCase):
         previous_attempt = generator.requests[1].metadata["previous_attempt"]
         self.assertEqual(previous_attempt["proof_text"], "exact False.elim")
         self.assertEqual(previous_attempt["raw_output"], "unsolved goals")
+        self.assertEqual(generator.requests[0].metadata["proof_phase"], "propose")
+        self.assertEqual(generator.requests[1].metadata["proof_phase"], "revise")
+        self.assertEqual(result.attempts[1].edit.metadata["proof_phase"], "revise")
+
+    def test_restarts_after_local_revision_budget(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator(
+            [["bad initial"], ["bad local revision"], ["trivial"]]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=4, max_model_calls=4),
+                config=ControllerConfig(max_repair_rounds=1),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(
+            [request.metadata["proof_phase"] for request in generator.requests],
+            ["propose", "revise", "restart"],
+        )
+        self.assertEqual(
+            [attempt.edit.metadata["proof_phase"] for attempt in result.attempts],
+            ["propose", "revise", "restart"],
+        )
+
+    def test_generic_checker_error_is_locally_repairable(self) -> None:
+        controller = ProofController(
+            adapter=FakeAdapter(),
+            action_generator=QueueGenerator([]),
+            workspace=AttemptWorkspace(tempfile.gettempdir()),
+            config=ControllerConfig(max_repair_rounds=2),
+        )
+
+        action = controller._choose_next_meta_action(
+            DiagnosticCategory.CHECKER_ERROR,
+            repair_rounds=0,
+            retrieved_this_episode=False,
+        )
+
+        self.assertEqual(action, "repair")
 
     def test_repairs_failed_candidate_before_next_model_call(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
