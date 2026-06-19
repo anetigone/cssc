@@ -17,6 +17,7 @@ from agent import (
 )
 from agent.agents import (
     LeanEnvironmentToolProvider,
+    LeanProofToolProvider,
     ScaffoldChecker,
     VerifiedFormalizationCache,
 )
@@ -43,7 +44,11 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
         return StaticActionGenerator(candidates)
     if args.use_model is not False:
         _ensure_env_loaded(args)
-        return ChatActionGenerator(_model_config(args, role="proof"), tools=_lean_tools(args, project_root))
+        return ChatActionGenerator(
+            _model_config(args, role="proof"),
+            tools=_proof_tools(args, project_root),
+            max_tool_rounds=1,
+        )
     raise ValueError(
         "Model calls are disabled. Provide --candidate/--candidate-file or remove --no-model."
     )
@@ -117,6 +122,17 @@ def _lean_tools(args: Namespace, project_root: Path | None):
         project_root=project_root,
         lake_executable=getattr(args, "lake_executable", None),
         lean_executable=getattr(args, "lean_executable", None),
+    ).tools()
+
+
+def _proof_tools(args: Namespace, project_root: Path | None):
+    if project_root is None:
+        return None
+    return LeanProofToolProvider(
+        project_root=project_root,
+        lake_executable=getattr(args, "lake_executable", None),
+        lean_executable=getattr(args, "lean_executable", None),
+        timeout_seconds=min(float(getattr(args, "lean_timeout", 60.0)), 60.0),
     ).tools()
 
 

@@ -126,7 +126,6 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, role_prefix: bool) -> No
     group.add_argument("--candidate-file", action="append", default=[])
     group.add_argument("--max-candidates", type=int, default=1)
     group.add_argument("--max-model-calls", type=int, default=3)
-    group.add_argument("--max-repair-rounds", type=int, default=2)
     group.add_argument("--max-checks", type=int, default=3)
     group.add_argument("--max-elapsed-seconds", type=float, default=None)
     group.add_argument("--enable-retrieval", action="store_true")

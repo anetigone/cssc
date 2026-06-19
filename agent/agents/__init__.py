@@ -23,6 +23,7 @@ from .proof import ChatActionGenerator, OpenAIChatActionGenerator
 from .tools import (
     FunctionTool,
     LeanEnvironmentToolProvider,
+    LeanProofToolProvider,
     Tool,
     ToolCall,
     ToolResult,
@@ -42,6 +43,7 @@ __all__ = [
     "FormalizationResult",
     "FunctionTool",
     "LeanEnvironmentToolProvider",
+    "LeanProofToolProvider",
     "ModelAdapterError",
     "RoleModelConfig",
     "ScaffoldChecker",

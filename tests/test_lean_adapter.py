@@ -104,6 +104,18 @@ class LeanAdapterTests(unittest.TestCase):
         )
         self.assertEqual(feedback.category, DiagnosticCategory.UNSOLVED_GOALS)
 
+    def test_parse_feedback_prioritizes_error_over_information_and_warning(self) -> None:
+        adapter = LeanAdapter()
+        feedback = adapter.parse_feedback(
+            "Attempt.lean:1:1: information: theorem type\n"
+            "Attempt.lean:2:1: warning: try simp\n"
+            "Attempt.lean:9:4: error: Type mismatch: bad term\n"
+        )
+        self.assertEqual(feedback.category, DiagnosticCategory.TYPE_MISMATCH)
+        self.assertEqual(feedback.line, 9)
+        self.assertEqual(feedback.column, 4)
+        self.assertIn("Type mismatch", feedback.message)
+
     def test_subprocess_output_uses_utf8_replacement_decoding(self) -> None:
         adapter = LeanAdapter(
             prefer_lake=False,

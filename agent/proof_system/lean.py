@@ -23,7 +23,14 @@ from .base import (
 from .lean_server import LeanServerClient, LeanServerError, LeanServerTimeout
 
 
-_LOCATION_RE = re.compile(r":(?P<line>\d+):(?P<column>\d+):\s+(?:error|warning):")
+_LOCATION_RE = re.compile(
+    r":(?P<line>\d+):(?P<column>\d+):\s+(?:error(?:\([^)]*\))?|warning):",
+    re.IGNORECASE,
+)
+_DIAGNOSTIC_LINE_RE = re.compile(
+    r"^.*?:\d+:\d+:\s+(?:error(?:\([^)]*\))?|warning|information|hint):",
+    re.IGNORECASE,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -231,8 +238,9 @@ class LeanAdapter(ProofSystemAdapter):
         return _with_progress(self, result)
 
     def parse_feedback(self, raw_output: str) -> ParsedFeedback:
-        normalized = raw_output.lower()
-        line, column = _first_location(raw_output)
+        primary_output = _primary_error_block(raw_output) or raw_output
+        normalized = primary_output.lower()
+        line, column = _first_location(primary_output)
 
         if not raw_output.strip():
             return ParsedFeedback(
@@ -267,7 +275,7 @@ class LeanAdapter(ProofSystemAdapter):
 
         return ParsedFeedback(
             category=category,
-            message=_first_meaningful_line(raw_output),
+            message=_first_meaningful_line(primary_output),
             line=line,
             column=column,
             unsolved_goals=_extract_goal_blocks(raw_output),
@@ -321,6 +329,9 @@ class LeanAdapter(ProofSystemAdapter):
             return False
         if self._server is not None and self._server.is_alive():
             return True
+        if self._server is not None:
+            logger.warning("Discarding unhealthy Lean server before restart")
+            self.close()
         command = self._build_server_command()
         if command is None:
             return False
@@ -362,6 +373,11 @@ class LeanAdapter(ProofSystemAdapter):
 
         command = self._server.command
         started = time.perf_counter()
+        logger.info(
+            "Lean server check started: candidate_file=%s timeout=%s",
+            candidate_file,
+            budget_slice.timeout_seconds,
+        )
         try:
             server_result = self._server.check_file(candidate_file, timeout_seconds=budget_slice.timeout_seconds)
         except LeanServerTimeout as exc:
@@ -389,6 +405,13 @@ class LeanAdapter(ProofSystemAdapter):
             return None
 
         elapsed = time.perf_counter() - started
+        logger.info(
+            "Lean server check completed: candidate_file=%s exit_code=%s elapsed=%.3fs",
+            candidate_file,
+            server_result.exit_code,
+            elapsed,
+        )
+
         raw = server_result.raw_output
         feedback = self.parse_feedback(raw)
         if server_result.exit_code != 0 and feedback.category == DiagnosticCategory.PROOF_ACCEPTED:
@@ -460,7 +483,7 @@ def _contains_sorry_warning(raw_output: str) -> bool:
 
 
 def _contains_error_diagnostic(raw_output: str) -> bool:
-    return bool(re.search(r"\berror:", raw_output.lower()))
+    return bool(re.search(r"\berror(?:\([^)]*\))?:", raw_output, re.IGNORECASE))
 
 
 def _first_location(raw_output: str) -> tuple[int | None, int | None]:
@@ -475,6 +498,21 @@ def _first_meaningful_line(raw_output: str) -> str:
         stripped = line.strip()
         if stripped:
             return stripped
+    return ""
+
+
+def _primary_error_block(raw_output: str) -> str:
+    """Return the first fatal diagnostic and its continuation lines."""
+    lines = raw_output.splitlines()
+    for index, line in enumerate(lines):
+        if not re.search(r":\s+error(?:\([^)]*\))?:", line, re.IGNORECASE):
+            continue
+        block = [line]
+        for continuation in lines[index + 1 :]:
+            if _DIAGNOSTIC_LINE_RE.match(continuation):
+                break
+            block.append(continuation)
+        return "\n".join(block).strip()
     return ""
 
 

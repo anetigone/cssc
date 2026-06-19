@@ -139,6 +139,58 @@ class ChatDriverTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1)
         self.assertIn("tools", transport.calls[0])
 
+    def test_tool_budget_forces_tool_free_final_and_skips_duplicates(self) -> None:
+        executions: list[dict[str, object]] = []
+        tool = FunctionTool(
+            name="echo",
+            description="Echo.",
+            parameters={"type": "object", "properties": {}},
+            _execute=lambda args: executions.append(args) or json.dumps({"ok": True}),
+        )
+        tool_response = lambda call_id: {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": "echo", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        transport = RecordingTransport(
+            [
+                tool_response("call_1"),
+                tool_response("call_2"),
+                {"choices": [{"message": {"content": "final proof"}}]},
+            ]
+        )
+        driver = ChatDriver(
+            ChatConfig(api_key="k", model="m"),
+            transport=transport,
+            tools=[tool],
+            max_tool_rounds=2,
+        )
+
+        response = driver.complete([{"role": "user", "content": "prove it"}])
+
+        self.assertEqual(response["choices"][0]["message"]["content"], "final proof")
+        self.assertEqual(len(executions), 1)
+        self.assertEqual(len(transport.calls), 3)
+        self.assertIn("tools", transport.calls[0])
+        self.assertIn("tools", transport.calls[1])
+        self.assertNotIn("tools", transport.calls[2])
+        self.assertIn(
+            "tool budget is exhausted",
+            transport.calls[2]["messages"][-1]["content"].lower(),
+        )
+
     def test_complete_keeps_final_request_for_multiple_candidates(self) -> None:
         tool = FunctionTool(
             name="echo",

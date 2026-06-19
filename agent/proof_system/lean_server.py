@@ -52,6 +52,7 @@ class LeanServerClient:
         self._stderr: list[str] = []
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
+        self._reader_error: LeanServerError | None = None
 
     def start(self, *, timeout_seconds: float) -> None:
         self._process = subprocess.Popen(
@@ -80,7 +81,13 @@ class LeanServerClient:
         self._notify("initialized", {})
 
     def is_alive(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        return (
+            self._process is not None
+            and self._process.poll() is None
+            and self._reader_error is None
+            and self._reader is not None
+            and self._reader.is_alive()
+        )
 
     def check_file(self, path: Path, *, timeout_seconds: float) -> LeanServerCheck:
         if not self.is_alive():
@@ -135,6 +142,7 @@ class LeanServerClient:
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
             while request_id not in self._responses:
+                self._raise_reader_error()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise LeanServerTimeout(f"Lean server request {method!r} timed out after {timeout_seconds}s.")
@@ -148,6 +156,7 @@ class LeanServerClient:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _send(self, payload: dict[str, Any]) -> None:
+        self._raise_reader_error()
         if self._process is None or self._process.stdin is None:
             raise LeanServerError("Lean server stdin is closed.")
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -160,6 +169,7 @@ class LeanServerClient:
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
             while uri not in self._completed_documents:
+                self._raise_reader_error()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise LeanServerTimeout(f"Lean checker timed out after {timeout_seconds}s.")
@@ -184,13 +194,14 @@ class LeanServerClient:
                         content_length = int(value.strip())
                 if content_length is None:
                     raise LeanServerError("Lean server message omitted Content-Length.")
-                body = stream.read(content_length)
-                if not body:
-                    return
+                body = _read_exact(stream, content_length)
                 self._handle_message(json.loads(body.decode("utf-8")))
         except Exception as exc:
-            logger.debug("Lean server stdout reader stopped: %s", exc, exc_info=True)
+            error = exc if isinstance(exc, LeanServerError) else LeanServerError(str(exc))
+            logger.warning("Lean server stdout reader failed: %s", error)
+            logger.debug("Lean server stdout reader failure details", exc_info=True)
             with self._condition:
+                self._reader_error = error
                 self._condition.notify_all()
 
     def _read_stderr(self) -> None:
@@ -199,7 +210,7 @@ class LeanServerClient:
             self._stderr.append(line.decode("utf-8", errors="replace").rstrip())
 
     def _handle_message(self, message: dict[str, Any]) -> None:
-        logger.debug("Lean server message: %s", message)
+        logger.debug("Lean server message: %s", _message_summary(message))
         if "id" in message and "method" in message:
             self._send({"jsonrpc": "2.0", "id": message["id"], "result": None})
             return
@@ -221,6 +232,45 @@ class LeanServerClient:
                 if isinstance(uri, str) and not params.get("processing"):
                     self._completed_documents.add(uri)
                     self._condition.notify_all()
+
+    def _raise_reader_error(self) -> None:
+        if self._reader_error is not None:
+            raise self._reader_error
+
+
+def _read_exact(stream: Any, content_length: int) -> bytes:
+    """Read one framed JSON-RPC body, tolerating short pipe reads."""
+    chunks: list[bytes] = []
+    remaining = content_length
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            received = content_length - remaining
+            raise LeanServerError(
+                f"Lean server stdout ended mid-message ({received}/{content_length} bytes)."
+            )
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _message_summary(message: dict[str, Any]) -> str:
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "textDocument/publishDiagnostics":
+        params = message.get("params") or {}
+        return (
+            f"method={method} id={request_id} "
+            f"diagnostics={len(params.get('diagnostics') or [])} uri={params.get('uri')}"
+        )
+    if method == "$/lean/fileProgress":
+        params = message.get("params") or {}
+        document = params.get("textDocument") or {}
+        return (
+            f"method={method} processing={len(params.get('processing') or [])} "
+            f"uri={document.get('uri')}"
+        )
+    return f"method={method} id={request_id} has_result={'result' in message}"
 
 
 def _format_lsp_diagnostics(path: Path, diagnostics: list[dict[str, Any]]) -> str:

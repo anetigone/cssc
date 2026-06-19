@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent.search.action import StaticActionGenerator
 from agent import TaskInputKind
@@ -387,6 +387,7 @@ class CliSubcommandTests(unittest.TestCase):
         for flag in ("--proof-model", "--proof-temperature", "--proof-max-tokens"):
             self.assertIn(flag, solve_help)
             self.assertNotIn(flag, formalize_help)
+        self.assertNotIn("--max-repair-rounds", solve_help)
         for stage_help in (formalize_help, prove_help):
             self.assertIn("--model", stage_help)
             self.assertIn("--temperature", stage_help)
@@ -463,6 +464,19 @@ class CliSubcommandTests(unittest.TestCase):
             cfg = _model_config(_args(use_model=True, formalizer_temperature=0.0), role="formalizer")
 
         self.assertEqual(cfg.temperature, 0.0)
+
+    def test_proof_generator_attaches_only_proof_tools(self) -> None:
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "k", "OPENAI_MODEL": "env-model"}),
+            patch("agent.cli.generators.load_dotenv"),
+            patch("agent.cli.generators._lean_tools") as lean_tools,
+            patch("agent.cli.generators._proof_tools", return_value=(MagicMock(name="proof_tool"),)) as proof_tools,
+        ):
+            generator = build_action_generator(_args(use_model=True), project_root=Path("."))
+
+        lean_tools.assert_not_called()
+        proof_tools.assert_called_once()
+        self.assertEqual(len(generator.driver.tools), 1)
 
     def test_run_formalize_rejects_lean_input(self) -> None:
         from agent.cli import solve_lean_task as cli

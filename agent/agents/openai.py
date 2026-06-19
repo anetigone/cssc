@@ -9,6 +9,7 @@ import os
 import re
 import socket
 import time
+import uuid
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -102,6 +103,7 @@ class UrllibChatTransport:
     ) -> Mapping[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
+        request_id = uuid.uuid4().hex[:8]
         transient_errors = (
             urllib.error.URLError,
             http.client.RemoteDisconnected,
@@ -111,27 +113,53 @@ class UrllibChatTransport:
             socket.timeout,
         )
         for attempt in range(self.max_retries + 1):
+            started = time.perf_counter()
             try:
                 logger.debug(
-                    "POST model request: url=%s timeout=%s attempt=%d/%d",
+                    "Model request started: request_id=%s url=%s timeout=%s attempt=%d/%d request_bytes=%d",
+                    request_id,
                     url,
                     timeout_seconds,
                     attempt + 1,
                     self.max_retries + 1,
+                    len(data),
                 )
                 with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                    body = response.read().decode("utf-8")
+                    raw_body = response.read()
+                    status = getattr(response, "status", None)
+                elapsed = time.perf_counter() - started
+                body = raw_body.decode("utf-8")
+                logger.debug(
+                    "Model request completed: request_id=%s url=%s attempt=%d/%d status=%s elapsed=%.3fs response_bytes=%d",
+                    request_id,
+                    url,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    status,
+                    elapsed,
+                    len(raw_body),
+                )
                 break
             except urllib.error.HTTPError as exc:
+                elapsed = time.perf_counter() - started
                 body = exc.read().decode("utf-8", errors="replace")
-                logger.warning("Model endpoint returned HTTP error: url=%s status=%s", url, exc.code)
+                logger.warning(
+                    "Model request failed with HTTP error: request_id=%s url=%s status=%s elapsed=%.3fs",
+                    request_id,
+                    url,
+                    exc.code,
+                    elapsed,
+                )
                 raise ModelAdapterError(f"Model endpoint returned HTTP {exc.code}: {body}") from exc
             except transient_errors as exc:
+                elapsed = time.perf_counter() - started
                 if attempt >= self.max_retries:
                     logger.warning(
-                        "Model endpoint connection failed after %d attempt(s): url=%s error=%s",
+                        "Model request failed after %d attempt(s): request_id=%s url=%s elapsed=%.3fs error=%s",
                         attempt + 1,
+                        request_id,
                         url,
+                        elapsed,
                         exc,
                     )
                     raise ModelAdapterError(
@@ -139,10 +167,12 @@ class UrllibChatTransport:
                     ) from exc
                 delay = self.retry_backoff_seconds * (2**attempt)
                 logger.warning(
-                    "Transient model endpoint error; retrying: url=%s attempt=%d/%d delay=%.1fs error=%s",
+                    "Model request attempt failed; retrying: request_id=%s url=%s attempt=%d/%d elapsed=%.3fs delay=%.1fs error=%s",
+                    request_id,
                     url,
                     attempt + 1,
                     self.max_retries + 1,
+                    elapsed,
                     delay,
                     exc,
                 )
@@ -151,10 +181,10 @@ class UrllibChatTransport:
         try:
             decoded = json.loads(body)
         except json.JSONDecodeError as exc:
-            logger.warning("Model endpoint returned invalid JSON: url=%s", url)
+            logger.warning("Model endpoint returned invalid JSON: request_id=%s url=%s", request_id, url)
             raise ModelAdapterError("Model endpoint returned invalid JSON.") from exc
         if not isinstance(decoded, Mapping):
-            logger.warning("Model endpoint returned non-object JSON: url=%s", url)
+            logger.warning("Model endpoint returned non-object JSON: request_id=%s url=%s", request_id, url)
             raise ModelAdapterError("Model endpoint returned a non-object JSON payload.")
         return decoded
 

@@ -98,7 +98,7 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertIn("unsolved goals", payload["messages"][1]["content"])
         self.assertEqual(timeout, 12.0)
 
-    def test_repair_prompt_contains_previous_proof_and_full_checker_output(self) -> None:
+    def test_repair_prompt_contains_previous_proof_and_relevant_checker_errors(self) -> None:
         transport = RecordingTransport(
             {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
         )
@@ -114,7 +114,11 @@ class ChatActionGeneratorTests(unittest.TestCase):
                 metadata={
                     "previous_attempt": {
                         "proof_text": "exact badLemma",
-                        "raw_output": "line 1 error\nline 2 error",
+                        "raw_output": (
+                            "A.lean:1:1: information: noisy #check\n"
+                            "A.lean:2:3: warning: noisy warning\n"
+                            "A.lean:4:5: error: actual failure\n  detail"
+                        ),
                     }
                 },
             )
@@ -122,7 +126,36 @@ class ChatActionGeneratorTests(unittest.TestCase):
 
         prompt = transport.calls[0][2]["messages"][1]["content"]
         self.assertIn("exact badLemma", prompt)
-        self.assertIn("line 1 error\nline 2 error", prompt)
+        self.assertIn("error: actual failure\n  detail", prompt)
+        self.assertNotIn("noisy #check", prompt)
+        self.assertNotIn("noisy warning", prompt)
+
+    def test_removes_exploration_commands_from_final_candidate(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "#check True\nimport Mathlib\nclassical\n  exact True.intro"
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        actions = generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=0,
+            )
+        )
+
+        self.assertEqual(actions[0].proof_text, "classical\n  exact True.intro")
+        self.assertEqual(actions[0].metadata["removed_exploration_commands"], 2)
 
     def test_proof_generator_executes_environment_tool_calls(self) -> None:
         transport = SequenceTransport(
@@ -172,6 +205,40 @@ class ChatActionGeneratorTests(unittest.TestCase):
         tool_messages = [m for m in transport.calls[1]["messages"] if m.get("role") == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_1")
 
+    def test_type_mismatch_repair_disables_tools(self) -> None:
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "exact fixed"}, "finish_reason": "stop"}]}
+        )
+        tool = FunctionTool(
+            name="check_lean_snippet",
+            description="Check Lean.",
+            parameters={"type": "object", "properties": {}},
+            _execute=lambda _: '{"ok": true}',
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"),
+            transport=transport,
+            tools=[tool],
+        )
+
+        actions = generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                previous_feedback=(
+                    ParsedFeedback(
+                        category=DiagnosticCategory.TYPE_MISMATCH,
+                        message="Type mismatch",
+                    ),
+                ),
+            )
+        )
+
+        self.assertEqual(actions[0].proof_text, "exact fixed")
+        payload = transport.calls[0][2]
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("check_lean_snippet", payload["messages"][0]["content"])
+
     def test_from_env_requires_key_and_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ModelAdapterError):
@@ -201,6 +268,31 @@ class ChatActionGeneratorTests(unittest.TestCase):
 
         self.assertEqual(result, {"choices": []})
         self.assertEqual(urlopen.call_count, 2)
+
+    def test_transport_logs_request_start_and_completion(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"choices": []}'
+        response.__enter__.return_value.status = 200
+        transport = UrllibChatTransport(max_retries=0)
+
+        with (
+            patch("agent.agents.openai.urllib.request.urlopen", return_value=response),
+            patch("agent.agents.openai.uuid.uuid4") as uuid4,
+            self.assertLogs("agent.agents.openai", level="DEBUG") as logs,
+        ):
+            uuid4.return_value.hex = "12345678abcdef"
+            transport.post_json(
+                "https://example.test/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                payload={"model": "m"},
+                timeout_seconds=10,
+            )
+
+        output = "\n".join(logs.output)
+        self.assertIn("Model request started: request_id=12345678", output)
+        self.assertIn("Model request completed: request_id=12345678", output)
+        self.assertIn("status=200", output)
+        self.assertIn("elapsed=", output)
 
     def test_transport_wraps_remote_disconnect_after_retries(self) -> None:
         transport = UrllibChatTransport(max_retries=1, retry_backoff_seconds=0)

@@ -223,11 +223,12 @@ class ProofController:
             state, task, generator, max_candidates
         )
         actions = tuple(generator.generate(request))
-        logger.debug(
-            "Generated %d action(s): task_id=%s attempt_index=%d",
-            len(actions),
+        logger.info(
+            "Proof generation completed: task_id=%s attempt_index=%d meta_action=%s candidates=%d",
             task.task_id,
             state.attempt_index,
+            state.next_meta_action,
+            len(actions),
         )
         return actions
 
@@ -245,10 +246,11 @@ class ProofController:
             budget=budget_snapshot,
             metadata={"next_meta_action": state.next_meta_action},
         )
-        logger.debug(
-            "Generating actions: task_id=%s attempt_index=%d previous_feedback=%d",
+        logger.info(
+            "Proof generation started: task_id=%s attempt_index=%d meta_action=%s previous_feedback=%d",
             task.task_id,
             state.attempt_index,
+            state.next_meta_action,
             len(state.feedback_history),
         )
         previous_attempt = None
@@ -400,12 +402,11 @@ class ProofController:
             extension=self.config.candidate_extension,
         )
         budget_slice = self.budget.reserve_check()
-        logger.debug(
-            "Checking candidate: task_id=%s attempt_index=%d candidate_id=%s path=%s timeout=%s",
+        logger.info(
+            "Candidate check started: task_id=%s attempt_index=%d candidate_id=%s timeout=%s",
             task.task_id,
             state.attempt_index,
             materialized.candidate_id,
-            materialized.path,
             budget_slice.timeout_seconds,
         )
         if self.check_workspace is None:

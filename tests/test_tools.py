@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import tempfile
 from unittest.mock import patch
 import unittest
 from pathlib import Path
@@ -9,6 +11,7 @@ from pathlib import Path
 from agent.agents import (
     FunctionTool,
     LeanEnvironmentToolProvider,
+    LeanProofToolProvider,
     ToolCall,
     extract_missing_imports,
     extract_tool_calls,
@@ -111,6 +114,31 @@ class FunctionToolTests(unittest.TestCase):
             _execute=lambda args: json.dumps(args),
         )
         self.assertEqual(tool.execute({"x": 1}), '{"x": 1}')
+
+
+class LeanProofToolProviderTests(unittest.TestCase):
+    def test_check_snippet_returns_bounded_json_and_removes_temp_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lakefile.toml").write_text('name = "sample"\n', encoding="utf-8")
+            provider = LeanProofToolProvider(root, lake_executable="lake")
+            completed = subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="Attempt.lean:1:1: error: bad"
+            )
+            with patch("agent.agents.tools.subprocess.run", return_value=completed) as run:
+                result = json.loads(provider.tools()[0].execute({"code": "#check Missing"}))
+
+            self.assertFalse(result["ok"])
+            self.assertIn("error: bad", result["output"])
+            self.assertEqual(list(root.glob("proof_tool_*.lean")), [])
+            self.assertEqual(run.call_args.kwargs["cwd"], root)
+
+    def test_check_snippet_rejects_oversized_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = LeanProofToolProvider(tmp, max_source_chars=4)
+            result = json.loads(provider.tools()[0].execute({"code": "12345"}))
+        self.assertFalse(result["ok"])
+        self.assertIn("too large", result["error"])
 
 
 class LeanEnvironmentToolProviderTests(unittest.TestCase):

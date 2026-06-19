@@ -39,6 +39,7 @@ class ChatDriver:
         messages: list[dict[str, Any]],
         *,
         final_n: int = 1,
+        allow_tools: bool = True,
     ) -> Mapping[str, Any]:
         """Run a chat completion and return the decoded response.
 
@@ -53,11 +54,12 @@ class ChatDriver:
             "max_tokens": self.config.max_tokens,
             **self.config.extra_body,
         }
+        active_tools = self.tools if allow_tools else ()
         return run_tool_loop(
             self.transport,
             self.config,
             messages,
-            self.tools,
+            active_tools,
             self.max_tool_rounds,
             self.execute_tool,
             base_payload=base_payload,

@@ -349,7 +349,10 @@ def _run_controller(
         ),
         config=ControllerConfig(
             max_candidates_per_model_call=args.max_candidates,
-            max_repair_rounds=args.max_repair_rounds,
+            # The CLI has two model roles only: formalization and proof.
+            # Failed proof attempts feed their candidate and Lean diagnostics
+            # back into the same proof generator as a fresh expansion.
+            max_repair_rounds=0,
             max_retrieval_results=args.max_retrieval_results,
             retrieve_before_first_model_call=args.retrieve_before_first_model_call,
         ),
