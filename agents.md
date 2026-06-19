@@ -24,6 +24,7 @@ agent/
 │   ├── tools.py         # Tool 协议、LeanEnvironmentToolProvider、run_tool_loop
 │   ├── formalization.py # Formalizer：自然语言 -> Lean scaffold
 │   ├── proof.py         # Proof generator：补全 proof hole
+│   ├── context.py       # ContextSummarizer：压缩反馈与历史上下文
 │   └── config.py        # AgentRole / RoleModelConfig
 ├── search/              # 搜索控制
 │   ├── action.py        # ActionGenerator 协议与 ActionCandidate
@@ -52,6 +53,7 @@ agent/
 |---|---|---|---|---|
 | Formalizer | `ChatFormalizationAgent` | `FormalizationRequest` | `FormalizationResult` | 生成含 `{{proof}}` 的 Lean scaffold，可接 checker 做校验重试。 |
 | Proof Generator | `ChatActionGenerator` | `ActionGenerationRequest` | `Sequence[ActionCandidate]` | 根据当前 proof state 生成候选证明体。 |
+| Context Manager | `ChatContextSummarizer` | `SummarizationRequest` | `SummarizationResult` | 在 retry 前把 checker 输出与历史反馈压缩成简短、可操作的摘要，降低 proof generator 的 prompt 成本。 |
 
 > 旧名保留兼容别名：`OpenAIChatConfig`、`OpenAIChatFormalizationAgent`、`OpenAIChatActionGenerator`。
 
@@ -109,9 +111,10 @@ class MyTacticGenerator(ActionGenerator):
 class AgentRole(str, Enum):
     FORMALIZER = "formalizer"
     PROOF_GENERATOR = "proof_generator"
+    CONTEXT_MANAGER = "context_manager"
 ```
 
-后续可按 role 读取不同环境变量（如 `OPENAI_MODEL_FORMALIZER`、`OPENAI_MODEL_PROOF_GENERATOR`）实现“便宜模型 tactic + 贵模型 prove”。
+后续可按 role 读取不同环境变量（如 `OPENAI_MODEL_FORMALIZER`、`OPENAI_MODEL_PROOF_GENERATOR`、`OPENAI_MODEL_CONTEXT_MANAGER`）实现“便宜模型 tactic + 贵模型 prove”，或由轻量模型专门做上下文摘要。
 
 ## 关键边界协议
 
@@ -127,7 +130,9 @@ class AgentRole(str, Enum):
 python -m agent.cli.solve_lean_task <source> --use-model
 ```
 
-常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`。
+常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`。
+
+模型选择按 per-role -> generic `--model` -> 环境变量 `OPENAI_MODEL` 的顺序回退。例如 `--proof-model gpt-4` 只覆盖 proof generator，未指定时 fallback 到 `--model`，再未指定时 fallback 到 `OPENAI_MODEL`。
 
 ## 测试
 

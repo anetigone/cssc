@@ -262,6 +262,40 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertNotIn("tools", payload)
         self.assertNotIn("check_lean_snippet", payload["messages"][0]["content"])
 
+    def test_prefers_summarized_context_over_raw_output(self) -> None:
+        from agent.agents.context import SummarizationResult
+
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                metadata={
+                    "proof_phase": "retry",
+                    "previous_attempt": {
+                        "proof_text": "exact badLemma",
+                        "raw_output": "A.lean:4:5: error: very long diagnostic\n" * 50,
+                    },
+                    "summarized_context": SummarizationResult(
+                        concise_error="unknown lemma badLemma",
+                        strategy_hint="use a lemma from Mathlib",
+                        was_summarized=True,
+                    ),
+                },
+            )
+        )
+
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        self.assertIn("unknown lemma badLemma", prompt)
+        self.assertIn("use a lemma from Mathlib", prompt)
+        self.assertNotIn("very long diagnostic", prompt)
+
     def test_from_env_requires_key_and_model(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ModelAdapterError):

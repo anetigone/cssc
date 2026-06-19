@@ -9,6 +9,7 @@ from pathlib import Path
 from agent import (
     ChatActionGenerator,
     ChatConfig,
+    ChatContextSummarizer,
     ChatFormalizationAgent,
     LexicalLeanRetriever,
     StaticActionGenerator,
@@ -27,6 +28,17 @@ from .tasks import classify_input, require_source
 
 
 logger = logging.getLogger(__name__)
+
+
+def build_context_summarizer(args: Namespace) -> ChatContextSummarizer | None:
+    if not getattr(args, "context_summarizer", False):
+        return None
+    if args.use_model is False:
+        raise ValueError(
+            "Context summarizer requires a model. Remove --no-model or disable the summarizer."
+        )
+    _ensure_env_loaded(args)
+    return ChatContextSummarizer(_model_config(args, role="context"))
 
 
 def build_action_generator(args: Namespace, *, project_root: Path | None = None):

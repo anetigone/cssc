@@ -46,6 +46,7 @@ from .config import apply_task_config
 from .artifacts import formalization_artifact, formalization_payload
 from .generators import (
     build_action_generator,
+    build_context_summarizer,
     build_formalization_agent,
     build_retriever,
 )
@@ -357,6 +358,7 @@ def _run_controller(
         workspace=AttemptWorkspace(work_dir),
         check_workspace=check_workspace,
         retriever=build_retriever(args),
+        context_summarizer=build_context_summarizer(args),
         budget_config=BudgetConfig(
             max_checks=args.max_checks,
             max_model_calls=args.max_model_calls,

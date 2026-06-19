@@ -2,6 +2,13 @@
 
 from .chat_driver import ChatDriver, first_choice_message
 from .config import AgentRole, RoleModelConfig
+from .context import (
+    ChatContextSummarizer,
+    ContextSummarizer,
+    OpenAIChatContextSummarizer,
+    SummarizationRequest,
+    SummarizationResult,
+)
 from .formalization import (
     ChatFormalizationAgent,
     FormalizationAgent,
@@ -35,9 +42,11 @@ __all__ = [
     "AgentRole",
     "ChatActionGenerator",
     "ChatConfig",
+    "ChatContextSummarizer",
     "ChatDriver",
     "ChatFormalizationAgent",
     "ChatTransport",
+    "ContextSummarizer",
     "FormalizationAgent",
     "FormalizationRequest",
     "FormalizationResult",
@@ -45,8 +54,11 @@ __all__ = [
     "LeanEnvironmentToolProvider",
     "LeanProofToolProvider",
     "ModelAdapterError",
+    "OpenAIChatContextSummarizer",
     "RoleModelConfig",
     "ScaffoldChecker",
+    "SummarizationRequest",
+    "SummarizationResult",
     "StaticFormalizationAgent",
     "Tool",
     "ToolCall",

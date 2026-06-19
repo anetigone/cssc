@@ -105,6 +105,21 @@ class FakeRetriever:
         )
 
 
+class FakeSummarizer:
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+
+    def summarize(self, request: Any) -> Any:
+        self.requests.append(request)
+        from agent.agents.context import SummarizationResult
+
+        return SummarizationResult(
+            concise_error="summarized: unsolved goals",
+            strategy_hint="try trivial",
+            was_summarized=True,
+        )
+
+
 class ProofControllerTests(unittest.TestCase):
     def test_runs_until_candidate_is_accepted(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
@@ -255,6 +270,29 @@ class ProofControllerTests(unittest.TestCase):
         self.assertTrue(result.attempts[0].candidate_file.is_relative_to(archive.resolve()))
         self.assertEqual(result.attempts[0].check_result.candidate_file, result.attempts[0].candidate_file)
         self.assertFalse(adapter.checked_files[0].exists())
+
+    def test_calls_context_summarizer_on_retry(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["bad"], ["trivial"]])
+        summarizer = FakeSummarizer()
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                context_summarizer=summarizer,
+                budget_config=BudgetConfig(max_checks=3, max_model_calls=3),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(summarizer.requests), 1)
+        self.assertEqual(summarizer.requests[0].attempt_index, 1)
+        self.assertIn(
+            "summarized: unsolved goals",
+            generator.requests[1].metadata["summarized_context"].concise_error,
+        )
 
 
 if __name__ == "__main__":

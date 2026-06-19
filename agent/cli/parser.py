@@ -22,8 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_input_args(solve)
     _add_task_selection_args(solve, include_all=False)
     _add_runtime_args(solve)
-    _add_formalization_args(solve, role_prefix=True)
-    _add_proof_args(solve, role_prefix=True)
+    _add_formalization_args(solve, include_model_toggle=False)
+    _add_proof_args(solve, include_model_toggle=True)
+    _add_model_args(solve, role=None)
     _add_output_arg(solve)
 
     formalize = subcommands.add_parser(
@@ -34,7 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_input_args(formalize)
     _add_task_selection_args(formalize, include_all=True)
     _add_runtime_args(formalize)
-    _add_formalization_args(formalize, role_prefix=False)
+    _add_formalization_args(formalize, include_model_toggle=True)
+    _add_model_args(formalize, role=None)
     _add_output_arg(formalize)
 
     prove = subcommands.add_parser(
@@ -45,7 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_input_args(prove, natural_language=False)
     _add_task_selection_args(prove, include_all=False)
     _add_runtime_args(prove)
-    _add_proof_args(prove, role_prefix=False)
+    _add_proof_args(prove, include_model_toggle=True)
+    _add_model_args(prove, role=None)
     _add_output_arg(prove)
     return parser
 
@@ -95,7 +98,12 @@ def _add_runtime_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--run-name", default=None)
 
 
-def _add_model_args(parser: argparse.ArgumentParser, *, role: str | None) -> None:
+def _add_model_args(
+    parser: argparse.ArgumentParser,
+    *,
+    role: str | None,
+    default_max_tokens: int | None = None,
+) -> None:
     prefix = f"{role}-" if role else ""
     dest_prefix = f"{role}_" if role else ""
     group = parser.add_argument_group(f"{role or 'stage'} model")
@@ -104,24 +112,30 @@ def _add_model_args(parser: argparse.ArgumentParser, *, role: str | None) -> Non
         f"--{prefix}temperature", dest=f"{dest_prefix}temperature", type=float, default=None
     )
     group.add_argument(
-        f"--{prefix}max-tokens", dest=f"{dest_prefix}max_tokens", type=int, default=None
+        f"--{prefix}max-tokens",
+        dest=f"{dest_prefix}max_tokens",
+        type=int,
+        default=default_max_tokens,
     )
 
 
-def _add_formalization_args(parser: argparse.ArgumentParser, *, role_prefix: bool) -> None:
+def _add_formalization_args(
+    parser: argparse.ArgumentParser, *, include_model_toggle: bool
+) -> None:
     group = parser.add_argument_group("formalization")
-    if not role_prefix:
+    if include_model_toggle:
         _add_model_toggle(group)
     group.add_argument("--no-check", action="store_true", help="Skip Lean scaffold validation.")
     group.add_argument("--formalization-cache-dir", default=None)
     group.add_argument("--formalization-cache", action="store_true")
     group.add_argument("--no-formalization-cache", action="store_true")
-    _add_model_args(parser, role="formalizer" if role_prefix else None)
+    _add_model_args(parser, role="formalizer")
 
 
-def _add_proof_args(parser: argparse.ArgumentParser, *, role_prefix: bool) -> None:
+def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bool) -> None:
     group = parser.add_argument_group("proof search")
-    _add_model_toggle(group)
+    if include_model_toggle:
+        _add_model_toggle(group)
     group.add_argument("--candidate", action="append", default=[])
     group.add_argument("--candidate-file", action="append", default=[])
     group.add_argument("--max-candidates", type=int, default=1)
@@ -132,10 +146,19 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, role_prefix: bool) -> No
     group.add_argument("--retrieval-source", action="append", default=[])
     group.add_argument("--max-retrieval-results", type=int, default=5)
     group.add_argument("--retrieve-before-first-model-call", action="store_true")
+    group.add_argument("--context-summarizer", action="store_true", dest="context_summarizer")
+    group.add_argument(
+        "--no-context-summarizer",
+        action="store_false",
+        dest="context_summarizer",
+        help="Disable the lightweight context-summarizer agent.",
+    )
+    group.set_defaults(context_summarizer=False)
     group.add_argument("--work-dir", default=None)
     group.add_argument("--trace-jsonl", default=None)
     group.add_argument("--trace-raw-output", action="store_true")
-    _add_model_args(parser, role="proof" if role_prefix else None)
+    _add_model_args(parser, role="proof")
+    _add_model_args(parser, role="context", default_max_tokens=512)
 
 
 def _add_output_arg(parser: argparse.ArgumentParser) -> None:

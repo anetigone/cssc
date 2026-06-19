@@ -381,16 +381,27 @@ class CliSubcommandTests(unittest.TestCase):
         formalize_help = _format_help(parser, ["formalize", "--help"])
         prove_help = _format_help(parser, ["prove", "--help"])
 
+        # solve exposes per-role flags for every role plus a generic fallback.
         for flag in ("--formalizer-model", "--formalizer-temperature", "--formalizer-max-tokens"):
             self.assertIn(flag, solve_help)
-            self.assertNotIn(flag, formalize_help)
         for flag in ("--proof-model", "--proof-temperature", "--proof-max-tokens"):
             self.assertIn(flag, solve_help)
-            self.assertNotIn(flag, formalize_help)
-        for stage_help in (formalize_help, prove_help):
-            self.assertIn("--model", stage_help)
-            self.assertIn("--temperature", stage_help)
-            self.assertIn("--max-tokens", stage_help)
+        for flag in ("--context-model", "--context-temperature", "--context-max-tokens"):
+            self.assertIn(flag, solve_help)
+        self.assertIn("--model", solve_help)
+
+        # formalize exposes formalizer-specific flags and a generic fallback.
+        for flag in ("--formalizer-model", "--formalizer-temperature", "--formalizer-max-tokens"):
+            self.assertIn(flag, formalize_help)
+        self.assertIn("--model", formalize_help)
+
+        # prove exposes proof/context-specific flags and a generic fallback.
+        for flag in ("--proof-model", "--proof-temperature", "--proof-max-tokens"):
+            self.assertIn(flag, prove_help)
+        for flag in ("--context-model", "--context-temperature", "--context-max-tokens"):
+            self.assertIn(flag, prove_help)
+        self.assertIn("--model", prove_help)
+
         self.assertNotIn("--repair-model", solve_help)
 
     def test_parser_parses_per_role_overrides(self) -> None:
@@ -418,6 +429,37 @@ class CliSubcommandTests(unittest.TestCase):
         prove = parser.parse_args(["prove", "Basic.lean", "--model", "p-model"])
         self.assertEqual(formalize.model, "f-model")
         self.assertEqual(prove.model, "p-model")
+
+    def test_per_role_model_flags_override_generic_model(self) -> None:
+        parser = build_parser()
+        formalize = parser.parse_args(
+            [
+                "formalize",
+                "--problem",
+                "x",
+                "--model",
+                "generic-model",
+                "--formalizer-model",
+                "f-model",
+            ]
+        )
+        prove = parser.parse_args(
+            [
+                "prove",
+                "Basic.lean",
+                "--model",
+                "generic-model",
+                "--proof-model",
+                "p-model",
+                "--context-model",
+                "c-model",
+            ]
+        )
+        self.assertEqual(formalize.formalizer_model, "f-model")
+        self.assertEqual(formalize.model, "generic-model")
+        self.assertEqual(prove.proof_model, "p-model")
+        self.assertEqual(prove.context_model, "c-model")
+        self.assertEqual(prove.model, "generic-model")
 
     def test_no_model_explicitly_disables_model_calls(self) -> None:
         parser = build_parser()
@@ -622,6 +664,10 @@ def _args(**overrides) -> Namespace:
         "proof_model": None,
         "proof_temperature": None,
         "proof_max_tokens": None,
+        "context_summarizer": False,
+        "context_model": None,
+        "context_temperature": None,
+        "context_max_tokens": 512,
         "repair_model": None,
         "repair_temperature": None,
         "repair_max_tokens": None,

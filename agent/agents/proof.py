@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from ..proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .chat_driver import ChatDriver
+from .context import SummarizationResult
 from .openai import (
     ChatConfig,
     ChatTransport,
@@ -186,6 +187,9 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
     if encoded_state is not None and hasattr(encoded_state, "to_prompt_context"):
         parts.extend(["Controller state:", str(encoded_state.to_prompt_context())])
     previous_attempt = request.metadata.get("previous_attempt")
+    summarized_context = request.metadata.get("summarized_context")
+    has_summarized_context = isinstance(summarized_context, SummarizationResult) and summarized_context.was_summarized
+    summary = summarized_context if has_summarized_context else None
     has_previous_attempt = isinstance(previous_attempt, Mapping)
     if has_previous_attempt:
         previous_proof = previous_attempt.get("proof_text")
@@ -194,7 +198,22 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
             parts.extend(
                 ["Previous proof body to revise:", "```lean", previous_proof, "```"]
             )
-        if isinstance(raw_output, str) and raw_output.strip():
+        if summary is not None:
+            if summary.concise_error:
+                parts.extend(
+                    [
+                        "Summary of Lean compiler errors from that proof:",
+                        summary.concise_error,
+                    ]
+                )
+            if summary.strategy_hint:
+                parts.extend(
+                    [
+                        "Suggested repair direction:",
+                        summary.strategy_hint,
+                    ]
+                )
+        elif isinstance(raw_output, str) and raw_output.strip():
             compact_output = _compact_checker_output(raw_output)
             parts.extend(
                 [

@@ -11,6 +11,7 @@ class AgentRole(str, Enum):
 
     FORMALIZER = "formalizer"
     PROOF_GENERATOR = "proof_generator"
+    CONTEXT_MANAGER = "context_manager"
 
 
 @dataclass(frozen=True)

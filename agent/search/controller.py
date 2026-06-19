@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
 from .state_encoder import encode_proof_state
+from ..agents.context import ContextSummarizer, SummarizationRequest
 from ..proof_system.base import (
     CandidateEdit,
     CheckResult,
@@ -116,6 +117,7 @@ class ProofController:
         workspace: AttemptWorkspace,
         check_workspace: EphemeralCheckWorkspace | None = None,
         retriever: Retriever | None = None,
+        context_summarizer: ContextSummarizer | None = None,
         budget_config: BudgetConfig | None = None,
         config: ControllerConfig | None = None,
     ) -> None:
@@ -124,6 +126,7 @@ class ProofController:
         self.workspace = workspace
         self.check_workspace = check_workspace
         self.retriever = retriever
+        self.context_summarizer = context_summarizer
         self.budget = BudgetManager(budget_config)
         self.config = config or ControllerConfig()
 
@@ -221,6 +224,11 @@ class ProofController:
                 "category": last.check_result.category.value,
                 "raw_output": last.check_result.raw_output,
             }
+        summarized_context = self._summarize_context(
+            task,
+            state,
+            previous_attempt,
+        )
         return ActionGenerationRequest(
             task=task,
             attempt_index=state.attempt_index,
@@ -232,6 +240,7 @@ class ProofController:
                 "retrieved_results": state.current_retrieved,
                 "retrieved_history": tuple(state.retrieved_history),
                 "previous_attempt": previous_attempt,
+                "summarized_context": summarized_context,
                 "budget": budget_snapshot,
             },
         )
@@ -437,6 +446,28 @@ class ProofController:
                 "feedback_count": len(state.feedback_history),
             },
         )
+
+    def _summarize_context(
+        self,
+        task: ProofTask,
+        state: _ControllerRunState,
+        previous_attempt: dict[str, Any] | None,
+    ) -> Any:
+        if self.context_summarizer is None or state.attempt_index == 0:
+            return None
+        try:
+            return self.context_summarizer.summarize(
+                SummarizationRequest(
+                    task=task,
+                    attempt_index=state.attempt_index,
+                    previous_attempt=previous_attempt,
+                    feedback_history=tuple(state.feedback_history),
+                    retrieved_results=state.current_retrieved,
+                )
+            )
+        except Exception:
+            logger.debug("Context summarization failed", exc_info=True)
+            return None
 
     def _maybe_retrieve(
         self,
