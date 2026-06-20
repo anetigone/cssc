@@ -8,6 +8,7 @@ from typing import Any
 from agent.search.action import ActionCandidate, ActionGenerationRequest
 from agent.search.budget import BudgetConfig
 from agent.search.controller import ControllerConfig, ProofController
+from agent.search.safety import SafetyVerdict
 from agent.retrieval import RetrievalResult
 from agent.proof_system.base import (
     BudgetSlice,
@@ -120,7 +121,64 @@ class FakeSummarizer:
         )
 
 
+class RejectProofTextReviewer:
+    def __init__(self, rejected_text: str) -> None:
+        self.rejected_text = rejected_text
+        self.calls: list[str] = []
+
+    def accepts(self, task, candidate_source, check_result) -> SafetyVerdict:
+        del task, check_result
+        self.calls.append(candidate_source)
+        if self.rejected_text in candidate_source:
+            return SafetyVerdict(False, ("test_shortcut",))
+        return SafetyVerdict(True)
+
+
 class ProofControllerTests(unittest.TestCase):
+    def test_retries_when_safety_rejects_checker_accepted_candidate(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["trivial -- unsafe"], ["trivial"]])
+        reviewer = RejectProofTextReviewer("unsafe")
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                safety_reviewer=reviewer,
+                budget_config=BudgetConfig(max_checks=3, max_model_calls=3),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(len(reviewer.calls), 2)
+        self.assertEqual(
+            result.metadata["safety_rejections"][0]["reasons"],
+            ("test_shortcut",),
+        )
+        retry_memory = generator.requests[1].metadata["proof_memory"]
+        self.assertEqual(retry_memory.established_facts, ())
+        self.assertIn("safety_rejected:test_shortcut", retry_memory.failed_approaches)
+
+    def test_does_not_call_safety_reviewer_for_checker_failure(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["bad"]])
+        reviewer = RejectProofTextReviewer("bad")
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                safety_reviewer=reviewer,
+                budget_config=BudgetConfig(max_checks=1, max_model_calls=1),
+            )
+
+            result = controller.run(task)
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(reviewer.calls, [])
+
     def test_runs_until_candidate_is_accepted(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
         generator = QueueGenerator([["exact False.elim"], ["trivial"]])

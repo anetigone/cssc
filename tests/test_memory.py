@@ -52,6 +52,25 @@ def _update(
 
 
 class MemoryProcessorTests(unittest.TestCase):
+    def test_safety_rejection_overrides_checker_acceptance(self) -> None:
+        task = _task()
+        update = _update(task, attempt_index=0, accepted=True, feedback=None)
+        update = MemoryUpdate(
+            **{
+                **update.__dict__,
+                "effective_accepted": False,
+                "safety_reasons": ("residual_shortcut:sorry",),
+            }
+        )
+
+        memory = MemoryProcessor().update(empty_memory(), update)
+
+        self.assertEqual(memory.established_facts, ())
+        self.assertIn(
+            "safety_rejected:residual_shortcut:sorry",
+            memory.failed_approaches,
+        )
+
     def test_records_established_fact_only_when_checker_accepts(self) -> None:
         task = _task()
         processor = MemoryProcessor()

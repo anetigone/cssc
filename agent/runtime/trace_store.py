@@ -206,6 +206,16 @@ def _feedback_payload(feedback: ParsedFeedback) -> dict[str, Any]:
         "line": feedback.line,
         "column": feedback.column,
         "unsolved_goals": list(feedback.unsolved_goals),
+        "goal_state": [
+            {
+                "text": state.text,
+                "goal_fingerprint": state.goal_fingerprint,
+                "declaration_id": state.declaration_id,
+                "source_span": list(state.source_span) if state.source_span else None,
+                "is_sorry_goal": state.is_sorry_goal,
+            }
+            for state in feedback.goal_state
+        ],
     }
 
 

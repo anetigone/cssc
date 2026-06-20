@@ -80,8 +80,9 @@ class StatementSafetyReviewer:
         if statement_reason is not None:
             reasons.append(statement_reason)
 
-        reasons.extend(self._shortcut_reasons(candidate_source))
-        reasons.extend(self._axiom_reasons(task, candidate_source))
+        scanned_candidate = _strip_lean_comments_and_strings(candidate_source)
+        reasons.extend(self._shortcut_reasons(scanned_candidate))
+        reasons.extend(self._axiom_reasons(task, scanned_candidate))
 
         verdict = SafetyVerdict(
             accepted=not reasons,
@@ -135,7 +136,8 @@ class StatementSafetyReviewer:
         return _dedupe(reasons)
 
     def _axiom_reasons(self, task: ProofTask, candidate_source: str) -> list[str]:
-        existing = set(_AXIOM_RE.findall(task.source_template))
+        existing_source = _strip_lean_comments_and_strings(task.source_template)
+        existing = set(_AXIOM_RE.findall(existing_source))
         introduced = [
             match.group(0).strip()
             for match in _AXIOM_RE.finditer(candidate_source)
@@ -148,3 +150,56 @@ class StatementSafetyReviewer:
 
 def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+def _strip_lean_comments_and_strings(source: str) -> str:
+    """Blank comments and strings while preserving source line boundaries."""
+    output: list[str] = []
+    index = 0
+    block_depth = 0
+    in_string = False
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if block_depth:
+            if char == "/" and next_char == "-":
+                block_depth += 1
+                output.extend((" ", " "))
+                index += 2
+            elif char == "-" and next_char == "/":
+                block_depth -= 1
+                output.extend((" ", " "))
+                index += 2
+            else:
+                output.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+
+        if in_string:
+            if char == "\\" and next_char:
+                output.extend((" ", " "))
+                index += 2
+            else:
+                if char == '"':
+                    in_string = False
+                output.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+
+        if char == "-" and next_char == "-":
+            while index < len(source) and source[index] != "\n":
+                output.append(" ")
+                index += 1
+        elif char == "/" and next_char == "-":
+            block_depth = 1
+            output.extend((" ", " "))
+            index += 2
+        elif char == '"':
+            in_string = True
+            output.append(" ")
+            index += 1
+        else:
+            output.append(char)
+            index += 1
+    return "".join(output)

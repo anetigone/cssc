@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from .safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
 from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
 from .memory import (
@@ -117,6 +118,8 @@ class _ControllerRunState:
     # Self-managed compact memory updated after every check; replaces the fixed
     # full-history stack as the loop's carried context.
     memory: ProofMemory = field(default_factory=empty_memory)
+    # Accepted candidates that the safety reviewer rejected, with reasons.
+    safety_rejections: list[dict[str, Any]] = field(default_factory=list)
     # Unique per controller run so trace events from repeated runs never collide.
     sample_id: str = field(default_factory=new_sample_id)
 
@@ -141,6 +144,7 @@ class ProofController:
         context_summarizer: ContextSummarizer | None = None,
         budget_config: BudgetConfig | None = None,
         config: ControllerConfig | None = None,
+        safety_reviewer: SafetyReviewer | None = None,
     ) -> None:
         self.adapter = adapter
         self.action_generator = action_generator
@@ -151,6 +155,7 @@ class ProofController:
         self.budget = BudgetManager(budget_config)
         self.config = config or ControllerConfig()
         self.memory_processor = MemoryProcessor()
+        self.safety_reviewer = safety_reviewer or StatementSafetyReviewer()
 
     def run(self, task: ProofTask) -> ControllerResult:
         logger.info("Controller run started: task_id=%s", task.task_id)
@@ -300,7 +305,12 @@ class ProofController:
             record = self._check_single_candidate(state, task, action)
             state.attempts.append(record)
             state.attempt_index += 1
-            self._update_memory(state, task, record)
+            # Resolve the effective outcome before folding into memory: an
+            # accepted candidate still counts as unsolved if the safety review
+            # catches a shortcut, and the memory must not promote it.
+            safety_verdict = self._review_accepted_candidate(task, record, state)
+            effective_accepted = safety_verdict.accepted
+            self._update_memory(state, task, record, safety_verdict)
             metric = attempt_metric(
                 record.attempt_index,
                 action=record.edit.action,
@@ -324,7 +334,7 @@ class ProofController:
                     ]
             checked_any = True
 
-            if record.check_result.accepted:
+            if effective_accepted:
                 logger.info(
                     "Controller accepted proof: task_id=%s attempt_index=%d",
                     task.task_id,
@@ -483,6 +493,8 @@ class ProofController:
             "retrieved_results": tuple(state.retrieved_history),
             "feedback_count": len(state.feedback_history),
             "proof_memory": memory_to_dict(state.memory),
+            "safety_rejections": tuple(state.safety_rejections),
+            "safety_reviewer": type(self.safety_reviewer).__name__,
         }
 
     def _run_metrics(
@@ -506,11 +518,37 @@ class ProofController:
             budget_exhausted_reason=snapshot.exhausted_reason,
         )
 
+    def _review_accepted_candidate(
+        self,
+        task: ProofTask,
+        record: AttemptRecord,
+        state: _ControllerRunState,
+    ) -> SafetyVerdict:
+        """Return the effective verdict and retain rejected safety evidence."""
+        if not record.check_result.accepted:
+            return SafetyVerdict(accepted=False)
+
+        candidate_source = self.adapter.render_candidate(task, record.edit)
+        verdict = self.safety_reviewer.accepts(
+            task, candidate_source, record.check_result
+        )
+        if not verdict.accepted:
+            state.safety_rejections.append(
+                {
+                    "attempt_index": record.attempt_index,
+                    "candidate_id": record.candidate_id,
+                    "reasons": verdict.reasons,
+                    "metadata": dict(verdict.metadata),
+                }
+            )
+        return verdict
+
     def _update_memory(
         self,
         state: _ControllerRunState,
         task: ProofTask,
         record: AttemptRecord,
+        safety_verdict: SafetyVerdict,
     ) -> None:
         """Fold one checked candidate's outcome into the self-managed memory."""
         state.memory = self.memory_processor.update(
@@ -522,6 +560,8 @@ class ProofController:
                 action=record.edit.action,
                 check_result=record.check_result,
                 feedback=record.check_result.parsed_feedback,
+                effective_accepted=safety_verdict.accepted,
+                safety_reasons=safety_verdict.reasons,
             ),
         )
 

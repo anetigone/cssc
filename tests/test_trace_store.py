@@ -10,6 +10,7 @@ from agent.proof_system.base import (
     CandidateEdit,
     CheckResult,
     DiagnosticCategory,
+    GoalState,
     ParsedFeedback,
     ProgressSignal,
     ProofTask,
@@ -38,7 +39,21 @@ class TraceStoreTests(unittest.TestCase):
 
         memory = events[0]["metadata"]["proof_memory"]
         self.assertEqual(memory["source_attempt_ids"], [0])
-        self.assertIn("static:unsolved_goals", memory["failed_approaches"])
+        self.assertTrue(
+            memory["failed_approaches"][0].startswith("static:unsolved_goals")
+        )
+
+    def test_attempt_trace_carries_structured_goal_state(self) -> None:
+        result = _sample_result()
+
+        events = list(result_events(result))
+
+        goal_state = events[1]["attempt"]["check_result"]["parsed_feedback"][
+            "goal_state"
+        ]
+        self.assertEqual(goal_state[0]["text"], "⊢ True")
+        self.assertEqual(goal_state[0]["source_span"], [1, 2])
+        self.assertFalse(goal_state[0]["is_sorry_goal"])
 
     def test_can_include_raw_output_when_requested(self) -> None:
         result = _sample_result()
@@ -87,6 +102,15 @@ def _sample_result() -> ControllerResult:
         message="unsolved goals",
         line=1,
         column=2,
+        unsolved_goals=("⊢ True",),
+        goal_state=(
+            GoalState(
+                text="⊢ True",
+                goal_fingerprint="abc123",
+                declaration_id="sample",
+                source_span=(1, 2),
+            ),
+        ),
         raw_output="raw lean output",
     )
     check_result = CheckResult(

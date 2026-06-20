@@ -114,6 +114,12 @@ class MemoryUpdate:
     action: str
     check_result: CheckResult
     feedback: ParsedFeedback | None = None
+    # Override for the outcome the memory should record. Defaults to the
+    # checker's verdict; a caller that runs an additional safety review sets
+    # this to ``False`` when a checker-accepted candidate is rejected, so the
+    # memory never promotes a shortcut into ``established_facts``.
+    effective_accepted: bool | None = None
+    safety_reasons: tuple[str, ...] = ()
 
 
 class MemoryProcessor:
@@ -126,7 +132,12 @@ class MemoryProcessor:
         open_goals: tuple[str, ...] = ()
         feedback = update.feedback or update.check_result.parsed_feedback
 
-        if update.check_result.accepted:
+        accepted = (
+            update.effective_accepted
+            if update.effective_accepted is not None
+            else update.check_result.accepted
+        )
+        if accepted:
             established_facts = self._record_established_fact(
                 established_facts, update
             )
@@ -158,7 +169,7 @@ class MemoryProcessor:
             "Memory updated: attempt_index=%d accepted=%s "
             "established_facts=%d failed_approaches=%d open_goals=%d",
             update.attempt_index,
-            update.check_result.accepted,
+            accepted,
             len(updated.established_facts),
             len(updated.failed_approaches),
             len(updated.open_goals),
@@ -182,6 +193,9 @@ class MemoryProcessor:
         update: MemoryUpdate,
         feedback: ParsedFeedback | None,
     ) -> tuple[str, ...]:
+        if update.safety_reasons:
+            note = "safety_rejected:" + ",".join(update.safety_reasons)
+            return _append_unique(failed_approaches, note)
         category = (
             feedback.category.value
             if feedback is not None

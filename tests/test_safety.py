@@ -74,6 +74,17 @@ class StatementSafetyReviewerTests(unittest.TestCase):
         self.assertFalse(verdict.accepted)
         self.assertIn("statement_not_preserved", verdict.reasons)
 
+    def test_ignores_shortcut_words_in_comments_and_strings(self) -> None:
+        candidate = _render(
+            'have label : String := "sorry axiom"\n'
+            "  /- nested /- admit -/ axiom -/\n"
+            "  trivial -- do not use sorry"
+        )
+
+        verdict = self.reviewer.accepts(_task(), candidate, _accepted_result())
+
+        self.assertTrue(verdict.accepted)
+
 
 if __name__ == "__main__":
     unittest.main()
