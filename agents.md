@@ -41,6 +41,8 @@ agent/
 ├── search/              # 搜索控制
 │   ├── action.py        # ActionGenerator 协议与 ActionCandidate
 │   ├── controller.py    # ProofController 主循环
+│   ├── execution.py     # ExecutionMode 参数（minimal / structured）
+│   ├── factory.py       # 按执行模式构造 controller 的唯一选择点
 │   ├── budget.py        # 预算管理（checks / model calls / time）
 │   ├── memory.py        # self-managed ProofMemory 与确定性更新器
 │   ├── safety.py        # statement-preservation / anti-cheating 审查
@@ -83,6 +85,15 @@ agent/
 - 安全审查拒绝不改写 checker 的原始结果：attempt trace 仍记录 checker 观测，controller 的最终结果保持未接受，并继续下一次修订。
 - trace 保留每次 attempt 的原始分类、goal fingerprints、完整结构化 `goal_state`，并在 run summary 中记录最终 memory 与安全拒绝原因。
 - 当前仍是线性 minimal loop。搜索树、预算感知分支策略以及 structured `ProofWorkspace` 属于后续阶段，不在 Phase 1 内推断或自动启用。
+
+## Phase 2 执行模式参数与共同观测
+
+- `ExecutionMode`（`minimal` / `structured`）由启动参数决定，同一次运行内不可变；`build_controller`（`search/factory.py`）是唯一的选择点。
+- CLI 通过 `--execution-mode`（默认 `minimal`）选择模式，作用于 `solve` 与 `prove`。
+- 当前仅实现 `minimal` 执行器（`ProofController`）。选 `structured` 时 `build_controller` 抛 `StructuredModeUnavailableError`，CLI 以 `stage=execution_mode` 返回非零退出码，**不**静默退化为 minimal，避免把 structured 运行误记成 minimal。
+- `execution_mode` 作为共同观测字段记录在 `RunMetrics`，经 `_metrics_payload` 进入 `run_summary.metrics`，便于跨模式公平比较。
+- 共同观测层只记录原始事实（attempt、checker category、goal fingerprints、耗时、预算、execution_mode），不推导 progress、stall 或跨运行统计。
+- 运行中不存在任何切换模式的代码路径：`ControllerConfig` 是 frozen、`_ControllerRunState` 不持有 mode、`ProofController` 在本阶段不读 mode 做控制流。
 
 ## `ChatDriver` 抽象
 
@@ -159,7 +170,7 @@ class AgentRole(str, Enum):
 python -m agent.cli.app <source> --use-model
 ```
 
-常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`。
+常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`、`--execution-mode`。
 
 模型选择按 per-role -> generic `--model` -> 环境变量 `OPENAI_MODEL` 的顺序回退。例如 `--proof-model gpt-4` 只覆盖 proof generator，未指定时 fallback 到 `--model`，再未指定时 fallback 到 `OPENAI_MODEL`。
 
@@ -179,6 +190,7 @@ python -m pytest tests/ -q
 - `tests/test_memory.py`：ProofMemory 更新、来源追踪和 prompt 表示。
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查。
 - `tests/test_trace_store.py`：原始 attempt、结构化 goal state 和最终 memory 持久化。
+- `tests/test_factory.py`：执行模式选择，structured 硬失败。
 
 ## 注意事项
 

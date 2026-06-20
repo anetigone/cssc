@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from agent.proof_system.base import CheckResult, DiagnosticCategory, GoalState, ParsedFeedback
+from agent.search.execution import ExecutionMode
 from agent.search.metrics import (
     attempt_metric,
     goal_fingerprint,
@@ -103,6 +104,37 @@ class RunMetricsTests(unittest.TestCase):
 
     def test_sample_ids_are_unique(self) -> None:
         self.assertNotEqual(new_sample_id(), new_sample_id())
+
+    def test_execution_mode_defaults_to_minimal(self) -> None:
+        metrics = summarize_run(
+            sample_id="sample-1",
+            task_id="task-1",
+            accepted=False,
+            stop_reason="budget:checks",
+            attempts=(),
+            budget_checks_used=0,
+            budget_model_calls_used=0,
+            budget_exhausted_reason=None,
+        )
+
+        self.assertEqual(metrics.execution_mode, ExecutionMode.MINIMAL)
+        self.assertEqual(run_metrics_payload(metrics)["execution_mode"], "minimal")
+
+    def test_execution_mode_is_recorded_as_common_observation(self) -> None:
+        metrics = summarize_run(
+            sample_id="sample-2",
+            task_id="task-1",
+            accepted=False,
+            stop_reason="budget:checks",
+            attempts=(),
+            budget_checks_used=0,
+            budget_model_calls_used=0,
+            budget_exhausted_reason=None,
+            execution_mode=ExecutionMode.STRUCTURED,
+        )
+
+        self.assertEqual(metrics.execution_mode, ExecutionMode.STRUCTURED)
+        self.assertEqual(run_metrics_payload(metrics)["execution_mode"], "structured")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ..proof_system.base import CheckResult
+from .execution import ExecutionMode
 
 
 _WHITESPACE_RE = re.compile(r"\s+", re.MULTILINE)
@@ -95,6 +96,9 @@ class RunMetrics:
     budget_checks_used: int
     budget_model_calls_used: int
     budget_exhausted_reason: str | None
+    # Common observation field shared by both execution modes so cross-mode
+    # comparison is possible without deriving progress, stall or pass@k here.
+    execution_mode: ExecutionMode = ExecutionMode.MINIMAL
 
 
 def summarize_run(
@@ -107,6 +111,7 @@ def summarize_run(
     budget_checks_used: int,
     budget_model_calls_used: int,
     budget_exhausted_reason: str | None,
+    execution_mode: ExecutionMode = ExecutionMode.MINIMAL,
 ) -> RunMetrics:
     """Assemble one run's raw observations."""
     return RunMetrics(
@@ -118,6 +123,7 @@ def summarize_run(
         budget_checks_used=budget_checks_used,
         budget_model_calls_used=budget_model_calls_used,
         budget_exhausted_reason=budget_exhausted_reason,
+        execution_mode=execution_mode,
     )
 
 
@@ -127,6 +133,7 @@ def run_metrics_payload(metrics: RunMetrics) -> dict[str, Any]:
         "sample_id": metrics.sample_id,
         "task_id": metrics.task_id,
         "accepted": metrics.accepted,
+        "execution_mode": metrics.execution_mode.value,
         "stop_reason": metrics.stop_reason,
         "attempt_count": len(metrics.attempts),
         "budget_checks_used": metrics.budget_checks_used,

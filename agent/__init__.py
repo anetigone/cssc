@@ -5,6 +5,8 @@ import logging
 from .search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator, StaticActionGenerator
 from .search.budget import BudgetConfig, BudgetExhausted, BudgetManager, BudgetSnapshot
 from .search.controller import AttemptRecord, ControllerConfig, ControllerResult, ProofController
+from .search.execution import ExecutionMode
+from .search.factory import StructuredModeUnavailableError, build_controller
 from .search.metrics import (
     AttemptMetric,
     RunMetrics,
@@ -102,6 +104,7 @@ __all__ = [
     "DiagnosticCategory",
     "EncodedProofState",
     "EphemeralCheckWorkspace",
+    "ExecutionMode",
     "FormalizationAgent",
     "FormalizationRequest",
     "FormalizationResult",
@@ -140,7 +143,9 @@ __all__ = [
     "ProofTask",
     "RetrievalResult",
     "RoleModelConfig",
+    "StructuredModeUnavailableError",
     "attempt_metric",
+    "build_controller",
     "goal_fingerprint",
     "goal_fingerprints",
     "new_sample_id",

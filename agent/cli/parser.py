@@ -149,6 +149,12 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
     group.add_argument("--max-model-calls", type=int, default=3)
     group.add_argument("--max-checks", type=int, default=3)
     group.add_argument("--max-elapsed-seconds", type=float, default=None)
+    group.add_argument(
+        "--execution-mode",
+        choices=("minimal", "structured"),
+        default="minimal",
+        help="执行模式，默认 minimal；structured 在 Phase 3 前不可用。",
+    )
     group.add_argument("--enable-retrieval", action="store_true")
     group.add_argument("--retrieval-source", action="append", default=[])
     group.add_argument("--max-retrieval-results", type=int, default=5)

@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from .safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
 from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from .execution import ExecutionMode
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
 from .memory import (
     MemoryProcessor,
@@ -71,6 +72,8 @@ class ControllerConfig:
         DiagnosticCategory.INVALID_REFERENCE,
         DiagnosticCategory.UNSOLVED_GOALS,
     )
+    # 执行模式：由启动参数决定，运行中不可变；factory 是唯一选择点。
+    execution_mode: ExecutionMode = ExecutionMode.MINIMAL
 
 
 @dataclass(frozen=True)
@@ -516,6 +519,7 @@ class ProofController:
             budget_checks_used=snapshot.checks_used,
             budget_model_calls_used=snapshot.model_calls_used,
             budget_exhausted_reason=snapshot.exhausted_reason,
+            execution_mode=self.config.execution_mode,
         )
 
     def _review_accepted_candidate(
