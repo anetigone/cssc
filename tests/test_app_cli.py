@@ -14,7 +14,7 @@ from agent.cli.config import apply_task_config
 from agent.cli.generators import build_action_generator
 from agent.cli.parser import build_parser
 from agent.cli.paths import find_lake_root, resolve_agent_path
-from agent.cli.solve_lean_task import _run_artifact_path
+from agent.cli.app import _run_artifact_path
 from agent.cli.tasks import build_tasks, classify_input, select_task
 from agent.cli.workspace import build_check_workspace, _workspace_context
 from agent.agents import FormalizationResult, StaticFormalizationAgent
@@ -520,7 +520,7 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertEqual(len(generator.driver.tools), 1)
 
     def test_run_formalize_rejects_lean_input(self) -> None:
-        from agent.cli import solve_lean_task as cli
+        from agent.cli import app as cli
 
         args = _args(source="Basic.lean", input_kind="lean")
         with patch.object(cli, "_lean_services") as services_ctx:
@@ -534,7 +534,7 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertEqual(rc, 2)
 
     def test_run_formalize_prints_scaffold_for_natural_language(self) -> None:
-        from agent.cli import solve_lean_task as cli
+        from agent.cli import app as cli
 
         args = _args(
             command="formalize",
@@ -567,7 +567,7 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertEqual(artifact["metadata"]["natural_language_proof"], "trivial")
 
     def test_formalize_list_tasks_does_not_build_model_or_lean(self) -> None:
-        from agent.cli import solve_lean_task as cli
+        from agent.cli import app as cli
 
         args = _args(
             command="formalize",
@@ -588,7 +588,7 @@ class CliSubcommandTests(unittest.TestCase):
         lean_services.assert_not_called()
 
     def test_positional_json_is_promoted_for_prove(self) -> None:
-        from agent.cli.solve_lean_task import _promote_positional_artifact
+        from agent.cli.app import _promote_positional_artifact
 
         args = Namespace(command="prove", source="scaffold.json", task_config=None)
         _promote_positional_artifact(args)

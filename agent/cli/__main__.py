@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .solve_lean_task import main
+from .app import main
 
 
 if __name__ == "__main__":

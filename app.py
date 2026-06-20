@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from agent.cli.solve_lean_task import main
+from agent.cli.app import main
 
 
 if __name__ == "__main__":

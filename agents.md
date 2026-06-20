@@ -44,7 +44,7 @@ agent/
 ├── input/               # 输入解析、规范化、scaffold 校验
 ├── tasks/               # 任务构建
 ├── runtime/             # workspace、trace store、logging、env loader
-└── cli/                 # 命令行入口 solve_lean_task.py
+└── cli/                 # 命令行入口 app.py
 ```
 
 ## Agent 角色
@@ -127,7 +127,7 @@ class AgentRole(str, Enum):
 ## CLI 入口
 
 ```bash
-python -m agent.cli.solve_lean_task <source> --use-model
+python -m agent.cli.app <source> --use-model
 ```
 
 常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`。

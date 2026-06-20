@@ -199,10 +199,10 @@ Lean scaffold.
 CLI entry points:
 
 ```text
-python solve_lean_task.py theorem.lean --candidate trivial
-python solve_lean_task.py problem.txt --input-kind natural_language --use-model
-python solve_lean_task.py --problem "Prove that True is true." --use-model
-python solve_lean_task.py --task-config data/tasks/natural_language.json --use-model
+python app.py theorem.lean --candidate trivial
+python app.py problem.txt --input-kind natural_language --use-model
+python app.py --problem "Prove that True is true." --use-model
+python app.py --task-config data/tasks/natural_language.json --use-model
 ```
 
 The first command bypasses formalization. The other forms call the formalizer

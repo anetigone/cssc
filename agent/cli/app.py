@@ -1,9 +1,9 @@
 """Build Lean proof tasks from files and solve one selected task.
 
 Examples:
-    python solve_lean_task.py lean_workspace/Cssc/Tasks/Basic.lean --list-tasks
-    python solve_lean_task.py Basic.lean --task-index 0 --candidate trivial
-    python solve_lean_task.py Basic.lean --use-model
+    python app.py lean_workspace/Cssc/Tasks/Basic.lean --list-tasks
+    python app.py Basic.lean --task-index 0 --candidate trivial
+    python app.py Basic.lean --use-model
 
 Note:
     When the input is natural-language, the formalizer validates its generated

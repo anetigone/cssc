@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from agent.cli.solve_lean_task import _lean_services
+from agent.cli.app import _lean_services
 
 
 class LeanServicesTests(unittest.TestCase):
