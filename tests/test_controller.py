@@ -69,6 +69,47 @@ class FakeAdapter(ProofSystemAdapter):
         return ProgressSignal(diagnostic_category=check_result.category)
 
 
+class _GoalLeakAdapter(FakeAdapter):
+    """FakeAdapter variant that leaks a real unsolved goal on every failure.
+
+    Used to verify that progress is derived from the goal-set delta: two
+    failures exposing the *same* goal must be a stall, not progress, even
+    though the adapter reports the semantic-obligation category both times.
+    """
+
+    def __init__(self, goal: str) -> None:
+        super().__init__()
+        self._goal = goal
+
+    def check(self, candidate_file: Path, budget_slice: BudgetSlice) -> CheckResult:
+        self.checked_files.append(candidate_file)
+        source = candidate_file.read_text(encoding="utf-8")
+        if "trivial" in source:
+            feedback = ParsedFeedback(
+                category=DiagnosticCategory.PROOF_ACCEPTED, message="accepted"
+            )
+            return CheckResult(
+                accepted=True,
+                category=DiagnosticCategory.PROOF_ACCEPTED,
+                raw_output="",
+                candidate_file=candidate_file,
+                parsed_feedback=feedback,
+            )
+        feedback = ParsedFeedback(
+            category=DiagnosticCategory.UNSOLVED_GOALS,
+            message="unsolved goals",
+            unsolved_goals=(self._goal,),
+            raw_output="unsolved goals",
+        )
+        return CheckResult(
+            accepted=False,
+            category=DiagnosticCategory.UNSOLVED_GOALS,
+            raw_output="unsolved goals",
+            candidate_file=candidate_file,
+            parsed_feedback=feedback,
+        )
+
+
 class QueueGenerator:
     def __init__(self, batches: list[list[str]]) -> None:
         self.batches = batches
@@ -303,7 +344,6 @@ class ProofControllerTests(unittest.TestCase):
                 action_generator=generator,
                 workspace=AttemptWorkspace(tmp),
                 budget_config=BudgetConfig(max_checks=5, max_model_calls=5),
-                config=ControllerConfig(pass_at_k=1),
             )
 
             result = controller.run(task)
@@ -313,7 +353,10 @@ class ProofControllerTests(unittest.TestCase):
         self.assertIsNotNone(metrics)
         self.assertTrue(metrics.accepted)
         self.assertEqual(metrics.stop_reason, "accepted")
-        self.assertEqual(metrics.pass_at_k, 1)
+        # Every independent run gets a unique sample id; pass@k is computed
+        # across runs, not stored on one.
+        self.assertTrue(metrics.sample_id)
+        self.assertEqual(metrics.task_id, task.task_id)
         # Two failed attempts plus the accepted one.
         self.assertEqual(len(metrics.attempts), 3)
         self.assertFalse(metrics.attempts[0].accepted)
@@ -321,6 +364,35 @@ class ProofControllerTests(unittest.TestCase):
         # The accepted attempt counts as progress; failures do not.
         self.assertTrue(metrics.attempts[-1].progressed)
         self.assertFalse(metrics.attempts[0].progressed)
+
+    def test_repeated_failure_on_same_goal_is_recorded_as_stall(self) -> None:
+        """Progress comes from the goal-set delta, not the error category.
+
+        Two attempts that stall on the same unsolved goal must record no
+        progress and one repeated-goal stall, even though the FakeAdapter
+        reports the semantic-obligation category for every failure.
+        """
+        task = ProofTask("stall", "theorem stall : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["bad"], ["still_bad"]])
+        same_goal = "⊢ True"
+        adapter = _GoalLeakAdapter(same_goal)
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=adapter,
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=2, max_model_calls=2),
+            )
+
+            result = controller.run(task)
+
+        metrics = result.metrics
+        self.assertIsNotNone(metrics)
+        self.assertFalse(metrics.accepted)
+        # Same goal across two attempts -> no progress, one stall.
+        self.assertFalse(any(m.progressed for m in metrics.attempts))
+        self.assertEqual(metrics.repeated_goal_stalls, 1)
+        self.assertEqual(metrics.distinct_goal_fingerprints, 1)
 
 
 if __name__ == "__main__":
