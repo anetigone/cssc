@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
-from .base import DiagnosticCategory, ParsedFeedback
+from .base import DiagnosticCategory, GoalState, ParsedFeedback
 
 
+_WHITESPACE_RE = re.compile(r"\s+", re.MULTILINE)
 _LOCATION_RE = re.compile(
     r":(?P<line>\d+):(?P<column>\d+):\s+(?:error(?:\([^)]*\))?|warning):",
     re.IGNORECASE,
@@ -83,6 +85,54 @@ def extract_goal_blocks(raw_output: str) -> tuple[str, ...]:
     return tuple(block for block in blocks if block)
 
 
+def _normalize_goal_text(goal: str) -> str:
+    if not goal:
+        return ""
+    return _WHITESPACE_RE.sub(" ", goal.strip())
+
+
+def _goal_fingerprint(goal: str) -> str:
+    """Stable short id for one goal.
+
+    Mirrors :func:`agent.search.metrics.goal_fingerprint` so the structured
+    goal state and the Phase 0 baseline fingerprints agree on identity. Kept
+    local to avoid a ``proof_system`` -> ``search`` dependency cycle.
+    """
+    normalized = _normalize_goal_text(goal)
+    if not normalized:
+        return ""
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def extract_goal_states(
+    raw_output: str,
+    *,
+    declaration_id: str | None = None,
+    source_span: tuple[int, int] | None = None,
+) -> tuple[GoalState, ...]:
+    """Lift raw goal blocks into structured, finger-printed goal states.
+
+    A goal is flagged ``is_sorry_goal`` when its text still references
+    ``sorry``/``admit`` — the proof is not actually closed even though the
+    checker may have reported the declaration as accepted. ``source_span``
+    is attached from the primary diagnostic location when known; multi-goal
+    outputs share the same span for now.
+    """
+    states: list[GoalState] = []
+    for block in extract_goal_blocks(raw_output):
+        lowered = block.lower()
+        states.append(
+            GoalState(
+                text=block,
+                goal_fingerprint=_goal_fingerprint(block),
+                declaration_id=declaration_id,
+                source_span=source_span,
+                is_sorry_goal=("sorry" in lowered or "admit" in lowered),
+            )
+        )
+    return tuple(states)
+
+
 class LeanFeedbackParser:
     """Normalize raw Lean checker output into structured feedback."""
 
@@ -100,12 +150,15 @@ class LeanFeedbackParser:
 
         category = self._classify(normalized, raw_output)
 
+        goal_blocks = extract_goal_blocks(raw_output)
+        source_span = (line, column) if line is not None and column is not None else None
         return ParsedFeedback(
             category=category,
             message=first_meaningful_line(primary_output),
             line=line,
             column=column,
-            unsolved_goals=extract_goal_blocks(raw_output),
+            unsolved_goals=goal_blocks,
+            goal_state=extract_goal_states(raw_output, source_span=source_span),
             raw_output=raw_output,
         )
 
