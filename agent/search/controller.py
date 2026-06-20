@@ -9,6 +9,12 @@ from typing import Any, Protocol
 
 from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
+from .metrics import (
+    AttemptMetric,
+    RunMetrics,
+    attempt_metric,
+    summarize_run,
+)
 from .state_encoder import encode_proof_state
 from ..agents.context import ContextSummarizer, SummarizationRequest
 from ..proof_system.base import (
@@ -56,6 +62,10 @@ class ControllerConfig:
         DiagnosticCategory.INVALID_REFERENCE,
         DiagnosticCategory.UNSOLVED_GOALS,
     )
+    # How many independent samples this run represents. A single iterative
+    # controller run is pass@1; callers that repeat a task set it explicitly so
+    # the baseline metric is never silently scored as pass@k.
+    pass_at_k: int = 1
 
 
 @dataclass(frozen=True)
@@ -79,6 +89,7 @@ class ControllerResult:
     budget: BudgetSnapshot
     stop_reason: str
     accepted_attempt: AttemptRecord | None = None
+    metrics: RunMetrics | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -98,6 +109,7 @@ class _ControllerRunState:
     stop_reason: str = "budget"
     attempt_index: int = 0
     retrieved_this_iteration: bool = False
+    attempt_metrics: list[AttemptMetric] = field(default_factory=list)
 
 
 class ProofController:
@@ -277,6 +289,14 @@ class ProofController:
             record = self._check_single_candidate(state, task, action)
             state.attempts.append(record)
             state.attempt_index += 1
+            state.attempt_metrics.append(
+                attempt_metric(
+                    record.attempt_index,
+                    action=record.edit.action,
+                    check_result=record.check_result,
+                    progressed=_made_progress(record),
+                )
+            )
             logger.info(
                 "Candidate checked: task_id=%s attempt_index=%d candidate_id=%s accepted=%s category=%s",
                 task.task_id,
@@ -393,6 +413,7 @@ class ProofController:
             budget=self.budget.snapshot(),
             stop_reason="accepted",
             accepted_attempt=record,
+            metrics=self._run_metrics(state, accepted=True, stop_reason="accepted"),
             metadata={
                 "retrieved_results": tuple(state.retrieved_history),
                 "feedback_count": len(state.feedback_history),
@@ -415,6 +436,7 @@ class ProofController:
             attempts=tuple(state.attempts),
             budget=self.budget.snapshot(),
             stop_reason=state.stop_reason,
+            metrics=self._run_metrics(state, accepted=False, stop_reason=state.stop_reason),
             metadata={
                 "retrieved_results": tuple(state.retrieved_history),
                 "feedback_count": len(state.feedback_history),
@@ -441,10 +463,30 @@ class ProofController:
             attempts=tuple(state.attempts),
             budget=self.budget.snapshot(),
             stop_reason=state.stop_reason,
+            metrics=self._run_metrics(state, accepted=False, stop_reason=state.stop_reason),
             metadata={
                 "retrieved_results": tuple(state.retrieved_history),
                 "feedback_count": len(state.feedback_history),
             },
+        )
+
+    def _run_metrics(
+        self,
+        state: _ControllerRunState,
+        *,
+        accepted: bool,
+        stop_reason: str,
+    ) -> RunMetrics:
+        """Build the Phase 0 baseline roll-up for the current run state."""
+        snapshot = self.budget.snapshot()
+        return summarize_run(
+            accepted=accepted,
+            stop_reason=stop_reason,
+            attempts=state.attempt_metrics,
+            pass_at_k=max(1, self.config.pass_at_k),
+            budget_checks_used=snapshot.checks_used,
+            budget_model_calls_used=snapshot.model_calls_used,
+            budget_exhausted_reason=snapshot.exhausted_reason,
         )
 
     def _summarize_context(
@@ -498,6 +540,29 @@ class ProofController:
 def _proof_phase(state: _ControllerRunState) -> str:
     """Expose the loop's intent for prompts and traces."""
     return "propose" if not state.attempts else "retry"
+
+
+def _made_progress(record: AttemptRecord) -> bool:
+    """Whether an attempt made observable forward progress over its parent.
+
+    A proof the checker accepts trivially counts as progress. Otherwise the
+    adapter-attached ``ProgressSignal`` is the authority: a move toward a
+    semantic obligation or a positive goal-size delta means the candidate got
+    closer to closing the goal, which is exactly the signal Phase 0 wants to
+    record per attempt.
+    """
+    if record.check_result.accepted:
+        return True
+    progress = record.check_result.progress
+    if progress is None:
+        return False
+    if progress.moved_to_semantic_obligation:
+        return True
+    if progress.goal_size_delta is not None and progress.goal_size_delta < 0:
+        return True
+    if progress.goal_count_delta is not None and progress.goal_count_delta < 0:
+        return True
+    return bool(progress.features.get("accepted"))
 
 
 def _edit_with_controller_metadata(

@@ -5,6 +5,15 @@ import logging
 from .search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator, StaticActionGenerator
 from .search.budget import BudgetConfig, BudgetExhausted, BudgetManager, BudgetSnapshot
 from .search.controller import AttemptRecord, ControllerConfig, ControllerResult, ProofController
+from .search.metrics import (
+    AttemptMetric,
+    RunMetrics,
+    attempt_metric,
+    feedback_goal_fingerprint,
+    goal_fingerprint,
+    run_metrics_payload,
+    summarize_run,
+)
 from .search.proposer import CandidateLibraryGenerator, ProofSnippet
 from .search.state_encoder import EncodedProofState, encode_proof_state
 from .runtime.env_loader import load_dotenv
@@ -72,6 +81,7 @@ __all__ = [
     "AgentRole",
     "AttemptRecord",
     "AttemptWorkspace",
+    "AttemptMetric",
     "BudgetConfig",
     "BudgetExhausted",
     "BudgetManager",
@@ -107,6 +117,7 @@ __all__ = [
     "MaterializedCandidate",
     "ModelAdapterError",
     "NormalizedInput",
+    "RunMetrics",
     "ScaffoldChecker",
     "ScaffoldValidationError",
     "SummarizationRequest",
@@ -128,9 +139,14 @@ __all__ = [
     "ProofTask",
     "RetrievalResult",
     "RoleModelConfig",
+    "attempt_metric",
+    "feedback_goal_fingerprint",
+    "goal_fingerprint",
     "result_events",
+    "run_metrics_payload",
     "StaticActionGenerator",
     "StaticFormalizationAgent",
+    "summarize_run",
     "TaskBuildError",
     "TaskBuilderConfig",
     "TaskInputKind",

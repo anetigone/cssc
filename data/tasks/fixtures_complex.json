@@ -1,0 +1,29 @@
+{
+  "fixture_group": "complex",
+  "description": "Phase 0 complex-task baseline fixtures. Multi-obligation problems that exercise the conditions under which structured mode is meant to add value (Section 1.2): repeated same-goal stalls, missing intermediate lemmas, capability gaps, mutually-dependent definitions. The minimal core is expected to stall here, producing observable stagnation rather than silence. These fixtures are NOT meant to be fully solved; they anchor the structured-vs-minimal ablation.",
+  "project_root": "lean_workspace",
+  "split": "dev",
+  "imports": [
+    "Mathlib.Analysis.SpecialFunctions.Log.Basic"
+  ],
+  "tasks": [
+    {
+      "task_id": "complex_two_obligations",
+      "difficulty": "complex",
+      "source_name": "data/tasks/fixtures_complex.json#complex_two_obligations",
+      "proof_source": "theorem complex_two_obligations (n : Nat) (h : n ≥ 2) : 2 * n ≥ n + 1 ∧ n * n ≥ n := by\n  {{proof}}\n",
+      "expected_category": "stall",
+      "why_complex": "Two conjuncts: a single proposal must discharge both obligations or the loop will repeatedly stall on the second goal.",
+      "expected_max_iterations": 4
+    },
+    {
+      "task_id": "complex_missing_intermediate",
+      "difficulty": "complex",
+      "source_name": "data/tasks/fixtures_complex.json#complex_missing_intermediate",
+      "proof_source": "theorem complex_missing_intermediate (x : ℝ) (h : x > 1) : Real.log x > 0 := by\n  {{proof}}\n",
+      "expected_category": "stall",
+      "why_complex": "Requires a specific Mathlib lemma (Real.pos_log / Real.log_pos) whose exact name and signature are not obvious; capability-audit territory.",
+      "expected_max_iterations": 4
+    }
+  ]
+}

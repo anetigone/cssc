@@ -294,6 +294,34 @@ class ProofControllerTests(unittest.TestCase):
             generator.requests[1].metadata["summarized_context"].concise_error,
         )
 
+    def test_records_baseline_metrics_for_run(self) -> None:
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["bad"], ["still_bad"], ["trivial"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=5, max_model_calls=5),
+                config=ControllerConfig(pass_at_k=1),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        metrics = result.metrics
+        self.assertIsNotNone(metrics)
+        self.assertTrue(metrics.accepted)
+        self.assertEqual(metrics.stop_reason, "accepted")
+        self.assertEqual(metrics.pass_at_k, 1)
+        # Two failed attempts plus the accepted one.
+        self.assertEqual(len(metrics.attempts), 3)
+        self.assertFalse(metrics.attempts[0].accepted)
+        self.assertTrue(metrics.attempts[-1].accepted)
+        # The accepted attempt counts as progress; failures do not.
+        self.assertTrue(metrics.attempts[-1].progressed)
+        self.assertFalse(metrics.attempts[0].progressed)
+
 
 if __name__ == "__main__":
     unittest.main()

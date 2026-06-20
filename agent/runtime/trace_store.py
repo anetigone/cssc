@@ -20,6 +20,7 @@ from ..proof_system.base import (
 )
 from ..search.budget import BudgetSnapshot
 from ..search.controller import AttemptRecord, ControllerResult
+from ..search.metrics import RunMetrics, run_metrics_payload
 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,7 @@ def result_events(
             result.accepted_attempt.attempt_index if result.accepted_attempt is not None else None
         ),
         "budget": _budget_payload(result.budget),
+        "metrics": _metrics_payload(result.metrics),
         "metadata": result.metadata,
     }
     for attempt in result.attempts:
@@ -132,6 +134,12 @@ def _budget_payload(snapshot: BudgetSnapshot) -> dict[str, Any]:
         "remaining_model_calls": snapshot.remaining_model_calls,
         "exhausted_reason": snapshot.exhausted_reason,
     }
+
+
+def _metrics_payload(metrics: RunMetrics | None) -> dict[str, Any] | None:
+    if metrics is None:
+        return None
+    return run_metrics_payload(metrics)
 
 
 def _attempt_payload(

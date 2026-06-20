@@ -1,0 +1,33 @@
+{
+  "fixture_group": "simple",
+  "description": "Phase 0 simple-task baseline fixtures. Single obligation, parser/API/typing-level errors. The minimal refinement core is expected to solve these within a few iterations. Used as the ablation baseline against structured mode.",
+  "project_root": "lean_workspace",
+  "split": "dev",
+  "imports": [],
+  "tasks": [
+    {
+      "task_id": "simple_true",
+      "difficulty": "simple",
+      "source_name": "data/tasks/fixtures_simple.json#simple_true",
+      "proof_source": "theorem simple_true : True := by\n  {{proof}}\n",
+      "expected_category": "proof_accepted",
+      "expected_max_iterations": 2
+    },
+    {
+      "task_id": "simple_and_intro",
+      "difficulty": "simple",
+      "source_name": "data/tasks/fixtures_simple.json#simple_and_intro",
+      "proof_source": "theorem simple_and_intro : True ∧ True := by\n  {{proof}}\n",
+      "expected_category": "proof_accepted",
+      "expected_max_iterations": 3
+    },
+    {
+      "task_id": "simple_add_comm",
+      "difficulty": "simple",
+      "source_name": "data/tasks/fixtures_simple.json#simple_add_comm",
+      "proof_source": "open Nat\ntheorem simple_add_comm (n m : Nat) : n + m = m + n := by\n  {{proof}}\n",
+      "expected_category": "proof_accepted",
+      "expected_max_iterations": 3
+    }
+  ]
+}
