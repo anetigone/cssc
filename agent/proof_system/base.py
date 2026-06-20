@@ -56,6 +56,23 @@ class BudgetSlice:
 
 
 @dataclass(frozen=True)
+class GoalState:
+    """One open Lean goal captured from checker output.
+
+    ``unsolved_goals`` on :class:`ParsedFeedback` keeps the raw goal text for
+    backward compatibility with the Phase 0 baseline fields; ``goal_state``
+    layers a structured, finger-printed view that the minimal refinement core
+    can surface in self-managed memory without re-parsing the raw output.
+    """
+
+    text: str
+    goal_fingerprint: str = ""
+    declaration_id: str | None = None
+    source_span: tuple[int, int] | None = None
+    is_sorry_goal: bool = False
+
+
+@dataclass(frozen=True)
 class ParsedFeedback:
     """Structured diagnostic information extracted from verifier output."""
 
@@ -64,6 +81,7 @@ class ParsedFeedback:
     line: int | None = None
     column: int | None = None
     unsolved_goals: tuple[str, ...] = ()
+    goal_state: tuple[GoalState, ...] = ()
     raw_output: str = ""
 
 

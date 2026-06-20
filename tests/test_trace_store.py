@@ -10,6 +10,7 @@ from agent.proof_system.base import (
     CandidateEdit,
     CheckResult,
     DiagnosticCategory,
+    GoalState,
     ParsedFeedback,
     ProgressSignal,
     ProofTask,
@@ -17,6 +18,7 @@ from agent.proof_system.base import (
 from agent.runtime.trace_store import JsonlTraceStore, result_events
 from agent.search.budget import BudgetSnapshot
 from agent.search.controller import AttemptRecord, ControllerResult
+from agent.search.memory import MemoryProcessor, MemoryUpdate, empty_memory, memory_to_dict
 
 
 class TraceStoreTests(unittest.TestCase):
@@ -29,6 +31,29 @@ class TraceStoreTests(unittest.TestCase):
         self.assertEqual(events[0]["task"]["task_id"], "sample")
         self.assertEqual(events[1]["attempt"]["check_result"]["category"], "unsolved_goals")
         self.assertNotIn("raw_output", events[1]["attempt"]["check_result"])
+
+    def test_run_summary_carries_proof_memory_snapshot(self) -> None:
+        result = _sample_result()
+
+        events = list(result_events(result))
+
+        memory = events[0]["metadata"]["proof_memory"]
+        self.assertEqual(memory["source_attempt_ids"], [0])
+        self.assertTrue(
+            memory["failed_approaches"][0].startswith("static:unsolved_goals")
+        )
+
+    def test_attempt_trace_carries_structured_goal_state(self) -> None:
+        result = _sample_result()
+
+        events = list(result_events(result))
+
+        goal_state = events[1]["attempt"]["check_result"]["parsed_feedback"][
+            "goal_state"
+        ]
+        self.assertEqual(goal_state[0]["text"], "⊢ True")
+        self.assertEqual(goal_state[0]["source_span"], [1, 2])
+        self.assertFalse(goal_state[0]["is_sorry_goal"])
 
     def test_can_include_raw_output_when_requested(self) -> None:
         result = _sample_result()
@@ -77,6 +102,15 @@ def _sample_result() -> ControllerResult:
         message="unsolved goals",
         line=1,
         column=2,
+        unsolved_goals=("⊢ True",),
+        goal_state=(
+            GoalState(
+                text="⊢ True",
+                goal_fingerprint="abc123",
+                declaration_id="sample",
+                source_span=(1, 2),
+            ),
+        ),
         raw_output="raw lean output",
     )
     check_result = CheckResult(
@@ -97,6 +131,17 @@ def _sample_result() -> ControllerResult:
         candidate_file=Path("candidate.lean"),
         check_result=check_result,
     )
+    memory = MemoryProcessor().update(
+        empty_memory(),
+        MemoryUpdate(
+            task=task,
+            attempt_index=attempt.attempt_index,
+            proof_text=attempt.edit.text,
+            action=attempt.edit.action,
+            check_result=check_result,
+            feedback=feedback,
+        ),
+    )
     return ControllerResult(
         task=task,
         accepted=False,
@@ -110,6 +155,7 @@ def _sample_result() -> ControllerResult:
             exhausted_reason="checks",
         ),
         stop_reason="budget:checks",
+        metadata={"proof_memory": memory_to_dict(memory)},
     )
 
 

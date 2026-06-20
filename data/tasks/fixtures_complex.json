@@ -1,0 +1,25 @@
+{
+  "fixture_group": "complex",
+  "description": "Phase 0 complex-shaped task inputs. They contain multiple logical obligations or nontrivial mathematical structure, but do not prescribe whether a particular model or controller must solve or stall on them.",
+  "project_root": "lean_workspace",
+  "split": "dev",
+  "imports": [
+    "Mathlib.Data.Real.Basic"
+  ],
+  "tasks": [
+    {
+      "task_id": "complex_sum_squares_lower_bound",
+      "difficulty": "complex",
+      "source_name": "data/tasks/fixtures_complex.json#complex_sum_squares_lower_bound",
+      "proof_source": "theorem complex_sum_squares_lower_bound (n : Nat) : n * n + n ≤ 2 * (n * n) := by\n  {{proof}}\n",
+      "structural_feature": "A nonlinear natural-number inequality whose proof may introduce an intermediate bound or a case split."
+    },
+    {
+      "task_id": "complex_conjunct_with_negation",
+      "difficulty": "complex",
+      "source_name": "data/tasks/fixtures_complex.json#complex_conjunct_with_negation",
+      "proof_source": "theorem complex_conjunct_with_negation (a b : ℝ) (ha : 0 < a) (hb : 0 < b) : 0 < a * b ∧ ¬(a * b ≤ 0) := by\n  {{proof}}\n",
+      "structural_feature": "Two related conjunct obligations over the reals, useful for observing how a prover handles shared intermediate facts."
+    }
+  ]
+}

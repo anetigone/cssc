@@ -29,12 +29,14 @@ from agent import (
     BudgetConfig,
     ControllerConfig,
     EphemeralCheckWorkspace,
+    ExecutionMode,
     JsonlTraceStore,
     LeanAdapter,
     ModelAdapterError,
-    ProofController,
+    StructuredModeUnavailableError,
     TaskBuildError,
     TaskInputKind,
+    build_controller,
 )
 from agent.agents import FormalizationRequest
 from agent.input.normalizer import InputNormalizer
@@ -274,6 +276,9 @@ def run_solve(args: Namespace, *, agent_root: Path, project_root: Path | None) -
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("CLI setup failed", exc_info=True)
             return _fail("setup", exc)
+        except StructuredModeUnavailableError as exc:
+            logger.debug("Execution mode unavailable: %s", exc)
+            return _fail("execution_mode", exc)
         except Exception:
             # The controller / Lean server may raise something we don't model
             # explicitly (subprocess crash, OSError, ...). Surface it instead of
@@ -310,6 +315,9 @@ def run_prove(args: Namespace, *, agent_root: Path, project_root: Path | None) -
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("prove failed", exc_info=True)
             return _fail("prove", exc)
+        except StructuredModeUnavailableError as exc:
+            logger.debug("Execution mode unavailable: %s", exc)
+            return _fail("execution_mode", exc)
         except Exception:
             logger.exception("prove failed unexpectedly")
             return _fail("prove", _UnexpectedError())
@@ -354,7 +362,9 @@ def _run_controller(
     project_root: Path | None,
 ) -> Any:
     generator = build_action_generator(args, project_root=project_root)
-    controller = ProofController(
+    execution_mode = ExecutionMode(args.execution_mode)
+    controller = build_controller(
+        execution_mode,
         adapter=services.adapter,
         action_generator=generator,
         workspace=AttemptWorkspace(work_dir),
@@ -371,6 +381,7 @@ def _run_controller(
             max_candidates_per_model_call=args.max_candidates,
             max_retrieval_results=args.max_retrieval_results,
             retrieve_before_first_model_call=args.retrieve_before_first_model_call,
+            execution_mode=execution_mode,
         ),
     )
     return controller.run(task)

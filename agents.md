@@ -1,5 +1,16 @@
 # Agent 项目说明
 
+## 设计依据
+
+完整的 proof-system redesign 设计与分阶段计划见 [`tmp/plan1.md`](tmp/plan1.md)。本文只维护当前代码结构、运行约束和已经落地的阶段能力；涉及以下事项时，应先阅读该计划对应章节：
+
+- Minimal Refinement Core 与 structured `ProofWorkspace` 的职责边界；
+- 单 Agent 原则，以及数学论证、Lean 验证和错误归因不能被机械割裂的原因；
+- `minimal` / `structured` 执行模式的参数化选择；
+- 搜索树、预算感知策略和后续 Phase 的范围。
+
+实现应以当前 Phase 的验收边界为准，不提前引入后续 Phase 组件。若本文的简述与计划冲突，以 `tmp/plan1.md` 的最新设计决策为准，并同步修正文档。
+
 ## 运行规则
 
 - Lean smoke / 真实 checker：需要时直接申请非沙箱运行，尤其是 elan toolchain 相关命令。
@@ -11,8 +22,9 @@
 
 1. 接收自然语言数学问题或已有 Lean 模板。
 2. **Formalizer** 把自然语言形式化为带有一个证明洞（hole marker）的 Lean scaffold。
-3. **ProofController** 在预算限制下循环生成候选证明、调用 Lean checker、根据反馈修复。
-4. 返回可被 Lean 接受的完整证明或失败报告。
+3. **ProofController** 在预算限制下循环生成候选证明、调用 Lean checker，并通过紧凑 `ProofMemory` 携带修订上下文。
+4. checker 接受后执行确定性的 statement-preservation / anti-cheating 安全审查。
+5. 返回通过 checker 与安全审查的完整证明，或带原始观测和最终 memory 的失败报告。
 
 ## 模块结构
 
@@ -29,7 +41,12 @@ agent/
 ├── search/              # 搜索控制
 │   ├── action.py        # ActionGenerator 协议与 ActionCandidate
 │   ├── controller.py    # ProofController 主循环
+│   ├── execution.py     # ExecutionMode 参数（minimal / structured）
+│   ├── factory.py       # 按执行模式构造 controller 的唯一选择点
 │   ├── budget.py        # 预算管理（checks / model calls / time）
+│   ├── memory.py        # self-managed ProofMemory 与确定性更新器
+│   ├── safety.py        # statement-preservation / anti-cheating 审查
+│   ├── metrics.py       # Phase 0 原始 attempt/run 观测
 │   ├── proposer.py      # 候选库生成
 │   └── state_encoder.py # 证明状态编码
 ├── proof_system/        # Lean 适配层
@@ -56,6 +73,27 @@ agent/
 | Context Manager | `ChatContextSummarizer` | `SummarizationRequest` | `SummarizationResult` | 在 retry 前把 checker 输出与历史反馈压缩成简短、可操作的摘要，降低 proof generator 的 prompt 成本。 |
 
 > 旧名保留兼容别名：`OpenAIChatConfig`、`OpenAIChatFormalizationAgent`、`OpenAIChatActionGenerator`。
+
+当前证明修订保持单一 Proof Generator + `ProofController`，不为数学推理、形式化和错误修复继续拆分多级 proof agent。`Context Manager` 是可选的上下文压缩器，不拥有证明分支或错误归因责任。
+
+## Phase 1 Minimal Refinement Core
+
+- `lean_feedback.py` 同时保留旧的 `unsolved_goals`，并提取带 fingerprint、source span、declaration id、`is_sorry_goal` 的结构化 `GoalState`。
+- `ProofMemory` 是跨 retry 携带的主要紧凑上下文，记录 checker 支持的事实、失败方法、Lean API 经验、开放目标和来源 attempt id；各字段有上限，避免 prompt 无界增长。
+- `MemoryProcessor` 是确定性组件。只有 checker 接受且安全审查通过的结果才能进入 `established_facts`。
+- `StatementSafetyReviewer` 只在 checker 接受后运行，检查固定 statement 前缀、残留 `sorry` / `admit` 和新增 `axiom`；注释及字符串不参与关键字扫描。
+- 安全审查拒绝不改写 checker 的原始结果：attempt trace 仍记录 checker 观测，controller 的最终结果保持未接受，并继续下一次修订。
+- trace 保留每次 attempt 的原始分类、goal fingerprints、完整结构化 `goal_state`，并在 run summary 中记录最终 memory 与安全拒绝原因。
+- 当前仍是线性 minimal loop。搜索树、预算感知分支策略以及 structured `ProofWorkspace` 属于后续阶段，不在 Phase 1 内推断或自动启用。
+
+## Phase 2 执行模式参数与共同观测
+
+- `ExecutionMode`（`minimal` / `structured`）由启动参数决定，同一次运行内不可变；`build_controller`（`search/factory.py`）是唯一的选择点。
+- CLI 通过 `--execution-mode`（默认 `minimal`）选择模式，作用于 `solve` 与 `prove`。
+- 当前仅实现 `minimal` 执行器（`ProofController`）。选 `structured` 时 `build_controller` 抛 `StructuredModeUnavailableError`，CLI 以 `stage=execution_mode` 返回非零退出码，**不**静默退化为 minimal，避免把 structured 运行误记成 minimal。
+- `execution_mode` 作为共同观测字段记录在 `RunMetrics`，经 `_metrics_payload` 进入 `run_summary.metrics`，便于跨模式公平比较。
+- 共同观测层只记录原始事实（attempt、checker category、goal fingerprints、耗时、预算、execution_mode），不推导 progress、stall 或跨运行统计。
+- 运行中不存在任何切换模式的代码路径：`ControllerConfig` 是 frozen、`_ControllerRunState` 不持有 mode、`ProofController` 在本阶段不读 mode 做控制流。
 
 ## `ChatDriver` 抽象
 
@@ -121,6 +159,8 @@ class AgentRole(str, Enum):
 - `FormalizationAgent`：形式化入口。
 - `ActionGenerator`：证明候选生成入口。
 - `ProofSystemAdapter` / `LeanAdapter`：Lean checker 适配。
+- `SafetyReviewer` / `StatementSafetyReviewer`：checker 接受后的安全审查边界。
+- `ProofMemory` / `MemoryProcessor`：紧凑重试上下文及确定性更新边界。
 - `Retriever`：检索接口（`ProofController` 使用）。
 - `ScaffoldChecker`：scaffold 校验接口。
 
@@ -130,7 +170,7 @@ class AgentRole(str, Enum):
 python -m agent.cli.app <source> --use-model
 ```
 
-常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`。
+常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`、`--execution-mode`。
 
 模型选择按 per-role -> generic `--model` -> 环境变量 `OPENAI_MODEL` 的顺序回退。例如 `--proof-model gpt-4` 只覆盖 proof generator，未指定时 fallback 到 `--model`，再未指定时 fallback 到 `OPENAI_MODEL`。
 
@@ -146,10 +186,16 @@ python -m pytest tests/ -q
 - `tests/test_model_adapter.py`：proof generator、transport 重试。
 - `tests/test_chat_driver.py`：新抽象层单测。
 - `tests/test_controller.py`：ProofController 主循环。
+- `tests/test_goal_state.py`：结构化 goal state、fingerprint、sorry 标记。
+- `tests/test_memory.py`：ProofMemory 更新、来源追踪和 prompt 表示。
+- `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查。
+- `tests/test_trace_store.py`：原始 attempt、结构化 goal state 和最终 memory 持久化。
+- `tests/test_factory.py`：执行模式选择，structured 硬失败。
 
 ## 注意事项
 
 - `ChatConfig` 是 OpenAI 兼容配置，可用于任意 OpenAI-compatible endpoint。
 - 真实 Lean checker 调用可能耗时较长，CLI/测试支持超时与重试。
 - 持久化 Lean server 完成信号不可靠时，会在 `--lean-server-fallback-seconds` 静默期后接受当前诊断，避免每次都回退到子进程。
+- `CheckResult.accepted` 表示 checker 的原始判断；controller 只有在后续 safety verdict 也通过时才返回 `ControllerResult.accepted=True`。
 - `.env` 只由脚本消费，不要直接读取其内容写入日志。

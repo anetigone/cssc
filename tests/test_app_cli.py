@@ -595,6 +595,55 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertEqual(args.task_config, "scaffold.json")
         self.assertIsNone(args.source)
 
+    def test_parser_exposes_execution_mode_for_solve_and_prove(self) -> None:
+        parser = build_parser()
+        solve_args = parser.parse_args(["solve", "Basic.lean"])
+        prove_args = parser.parse_args(["prove", "Basic.lean"])
+        # Default is minimal for both proof-search subcommands.
+        self.assertEqual(solve_args.execution_mode, "minimal")
+        self.assertEqual(prove_args.execution_mode, "minimal")
+
+        structured = parser.parse_args(["prove", "Basic.lean", "--execution-mode", "structured"])
+        self.assertEqual(structured.execution_mode, "structured")
+
+    def test_parser_rejects_unknown_execution_mode(self) -> None:
+        parser = build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["prove", "Basic.lean", "--execution-mode", "auto"])
+
+    def test_run_prove_fails_loudly_for_structured_mode(self) -> None:
+        from agent.cli import app as cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lean = Path(tmp) / "Basic.lean"
+            lean.write_text("theorem sample : True := by\n  sorry\n", encoding="utf-8")
+            args = _args(
+                command="prove",
+                source=str(lean),
+                input_kind="lean",
+                execution_mode="structured",
+            )
+            with (
+                patch.object(cli, "_lean_services") as services_ctx,
+                patch.object(cli, "_workspace_context") as ws_ctx,
+                patch.object(cli, "build_check_workspace"),
+                patch.object(cli, "build_action_generator"),
+                patch.object(cli, "build_retriever"),
+                patch.object(cli, "build_context_summarizer"),
+                patch("builtins.print") as printed,
+            ):
+                services_ctx.return_value.__enter__.return_value = cli._LeanServices(
+                    adapter=object(), validation_adapter=object()
+                )
+                ws_ctx.return_value.__enter__.return_value = Path(".")
+                rc = cli.run_prove(args, agent_root=Path(tmp), project_root=None)
+
+        self.assertEqual(rc, 2)
+        payload = json.loads(printed.call_args.args[0])
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["stage"], "execution_mode")
+        self.assertIn("not implemented", payload["error"])
+
 
 def _format_help(parser, argv) -> str:
     """Render a subcommand help string without raising SystemExit."""
@@ -648,6 +697,7 @@ def _args(**overrides) -> Namespace:
         "keep_check_files": False,
         "max_checks": 3,
         "max_elapsed_seconds": None,
+        "execution_mode": "minimal",
         "work_dir": None,
         "model_timeout": 60.0,
         "model_max_tokens": 16384,
