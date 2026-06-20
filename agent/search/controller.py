@@ -9,6 +9,12 @@ from typing import Any, Protocol
 
 from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
+from .memory import (
+    MemoryProcessor,
+    MemoryUpdate,
+    ProofMemory,
+    empty_memory,
+)
 from .metrics import (
     AttemptMetric,
     RunMetrics,
@@ -107,6 +113,9 @@ class _ControllerRunState:
     attempt_index: int = 0
     retrieved_this_iteration: bool = False
     attempt_metrics: list[AttemptMetric] = field(default_factory=list)
+    # Self-managed compact memory updated after every check; replaces the fixed
+    # full-history stack as the loop's carried context.
+    memory: ProofMemory = field(default_factory=empty_memory)
     # Unique per controller run so trace events from repeated runs never collide.
     sample_id: str = field(default_factory=new_sample_id)
 
@@ -140,6 +149,7 @@ class ProofController:
         self.context_summarizer = context_summarizer
         self.budget = BudgetManager(budget_config)
         self.config = config or ControllerConfig()
+        self.memory_processor = MemoryProcessor()
 
     def run(self, task: ProofTask) -> ControllerResult:
         logger.info("Controller run started: task_id=%s", task.task_id)
@@ -252,6 +262,7 @@ class ProofController:
                 "retrieved_history": tuple(state.retrieved_history),
                 "previous_attempt": previous_attempt,
                 "summarized_context": summarized_context,
+                "proof_memory": state.memory,
                 "budget": budget_snapshot,
             },
         )
@@ -288,6 +299,7 @@ class ProofController:
             record = self._check_single_candidate(state, task, action)
             state.attempts.append(record)
             state.attempt_index += 1
+            self._update_memory(state, task, record)
             metric = attempt_metric(
                 record.attempt_index,
                 action=record.edit.action,
@@ -486,6 +498,25 @@ class ProofController:
             budget_checks_used=snapshot.checks_used,
             budget_model_calls_used=snapshot.model_calls_used,
             budget_exhausted_reason=snapshot.exhausted_reason,
+        )
+
+    def _update_memory(
+        self,
+        state: _ControllerRunState,
+        task: ProofTask,
+        record: AttemptRecord,
+    ) -> None:
+        """Fold one checked candidate's outcome into the self-managed memory."""
+        state.memory = self.memory_processor.update(
+            state.memory,
+            MemoryUpdate(
+                task=task,
+                attempt_index=record.attempt_index,
+                proof_text=record.edit.text,
+                action=record.edit.action,
+                check_result=record.check_result,
+                feedback=record.check_result.parsed_feedback,
+            ),
         )
 
     def _summarize_context(

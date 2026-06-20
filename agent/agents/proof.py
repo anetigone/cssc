@@ -11,6 +11,7 @@ from ..proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .chat_driver import ChatDriver
 from .context import SummarizationResult
+from ..search.memory import ProofMemory, memory_to_prompt
 from .openai import (
     ChatConfig,
     ChatTransport,
@@ -238,7 +239,15 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
             for name, snippet in selected:
                 parts.extend([f"- {name}", "```lean", snippet, "```"])
     parts.extend(["Lean source template:", "```lean", task.source_template, "```"])
-    if feedback:
+    proof_memory = request.metadata.get("proof_memory")
+    if isinstance(proof_memory, ProofMemory):
+        memory_block = memory_to_prompt(proof_memory)
+        if memory_block:
+            # The self-managed compact memory is the loop's primary carried
+            # context; when it carries open goals and prior failures it
+            # supersedes the raw feedback list.
+            parts.extend(["Compact proof memory:", memory_block])
+    if feedback and not _has_memory_context(proof_memory):
         parts.extend(["Previous checker feedback:"])
         # If the previous attempt's full output is already shown above, the
         # most recent feedback entry repeats the same diagnosis; keep the
@@ -247,6 +256,23 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
         for item in feedback_slice:
             parts.append(_feedback_line(item))
     return "\n".join(parts)
+
+
+def _has_memory_context(proof_memory: Any) -> bool:
+    """True when the compact memory already carries retry context.
+
+    The first iteration ships an empty memory, so we still want the raw
+    feedback list then. Once the loop has folded attempts into memory, the
+    memory block is the authoritative compact view.
+    """
+    if not isinstance(proof_memory, ProofMemory):
+        return False
+    return bool(
+        proof_memory.failed_approaches
+        or proof_memory.open_goals
+        or proof_memory.established_facts
+        or proof_memory.lean_api_lessons
+    )
 
 
 def _feedback_line(feedback: ParsedFeedback) -> str:

@@ -294,6 +294,32 @@ class ProofControllerTests(unittest.TestCase):
             generator.requests[1].metadata["summarized_context"].concise_error,
         )
 
+    def test_carries_self_managed_proof_memory_across_retries(self) -> None:
+        from agent.search.memory import ProofMemory
+
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = QueueGenerator([["bad"], ["trivial"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=3, max_model_calls=3),
+            )
+
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        # First iteration ships an empty memory; the retry carries the memory
+        # folded from the failed attempt.
+        first_memory = generator.requests[0].metadata["proof_memory"]
+        self.assertIsInstance(first_memory, ProofMemory)
+        self.assertFalse(first_memory.failed_approaches)
+        retry_memory = generator.requests[1].metadata["proof_memory"]
+        self.assertIsInstance(retry_memory, ProofMemory)
+        self.assertTrue(retry_memory.failed_approaches)
+        self.assertIn(0, retry_memory.source_attempt_ids)
+
     def test_records_baseline_metrics_for_run(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
         generator = QueueGenerator([["bad"], ["still_bad"], ["trivial"]])
