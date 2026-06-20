@@ -117,8 +117,8 @@ def _run_id(result: ControllerResult) -> str:
 
     Prefers the unique ``sample_id`` carried by the run metrics so two
     independent runs of the same task — which can collide on task id, attempt
-    count and stop reason — still get distinct run ids and can be grouped for
-    pass@k. Falls back to the legacy composite only when metrics are absent.
+    count and stop reason — still get distinct run ids. Falls back to the
+    legacy composite only when metrics are absent.
     """
     if result.metrics is not None and result.metrics.sample_id:
         return result.metrics.sample_id

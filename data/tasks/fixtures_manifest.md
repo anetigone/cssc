@@ -1,74 +1,51 @@
-# Phase 0 Baseline Fixtures
+# Phase 0 Baseline Inputs
 
-These fixtures fix the evaluation vocabulary for the proof-system redesign.
-Every later phase is ablated against the same baseline, so the fixtures and the
-per-run metrics (see `agent/search/metrics.py`) must stay stable.
+These files provide stable inputs for comparing later proof-system versions.
+Phase 0 does not predict whether a model should solve, stall, or require a
+particular number of iterations. Those are experimental outcomes recorded by
+the trace, not fixture metadata.
 
-## Fixture groups
+## Input groups
 
 ### `simple` — `data/tasks/fixtures_simple.json`
 
-Single-obligation tasks whose failures are parser, API, typing, or local
-tactic problems. The minimal refinement core is **expected to solve these**.
-These anchor the lower bound: if a change regresses these, it is not ready for
-the default execution path.
+Small, single-obligation Lean scaffolds. They are useful for detecting basic
+regressions without defining a success threshold in the fixture itself.
 
 ### `complex` — `data/tasks/fixtures_complex.json`
 
-Multi-obligation or capability-bound tasks. They trigger the conditions in
-Section 1.2 of the plan (repeated same-goal stalls, missing intermediate
-lemmas, mutually-dependent goals). The minimal core is **expected to stall**,
-producing a structured stagnation report — not to solve them. These anchor the
-upper end where `structured` mode is meant to add measurable value.
-
-Each complex task carries a `why_complex` field documenting the failure mode it
-is meant to expose, and an `expected_outcome` of `stall_or_repeated_goal`.
-These are descriptive annotations for the eval harness author, **not** Lean
-checker categories — the actual pass/stall signal comes from the run metrics,
-not from these fields.
+Lean scaffolds with multiple logical obligations or less direct mathematical
+structure. `structural_feature` documents why an input is useful; it is not an
+expected result or checker category.
 
 ### `explicit_function.md` — `data/tasks/explicit_function.md`
 
-Hand-curated natural-language fixture (modified Bessel function analysis).
-Exercises the formalize → prove path end to end on a genuinely hard, real
-problem. Used as a qualitative smoke target, not a pass/fail metric.
+A hard natural-language modified-Bessel-function problem. It is a qualitative
+formalize-and-prove smoke input, not a pass/fail metric.
 
-## Per-run metric contract
+## Raw observation contract
 
-Every run records, for each attempt:
+Every checked candidate records:
 
-- `attempt_index`, `action`, checker `category`, `accepted`;
-- `goal_fingerprints` — the **full ordered set** of unsolved goals for that
-  attempt, each hashed with `goal_fingerprint` (stable against whitespace /
-  line noise). The full set is captured, not just the first goal, so a
-  multi-obligation task can show goal B repeating while goal A was discharged;
-- `solved_goals` / `retained_goals` / `introduced_goals` — the set delta
-  against the **previous attempt's** goal set, plus `goal_count_delta`;
-- `progressed` — derived **only** from the goal-set delta (an attempt that
-  discharges a goal without reintroducing one), never from the error category.
-  Repeated failures on the same goal correctly record `progressed=false`;
-- `elapsed_seconds`.
+- `attempt_index` and `action`;
+- checker `category` and `accepted`;
+- all captured `goal_fingerprints`, preserving order and multiplicity;
+- checker `error_message` and `elapsed_seconds`.
 
-The run roll-up (`RunMetrics`) records:
+Every controller run records:
 
-- `sample_id` — a unique id per independent run (generated at run start). This
-  is the grouping key for evaluation, replacing the collision-prone
-  `task_id:attempt_count:stop_reason` run id in traces;
-- `accepted` — the only success outcome;
-- `stop_reason` — clean accept vs `budget:*` vs `no_actions` vs
-  `tool_unavailable`;
-- `distinct_goal_fingerprints` and `repeated_goal_stalls` — whether the loop is
-  exploring new goals or grinding on the same one (a retained goal across
-  attempts counts as one stall).
+- a unique `sample_id` and the `task_id`;
+- `accepted` and `stop_reason`;
+- checks/model calls used and the budget exhaustion reason;
+- the ordered attempt observations.
 
-pass@k is **not** a single-run property. It is computed by
-`EvaluationAggregator.pass_at_k`, which takes k independent `RunMetrics`
-samples of one task and returns a `PassAtKResult`. A single iterative
-controller run is one sample; running the task k times yields k samples with
-distinct `sample_id`s. Recording pass@k on a run would let one iterative run
-masquerade as k independent attempts, so it is deliberately absent from
-`RunMetrics` and `ControllerConfig`.
+The baseline intentionally does not derive:
 
-These metrics are emitted into the JSONL trace `run_summary` event under the
-`metrics` key (and the `run_id` is now the `sample_id`), alongside the
-existing `attempt` events.
+- progress or regression;
+- solved, retained, or introduced goals;
+- repeated-stall classifications;
+- pass@k or other cross-run evaluation statistics.
+
+These require explicit semantics and belong to later evaluation or search
+policy work. Raw observations are emitted under `metrics` in the JSONL
+`run_summary`; existing detailed `attempt` events remain unchanged.

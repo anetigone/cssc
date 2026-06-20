@@ -11,7 +11,6 @@ from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
 from .metrics import (
     AttemptMetric,
-    GoalSetSnapshot,
     RunMetrics,
     attempt_metric,
     new_sample_id,
@@ -108,12 +107,7 @@ class _ControllerRunState:
     attempt_index: int = 0
     retrieved_this_iteration: bool = False
     attempt_metrics: list[AttemptMetric] = field(default_factory=list)
-    # Goal set of the immediately preceding attempt, so progress for the next
-    # attempt is computed from a goal-set delta rather than the error category.
-    last_goal_snapshot: GoalSetSnapshot | None = None
-    # Unique per independent run; generated once at run start. pass@k is
-    # computed by EvaluationAggregator across distinct sample ids, never from a
-    # field on a single run.
+    # Unique per controller run so trace events from repeated runs never collide.
     sample_id: str = field(default_factory=new_sample_id)
 
 
@@ -298,10 +292,8 @@ class ProofController:
                 record.attempt_index,
                 action=record.edit.action,
                 check_result=record.check_result,
-                parent_snapshot=state.last_goal_snapshot,
             )
             state.attempt_metrics.append(metric)
-            state.last_goal_snapshot = metric.goal_snapshot
             logger.info(
                 "Candidate checked: task_id=%s attempt_index=%d candidate_id=%s accepted=%s category=%s",
                 task.task_id,

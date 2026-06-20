@@ -1,25 +1,25 @@
 {
   "fixture_group": "complex",
-  "description": "Phase 0 complex-task baseline fixtures. Multi-obligation problems that exercise the conditions under which structured mode is meant to add value (Section 1.2): repeated same-goal stalls, missing intermediate lemmas, capability gaps, mutually-dependent goals. The minimal core is expected to STALL here, producing observable stagnation rather than silence. These are NOT meant to be solved by the minimal core; they anchor the structured-vs-minimal ablation. The per-task 'why_complex' field documents the failure mode each task is meant to expose.",
+  "description": "Phase 0 complex-shaped task inputs. They contain multiple logical obligations or nontrivial mathematical structure, but do not prescribe whether a particular model or controller must solve or stall on them.",
   "project_root": "lean_workspace",
   "split": "dev",
-  "imports": [],
+  "imports": [
+    "Mathlib.Data.Real.Basic"
+  ],
   "tasks": [
     {
       "task_id": "complex_sum_squares_lower_bound",
       "difficulty": "complex",
       "source_name": "data/tasks/fixtures_complex.json#complex_sum_squares_lower_bound",
       "proof_source": "theorem complex_sum_squares_lower_bound (n : Nat) : n * n + n ≤ 2 * (n * n) := by\n  {{proof}}\n",
-      "why_complex": "Needs a non-trivial algebraic rearrangement / intermediate inequality (n*n >= n for the bound direction) rather than a single tactic. A naive ring/omega path requires recognizing the case split n=0 vs n>=1, which the minimal loop tends to stall on across attempts.",
-      "expected_outcome": "stall_or_repeated_goal"
+      "structural_feature": "A nonlinear natural-number inequality whose proof may introduce an intermediate bound or a case split."
     },
     {
       "task_id": "complex_conjunct_with_negation",
       "difficulty": "complex",
       "source_name": "data/tasks/fixtures_complex.json#complex_conjunct_with_negation",
       "proof_source": "theorem complex_conjunct_with_negation (a b : ℝ) (ha : 0 < a) (hb : 0 < b) : 0 < a * b ∧ ¬(a * b ≤ 0) := by\n  {{proof}}\n",
-      "why_complex": "Two conjunct obligations where the second requires converting a strict-inequality positivity into a negated non-positivity (Real.mul_pos then a contrapositive/linarith step). The minimal core frequently solves the first goal and repeatedly stalls on the second across attempts, which is exactly the multi-obligation stall signal the metrics are designed to surface.",
-      "expected_outcome": "stall_or_repeated_goal"
+      "structural_feature": "Two related conjunct obligations over the reals, useful for observing how a prover handles shared intermediate facts."
     }
   ]
 }

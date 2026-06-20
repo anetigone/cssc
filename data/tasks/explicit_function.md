@@ -5,7 +5,7 @@ For $n\geq 0,n\in\mathbb{Z}$, consider the following ODE:
 \[
 r^2\frac{d^2f}{d r^2}+r\frac{d f}{d r}-(r^2+n^2)f=0.
 \]
-These ODEs are so-called modified Bessel equations. As a linear second order ODE, the solution of it can be written as 
+These ODEs are so-called modified Bessel equations. As a linear second order ODE, the solution of it can be written as
 \[
 f=c_1I_n+c_2K_n,
 \]
@@ -27,7 +27,7 @@ C_{j,\lambda}(R)=K_j'(R)I_j(\sqrt{\lambda}R)-\sqrt{\lambda}I_j'(\sqrt{\lambda}R)
 and
 \[
 C_{\lambda}(R)=\sqrt{\lambda}K_0(R)I_1(\sqrt{\lambda}R)+K_1(R)I_0(\sqrt{\lambda}R),
-\] 
+\]
 and
 \[
 I_j'(x)=\frac{d}{dx}I_j(x),
@@ -38,9 +38,9 @@ Here is the Problem $1$.
 \begin{problem}
 
 \begin{enumerate}
-\item Verify that $F_{\lambda,l}(R)$ is well-defined for $\lambda>0$ and $l\geq 2$ and $R>0$. Which means $C_{\lambda}(R)$ and $C_{l,\lambda}(R)$ not equal to zero for $R>0$. 
-    \item If $0<\lambda\leq 1$, $l\geq 2,l\in\mathbb{Z}$, then $F_{\lambda,l}(R)$ is negative and monotonic increasing for $R> 0$. 
-    \item If $\lambda>1$, $l\geq 2,l\in\mathbb{Z}$, there exists $R_1>0$, so that $F_{\lambda,l}(R)$ is increasing for $R\in (0,R_1)$, decreasing for $R>R_1$, and $F_{\lambda,l}(R_1)>0$. 
+\item Verify that $F_{\lambda,l}(R)$ is well-defined for $\lambda>0$ and $l\geq 2$ and $R>0$. Which means $C_{\lambda}(R)$ and $C_{l,\lambda}(R)$ not equal to zero for $R>0$.
+    \item If $0<\lambda\leq 1$, $l\geq 2,l\in\mathbb{Z}$, then $F_{\lambda,l}(R)$ is negative and monotonic increasing for $R> 0$.
+    \item If $\lambda>1$, $l\geq 2,l\in\mathbb{Z}$, there exists $R_1>0$, so that $F_{\lambda,l}(R)$ is increasing for $R\in (0,R_1)$, decreasing for $R>R_1$, and $F_{\lambda,l}(R_1)>0$.
 \end{enumerate}
 
 \end{problem}
