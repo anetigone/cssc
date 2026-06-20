@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from agent.proof_system.base import CheckResult, DiagnosticCategory, ParsedFeedback
+from agent.proof_system.base import CheckResult, DiagnosticCategory, GoalState, ParsedFeedback
 from agent.search.metrics import (
     attempt_metric,
     goal_fingerprint,
@@ -37,6 +37,10 @@ class AttemptMetricTests(unittest.TestCase):
             category=DiagnosticCategory.UNSOLVED_GOALS,
             message="unsolved goals",
             unsolved_goals=("⊢ A", "⊢ A"),
+            goal_state=(
+                GoalState(text="⊢ A", goal_fingerprint="abc"),
+                GoalState(text="sorry", goal_fingerprint="def", is_sorry_goal=True),
+            ),
         )
         result = CheckResult(
             accepted=False,
@@ -54,6 +58,9 @@ class AttemptMetricTests(unittest.TestCase):
         self.assertEqual(len(metric.goal_fingerprints), 2)
         self.assertEqual(metric.goal_fingerprints[0], metric.goal_fingerprints[1])
         self.assertEqual(metric.elapsed_seconds, 0.25)
+        # Structured goal state is recorded as raw counts, not interpreted.
+        self.assertEqual(metric.metadata["goal_state_count"], 2)
+        self.assertTrue(metric.metadata["has_sorry_goal"])
 
     def test_failure_without_goals_stays_an_empty_observation(self) -> None:
         result = CheckResult(

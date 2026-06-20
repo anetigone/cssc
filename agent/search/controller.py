@@ -14,6 +14,7 @@ from .memory import (
     MemoryUpdate,
     ProofMemory,
     empty_memory,
+    memory_to_dict,
 )
 from .metrics import (
     AttemptMetric,
@@ -423,10 +424,7 @@ class ProofController:
             stop_reason="accepted",
             accepted_attempt=record,
             metrics=self._run_metrics(state, task, accepted=True, stop_reason="accepted"),
-            metadata={
-                "retrieved_results": tuple(state.retrieved_history),
-                "feedback_count": len(state.feedback_history),
-            },
+            metadata=self._result_metadata(state),
         )
 
     def _build_tool_unavailable_result(
@@ -446,10 +444,7 @@ class ProofController:
             budget=self.budget.snapshot(),
             stop_reason=state.stop_reason,
             metrics=self._run_metrics(state, task, accepted=False, stop_reason=state.stop_reason),
-            metadata={
-                "retrieved_results": tuple(state.retrieved_history),
-                "feedback_count": len(state.feedback_history),
-            },
+            metadata=self._result_metadata(state),
         )
 
     def _build_final_result(
@@ -473,11 +468,22 @@ class ProofController:
             budget=self.budget.snapshot(),
             stop_reason=state.stop_reason,
             metrics=self._run_metrics(state, task, accepted=False, stop_reason=state.stop_reason),
-            metadata={
-                "retrieved_results": tuple(state.retrieved_history),
-                "feedback_count": len(state.feedback_history),
-            },
+            metadata=self._result_metadata(state),
         )
+
+    def _result_metadata(self, state: _ControllerRunState) -> dict[str, Any]:
+        """Shared metadata block recorded on every controller result.
+
+        Includes a snapshot of the final self-managed memory so the trace
+        preserves the compact context the loop actually carried, alongside the
+        raw Phase 0 fields. The memory snapshot is a plain dict, never the live
+        object, so it serializes cleanly.
+        """
+        return {
+            "retrieved_results": tuple(state.retrieved_history),
+            "feedback_count": len(state.feedback_history),
+            "proof_memory": memory_to_dict(state.memory),
+        }
 
     def _run_metrics(
         self,

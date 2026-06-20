@@ -67,6 +67,7 @@ def attempt_metric(
     """Project a checker result without interpreting relationships to other attempts."""
     feedback = check_result.parsed_feedback
     goals = feedback.unsolved_goals if feedback is not None else ()
+    goal_state = feedback.goal_state if feedback is not None else ()
     return AttemptMetric(
         attempt_index=attempt_index,
         action=action,
@@ -75,6 +76,10 @@ def attempt_metric(
         goal_fingerprints=goal_fingerprints(goals),
         error_message=feedback.message if feedback else "",
         elapsed_seconds=check_result.elapsed_seconds,
+        metadata={
+            "goal_state_count": len(goal_state),
+            "has_sorry_goal": any(state.is_sorry_goal for state in goal_state),
+        },
     )
 
 
