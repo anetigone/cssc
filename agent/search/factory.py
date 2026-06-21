@@ -14,13 +14,15 @@ from .execution import ExecutionMode
 
 
 class StructuredModeUnavailableError(NotImplementedError):
-    """Raised when the structured executor is requested before Phase 3.
+    """Raised when the structured executor is requested before its frontier lands.
 
-    Phase 2 only parameterizes the two modes; the structured executor
-    (``ProofWorkspace`` / ``ObligationGraph`` / frontier) lands in Phase 3+.
-    Selecting ``--execution-mode structured`` must fail loudly rather than
-    silently behave like minimal, so experiments never record structured runs
-    that were actually minimal.
+    Phase 3 introduced the structured state primitives (``ProofWorkspace`` /
+    ``ProofObligation`` / ``ObligationGraph`` and the ``ArtifactAssembler``)
+    as pure data plus a final-assembly whole-recheck, but the structured
+    *executor* — the frontier / AND-OR search that drives them end to end — is
+    Phase 4-6. Selecting ``--execution-mode structured`` must fail loudly
+    rather than silently behave like minimal, so experiments never record
+    structured runs that were actually minimal.
     """
 
 
@@ -66,7 +68,8 @@ def build_controller(
             safety_reviewer=safety_reviewer,
         )
     raise StructuredModeUnavailableError(
-        "structured execution mode is not implemented until Phase 3 "
-        "(ProofWorkspace / ObligationGraph / frontier). "
+        "the structured executor (frontier / AND-OR search) is not implemented "
+        "until Phase 4-6. Phase 3 ships the structured state primitives "
+        "(ProofWorkspace / ObligationGraph / ArtifactAssembler) but no driver. "
         "Re-run with --execution-mode minimal."
     )

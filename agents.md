@@ -56,6 +56,8 @@ agent/
 │   ├── lean_subprocess.py # 子进程执行与进程树清理
 │   ├── lean_feedback.py # Lean 诊断输出解析
 │   ├── lean_server.py   # 持久化 Lean server
+│   ├── workspace.py     # Phase 3 ProofWorkspace / ObligationGraph 等纯数据
+│   ├── assembler.py     # Phase 3 final-assembly 整体复检
 │   └── base.py          # ProofSystemAdapter / ProofTask / CheckResult
 ├── retrieval/           # 检索（当前为词法检索 LexicalLeanRetriever）
 ├── input/               # 输入解析、规范化、scaffold 校验
@@ -94,6 +96,16 @@ agent/
 - `execution_mode` 作为共同观测字段记录在 `RunMetrics`，经 `_metrics_payload` 进入 `run_summary.metrics`，便于跨模式公平比较。
 - 共同观测层只记录原始事实（attempt、checker category、goal fingerprints、耗时、预算、execution_mode），不推导 progress、stall 或跨运行统计。
 - 运行中不存在任何切换模式的代码路径：`ControllerConfig` 是 frozen、`_ControllerRunState` 不持有 mode、`ProofController` 在本阶段不读 mode 做控制流。
+
+## Phase 3 ProofWorkspace 与 Obligation DAG
+
+- 结构化状态原语集中在 `agent/proof_system/workspace.py`（与 `ProofTask`/`CheckResult` 同模块，proof-system-neutral 纯数据）：`ProofObligation`、`ObligationGraph`、`ProofWorkspace`、`FormalSpecification`、`VerifiedFact`，全部 frozen + `to_dict`/`from_dict`。
+- `ObligationGraph.validate()` 确定性检查无环、依赖存在、活跃依赖不指向 SUPERSEDED 版本、根存在且可由所有非根义务经依赖闭包到达；返回 `ObligationGraphReport`，不抛异常。
+- 版本规则：statement/assumption/dependency 变化走 `ObligationGraph.new_version`，旧实例置 SUPERSEDED 并保留作 provenance；`by_id` 只解析到最新非 SUPERSEDED 版本。
+- `initialize_from_task` 从 `ProofTask` 造单 root obligation 的合法工作区，是 structured 模式入口；`decompose` 加辅助义务并重校验 DAG，`register_accepted_fact` 把 obligation 置 ACCEPTED 并记录带 obligation version 的 `VerifiedFact`，拒绝登记到 SUPERSEDED 版本。
+- `agent/proof_system/assembler.py` 的 `ArtifactAssembler.assemble` 在所有活跃 obligation 均 ACCEPTED 且带版本匹配的 `LeanArtifact` 时，按依赖序拼装并整体复检一次；前置失败返回 blocked `AssemblyResult`，不抛。
+- 序列化产物经 `ControllerResult.metadata["workspace"]` 进入 trace，`trace_store.workspace_payload` 透传；minimal 运行不写该键，`ProofController` 不 import workspace 模块，因此 minimal 不承担 DAG 成本。
+- 本阶段只交付数据结构 + 序列化 + trace + DAG 规则 + final-assembly 复检 + root 初始化。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`：驱动这些状态的 frontier / AND-OR 搜索是 Phase 4-6，未提前引入。
 
 ## `ChatDriver` 抽象
 
@@ -189,8 +201,10 @@ python -m pytest tests/ -q
 - `tests/test_goal_state.py`：结构化 goal state、fingerprint、sorry 标记。
 - `tests/test_memory.py`：ProofMemory 更新、来源追踪和 prompt 表示。
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查。
-- `tests/test_trace_store.py`：原始 attempt、结构化 goal state 和最终 memory 持久化。
+- `tests/test_trace_store.py`：原始 attempt、结构化 goal state、最终 memory 和 workspace 持久化。
 - `tests/test_factory.py`：执行模式选择，structured 硬失败。
+- `tests/test_workspace.py`：ProofWorkspace / ObligationGraph 数据结构、DAG 校验、版本规则、初始化与变异。
+- `tests/test_assembler.py`：final-assembly 整体复检与 blocked 语义。
 
 ## 注意事项
 
