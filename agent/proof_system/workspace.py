@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 if TYPE_CHECKING:
     # Avoid an eager import of the tasks package at module load; only the type
@@ -415,6 +415,98 @@ class ProofWorkspace:
 
     root_obligation_ids: tuple[str, ...] = ()
     status: WorkspaceStatus = WorkspaceStatus.INITIALIZING
+
+    def successor(
+        self,
+        *,
+        obligation_graph: ObligationGraph | None = None,
+        accepted_facts: tuple[VerifiedFact, ...] | None = None,
+        root_obligation_ids: tuple[str, ...] | None = None,
+        status: WorkspaceStatus | None = None,
+    ) -> ProofWorkspace:
+        """Return the next workspace version with the supplied fields changed.
+
+        Centralizes the version bump so every mutation records the parent it
+        descended from, keeping the structured search history replayable.
+        """
+        return replace(
+            self,
+            version=self.version + 1,
+            parent_version=self.version,
+            obligation_graph=(
+                obligation_graph if obligation_graph is not None else self.obligation_graph
+            ),
+            accepted_facts=(
+                accepted_facts if accepted_facts is not None else self.accepted_facts
+            ),
+            root_obligation_ids=(
+                root_obligation_ids
+                if root_obligation_ids is not None
+                else self.root_obligation_ids
+            ),
+            status=status if status is not None else self.status,
+        )
+
+    def decompose(
+        self,
+        obligation_id: str,
+        children: Sequence[ProofObligation],
+    ) -> ProofWorkspace:
+        """Split an obligation into auxiliary child obligations.
+
+        The parent stays in the graph (its status is unchanged); each child is
+        inserted with its declared ``dependency_ids``. The new graph is
+        re-validated and the result carries any structural errors forward via
+        the returned workspace's graph report — decomposition does not raise,
+        so a caller that decomposes speculatively can inspect the report.
+
+        Phase 3 only wires the graph mutation; deciding *when* to decompose is
+        the frontier policy's job (Phase 6).
+        """
+        graph = self.obligation_graph
+        if graph.by_id(obligation_id) is None:
+            raise KeyError(f"unknown obligation {obligation_id!r}")
+        for child in children:
+            graph = graph.with_obligation(child)
+        return self.successor(obligation_graph=graph)
+
+    def register_accepted_fact(
+        self,
+        obligation_id: str,
+        *,
+        statement: str,
+        source_attempt_index: int | None = None,
+        checker_category: str = "",
+    ) -> ProofWorkspace:
+        """Mark an obligation ACCEPTED and record a provenance-carrying fact.
+
+        The fact is pinned to the obligation's current version, and the
+        obligation itself transitions to ``ACCEPTED``. A superseded obligation
+        cannot be registered: doing so would attach a fact to stale provenance.
+        """
+        graph = self.obligation_graph
+        obligation = graph.by_id(obligation_id)
+        if obligation is None:
+            raise KeyError(f"unknown obligation {obligation_id!r}")
+        if obligation.status == ObligationStatus.SUPERSEDED:
+            raise ValueError(
+                f"cannot register a fact against superseded obligation "
+                f"{obligation_id!r}"
+            )
+        accepted = replace(obligation, status=ObligationStatus.ACCEPTED)
+        new_graph = graph.with_obligation(accepted)
+        fact = VerifiedFact(
+            obligation_id=obligation.obligation_id,
+            obligation_version=obligation.version,
+            statement=statement,
+            source_attempt_index=source_attempt_index,
+            checker_category=checker_category,
+        )
+        accepted_facts = (*self.accepted_facts, fact)
+        return self.successor(
+            obligation_graph=new_graph,
+            accepted_facts=accepted_facts,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

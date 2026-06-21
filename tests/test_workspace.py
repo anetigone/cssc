@@ -272,5 +272,91 @@ class ProofWorkspaceTests(unittest.TestCase):
         self.assertTrue(workspace.obligation_graph.validate().ok)
 
 
+class WorkspaceMutationTests(unittest.TestCase):
+    def _workspace(self) -> ProofWorkspace:
+        task = ProofTask(
+            task_id="root",
+            source_template="theorem root : True := by\n  {{proof}}\n",
+        )
+        return initialize_from_task(task)
+
+    def test_decompose_adds_children_and_bumps_version(self) -> None:
+        workspace = self._workspace()
+        child = ProofObligation(
+            obligation_id="helper",
+            version=1,
+            dependency_ids=("root",),
+            lean_statement="lemma helper : True := by\n  trivial",
+        )
+
+        updated = workspace.decompose("root", (child,))
+
+        self.assertEqual(updated.version, workspace.version + 1)
+        self.assertEqual(updated.parent_version, workspace.version)
+        self.assertIsNotNone(updated.obligation_graph.by_id("helper"))
+        # Decomposition must keep the DAG invariant intact.
+        self.assertTrue(
+            updated.obligation_graph.validate().ok,
+            f"invalid after decompose: {updated.obligation_graph.validate().errors}",
+        )
+
+    def test_decompose_unknown_obligation_raises(self) -> None:
+        workspace = self._workspace()
+        with self.assertRaises(KeyError):
+            workspace.decompose("ghost", ())
+
+    def test_register_accepted_fact_marks_obligation_and_records_provenance(
+        self,
+    ) -> None:
+        workspace = self._workspace()
+
+        updated = workspace.register_accepted_fact(
+            "root", statement="root proven", source_attempt_index=3
+        )
+
+        self.assertEqual(updated.version, workspace.version + 1)
+        obligation = updated.obligation_graph.by_id("root")
+        self.assertEqual(obligation.status, ObligationStatus.ACCEPTED)
+        self.assertEqual(len(updated.accepted_facts), 1)
+        fact = updated.accepted_facts[0]
+        self.assertEqual(fact.obligation_id, "root")
+        self.assertEqual(fact.obligation_version, 1)
+        self.assertEqual(fact.source_attempt_index, 3)
+
+    def test_register_accepted_fact_refuses_superseded_obligation(self) -> None:
+        workspace = self._workspace()
+        # Revise the root so its v1 becomes superseded; by_id resolves to v2.
+        revised_graph = workspace.obligation_graph.new_version("root")
+        from dataclasses import replace
+
+        revised_workspace = replace(workspace, obligation_graph=revised_graph)
+
+        # Force a superseded-only entry by registering against an id we then
+        # make dead: build a graph whose sole version of an id is superseded.
+        superseded_only = ProofObligation(
+            obligation_id="dead",
+            version=1,
+            status=ObligationStatus.SUPERSEDED,
+        )
+        bad_graph = ObligationGraph(
+            obligations=(
+                workspace.obligation_graph.root(),
+                superseded_only,
+            ),
+            root_obligation_id="root",
+        )
+        bad_workspace = replace(workspace, obligation_graph=bad_graph)
+
+        with self.assertRaises(ValueError):
+            bad_workspace.register_accepted_fact("dead", statement="stale")
+
+        # Sanity: registering against a live obligation still works.
+        self.assertTrue(
+            revised_workspace.register_accepted_fact(
+                "root", statement="ok"
+            ).obligation_graph.validate().ok
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
