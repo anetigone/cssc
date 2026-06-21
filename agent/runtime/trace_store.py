@@ -88,7 +88,7 @@ def result_events(
     """Convert a controller result into JSONL event dictionaries."""
 
     run_id = _run_id(result)
-    yield {
+    summary: dict[str, Any] = {
         "event": "run_summary",
         "run_id": run_id,
         "task": _task_payload(result.task),
@@ -102,6 +102,13 @@ def result_events(
         "metrics": _metrics_payload(result.metrics),
         "metadata": result.metadata,
     }
+    # Structured-mode runs attach a serialized ProofWorkspace under
+    # ``metadata["workspace"]``; minimal runs omit it. The payload is already a
+    # plain dict, so the trace store stays unaware of the workspace types.
+    workspace = workspace_payload(result.metadata.get("workspace"))
+    if workspace is not None:
+        summary["workspace"] = workspace
+    yield summary
     for attempt in result.attempts:
         yield {
             "event": "attempt",
@@ -148,6 +155,25 @@ def _metrics_payload(metrics: RunMetrics | None) -> dict[str, Any] | None:
     if metrics is None:
         return None
     return run_metrics_payload(metrics)
+
+
+def workspace_payload(workspace: Any) -> dict[str, Any] | None:
+    """Pass through a structured-run workspace snapshot, or ``None``.
+
+    The producer (a structured controller, added in a later phase) is expected
+    to place an already-serialized :class:`ProofWorkspace` dict under
+    ``ControllerResult.metadata["workspace"]``. Keeping serialization on the
+    producer side means the trace store imports no workspace types, so the
+    minimal loop's dependency graph is unchanged. Returns ``None`` for missing
+    or falsy payloads so the run_summary omits the key for minimal runs.
+    """
+    if not workspace:
+        return None
+    if isinstance(workspace, dict):
+        return workspace
+    # A live workspace object is not expected here; coerce defensively rather
+    # than crash the trace write.
+    return str(workspace)
 
 
 def _attempt_payload(
