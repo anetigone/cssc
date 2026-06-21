@@ -4,8 +4,9 @@ Phase 3 delivers the obligation-graph data structures but not the frontier
 search that fills them. The :class:`ArtifactAssembler` is the one structured
 component that runs *now*: once a workspace's active obligation subtree is
 fully accepted, the assembler rebuilds a single self-contained Lean source
-from the per-obligation artifacts and asks the checker to accept the whole
-thing one final time. This is the ``assemble_and_check`` step from
+from the per-obligation artifacts, asks the checker to accept the whole thing
+one final time, and applies the shared safety review. This is the
+``assemble_and_check`` step from
 ``tmp/plan1.md`` §12.
 
 It is deterministic and never raises on a blocked workspace: structural
@@ -20,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..search.safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
 from .base import BudgetSlice, CandidateEdit, CheckResult, ProofSystemAdapter, ProofTask
 from .workspace import (
     ObligationStatus,
@@ -57,6 +59,7 @@ class AssemblyResult:
     accepted: bool
     source: str
     check_result: CheckResult | None = None
+    safety_verdict: SafetyVerdict | None = None
     errors: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,6 +68,11 @@ class AssemblyResult:
             "source": self.source,
             "errors": list(self.errors),
             "check_result": self.check_result is not None,
+            "safety_accepted": (
+                self.safety_verdict.accepted
+                if self.safety_verdict is not None
+                else None
+            ),
         }
 
 
@@ -80,8 +88,9 @@ class ArtifactAssembler:
 
     When those hold it concatenates the artifacts in dependency order
     (dependencies first), wraps them in the workspace's root Lean statement so
-    the checker sees one coherent file, and runs ``adapter.check`` on the
-    result. Any precondition failure short-circuits to a blocked result.
+    the checker sees one coherent file, runs ``adapter.check``, and accepts only
+    if the safety reviewer also approves the result. Any precondition failure
+    short-circuits to a blocked result.
     """
 
     def assemble(
@@ -93,6 +102,7 @@ class ArtifactAssembler:
         task: ProofTask,
         check_workspace: Any = None,
         budget_slice: BudgetSlice | None = None,
+        safety_reviewer: SafetyReviewer | None = None,
     ) -> AssemblyResult:
         report = workspace.obligation_graph.validate()
         if not report.ok:
@@ -121,6 +131,11 @@ class ArtifactAssembler:
                     f"no artifact for accepted obligation "
                     f"{obligation.obligation_id!r}"
                 )
+            elif artifact.obligation_id != obligation.obligation_id:
+                errors.append(
+                    f"artifact mapped to {obligation.obligation_id!r} carries "
+                    f"obligation id {artifact.obligation_id!r}"
+                )
             elif artifact.obligation_version != obligation.version:
                 errors.append(
                     f"artifact for {obligation.obligation_id!r} pins version "
@@ -137,12 +152,29 @@ class ArtifactAssembler:
         check_result = self._run_check(
             adapter, task, edit, rendered, check_workspace, budget_slice
         )
-        accepted = bool(check_result.accepted)
-        errors = () if accepted else ("final whole-source recheck rejected the assembly",)
+        safety_verdict: SafetyVerdict | None = None
+        if check_result.accepted:
+            reviewer = safety_reviewer or StatementSafetyReviewer()
+            safety_verdict = reviewer.accepts(task, rendered, check_result)
+        accepted = bool(
+            check_result.accepted
+            and safety_verdict is not None
+            and safety_verdict.accepted
+        )
+        if not check_result.accepted:
+            errors = ("final whole-source recheck rejected the assembly",)
+        elif safety_verdict is not None and not safety_verdict.accepted:
+            errors = tuple(
+                f"final assembly safety review rejected: {reason}"
+                for reason in safety_verdict.reasons
+            )
+        else:
+            errors = ()
         return AssemblyResult(
             accepted=accepted,
             source=rendered,
             check_result=check_result,
+            safety_verdict=safety_verdict,
             errors=tuple(errors),
         )
 
@@ -157,13 +189,14 @@ class ArtifactAssembler:
     ) -> CheckResult:
         slice_ = budget_slice or BudgetSlice()
         if check_workspace is None:
-            # The adapter is stateless; render already produced the source, so
-            # write it to a throwaway file the checker can read.
             import tempfile
 
-            tmp = Path(tempfile.mkstemp(suffix=".lean")[1])
-            tmp.write_text(rendered, encoding="utf-8")
-            return adapter.check(tmp, slice_)
+            # Keep both the descriptor and file lifetime bounded. The returned
+            # CheckResult may retain the path as provenance after cleanup.
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp = Path(tmp_dir) / "assembly.lean"
+                tmp.write_text(rendered, encoding="utf-8")
+                return adapter.check(tmp, slice_)
         with check_workspace.materialize_candidate(
             task,
             candidate_id="assembly",

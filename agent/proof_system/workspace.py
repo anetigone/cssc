@@ -23,6 +23,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Sequence
 
+from .base import CheckResult, DiagnosticCategory
+
 if TYPE_CHECKING:
     # Avoid an eager import of the tasks package at module load; only the type
     # checker needs ``ProofTask`` for the ``initialize_from_task`` annotation.
@@ -125,8 +127,8 @@ class ObligationGraph:
     Obligations are stored as a tuple keyed by ``obligation_id`` (the latest
     non-superseded version wins the id slot; superseded versions are retained
     for provenance but resolved only by explicit lookup). The graph owns a
-    single root obligation that every other obligation must eventually depend
-    on; decomposition in later commits may add auxiliary obligations.
+    single root obligation whose dependency closure contains every auxiliary
+    obligation; decomposition may add further proof dependencies.
     """
 
     obligations: tuple[ProofObligation, ...] = ()
@@ -171,18 +173,27 @@ class ObligationGraph:
         )
 
     def with_obligation(self, obligation: ProofObligation) -> ObligationGraph:
-        """Return a new graph with ``obligation`` replacing any prior version.
+        """Return a graph with one exact obligation version inserted/replaced.
 
-        If an obligation with the same id already exists, it is superseded by
-        being overwritten in the tuple; superseded versions are only kept when
-        explicitly inserted via :meth:`with_obligations`.
+        Versions with the same id but a different version number are retained
+        for provenance. Version lifecycle transitions therefore replace only
+        the exact ``(obligation_id, version)`` slot.
         """
-        others = tuple(
-            obligation_
-            for obligation_ in self.obligations
-            if obligation_.obligation_id != obligation.obligation_id
-        )
-        return replace(self, obligations=(*others, obligation))
+        updated: list[ProofObligation] = []
+        replaced = False
+        for current in self.obligations:
+            if (
+                current.obligation_id == obligation.obligation_id
+                and current.version == obligation.version
+            ):
+                if not replaced:
+                    updated.append(obligation)
+                    replaced = True
+                continue
+            updated.append(current)
+        if not replaced:
+            updated.append(obligation)
+        return replace(self, obligations=tuple(updated))
 
     def validate(self) -> ObligationGraphReport:
         """Check DAG invariants without raising.
@@ -193,14 +204,38 @@ class ObligationGraph:
         * every ``dependency_id`` refers to an obligation in the graph;
         * no active obligation depends on a superseded version;
         * the dependency edges form a DAG (no cycles);
-        * every non-root active obligation reaches the root through its
-          dependency closure.
+        * every non-root active obligation is reachable from the root through
+          the root's proof-dependency closure.
 
         Returns a report; ``ok`` is ``True`` iff ``errors`` is empty.
         """
         errors: list[str] = []
 
         ids = {obligation.obligation_id for obligation in self.obligations}
+        seen_versions: set[tuple[str, int]] = set()
+        active_counts: dict[str, int] = {}
+        for obligation in self.obligations:
+            key = (obligation.obligation_id, obligation.version)
+            if obligation.version < 1:
+                errors.append(
+                    f"obligation {obligation.obligation_id!r} has invalid "
+                    f"version {obligation.version}"
+                )
+            if key in seen_versions:
+                errors.append(
+                    f"duplicate obligation version {obligation.obligation_id!r} "
+                    f"v{obligation.version}"
+                )
+            seen_versions.add(key)
+            if obligation.status != ObligationStatus.SUPERSEDED:
+                active_counts[obligation.obligation_id] = (
+                    active_counts.get(obligation.obligation_id, 0) + 1
+                )
+        for obligation_id, count in active_counts.items():
+            if count > 1:
+                errors.append(
+                    f"obligation {obligation_id!r} has {count} active versions"
+                )
         active_by_id = {
             obligation.obligation_id: obligation
             for obligation in self.obligations
@@ -239,16 +274,18 @@ class ObligationGraph:
         if cycle is not None:
             errors.append(f"dependency cycle detected: {' -> '.join(cycle)}")
 
-        # Every active non-root obligation reaches the root.
+        # Every active obligation belongs to the root's proof dependency
+        # closure. Edges point from an obligation to facts it depends on, so
+        # decomposition makes the parent/root depend on its helper children.
         if root is not None:
-            reachable = _reverse_reachable(root.obligation_id, active_by_id)
+            reachable = _dependency_reachable(root.obligation_id, active_by_id)
             for obligation in active_by_id.values():
                 if obligation.obligation_id == root.obligation_id:
                     continue
                 if obligation.obligation_id not in reachable:
                     errors.append(
-                        f"obligation {obligation.obligation_id!r} cannot reach "
-                        f"root obligation {root.obligation_id!r}"
+                        f"obligation {obligation.obligation_id!r} cannot be "
+                        f"reached from root obligation {root.obligation_id!r}"
                     )
 
         return ObligationGraphReport(ok=not errors, errors=tuple(errors))
@@ -294,14 +331,8 @@ class ObligationGraph:
             ),
             rationale=(previous.rationale if rationale is None else rationale),
         )
-        others = tuple(
-            obligation_
-            for obligation_ in self.obligations
-            if obligation_.obligation_id != obligation_id
-        )
-        return replace(
-            self, obligations=(*others, superseded, successor)
-        )
+        graph = self.with_obligation(superseded)
+        return replace(graph, obligations=(*graph.obligations, successor))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -372,8 +403,9 @@ class VerifiedFact:
     obligation_id: str
     obligation_version: int
     statement: str
-    source_attempt_index: int | None = None
-    checker_category: str = ""
+    source_attempt_index: int
+    checker_category: str
+    safety_accepted: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -382,6 +414,7 @@ class VerifiedFact:
             "statement": self.statement,
             "source_attempt_index": self.source_attempt_index,
             "checker_category": self.checker_category,
+            "safety_accepted": self.safety_accepted,
         }
 
 
@@ -389,9 +422,10 @@ def verified_fact_from_dict(data: dict[str, Any]) -> VerifiedFact:
     return VerifiedFact(
         obligation_id=data["obligation_id"],
         obligation_version=int(data["obligation_version"]),
-        statement=data.get("statement", ""),
-        source_attempt_index=data.get("source_attempt_index"),
-        checker_category=data.get("checker_category", ""),
+        statement=data["statement"],
+        source_attempt_index=int(data["source_attempt_index"]),
+        checker_category=data["checker_category"],
+        safety_accepted=bool(data["safety_accepted"]),
     )
 
 
@@ -454,11 +488,10 @@ class ProofWorkspace:
     ) -> ProofWorkspace:
         """Split an obligation into auxiliary child obligations.
 
-        The parent stays in the graph (its status is unchanged); each child is
-        inserted with its declared ``dependency_ids``. The new graph is
-        re-validated and the result carries any structural errors forward via
-        the returned workspace's graph report — decomposition does not raise,
-        so a caller that decomposes speculatively can inspect the report.
+        Each child is inserted with its own declared dependencies, then the
+        parent receives a new version that depends on those children. This is
+        the proof-dependency direction: the parent cannot be accepted until
+        all child obligations are available.
 
         Phase 3 only wires the graph mutation; deciding *when* to decompose is
         the frontier policy's job (Phase 6).
@@ -466,8 +499,23 @@ class ProofWorkspace:
         graph = self.obligation_graph
         if graph.by_id(obligation_id) is None:
             raise KeyError(f"unknown obligation {obligation_id!r}")
+        existing_ids = {
+            obligation.obligation_id for obligation in graph.obligations
+        }
+        child_ids: list[str] = []
         for child in children:
+            if child.obligation_id == obligation_id:
+                raise ValueError("an obligation cannot be its own decomposition child")
+            if child.obligation_id in existing_ids or child.obligation_id in child_ids:
+                raise ValueError(
+                    f"duplicate active child obligation {child.obligation_id!r}"
+                )
             graph = graph.with_obligation(child)
+            child_ids.append(child.obligation_id)
+        parent = graph.by_id(obligation_id)
+        assert parent is not None
+        dependencies = tuple(dict.fromkeys((*parent.dependency_ids, *child_ids)))
+        graph = graph.new_version(obligation_id, dependency_ids=dependencies)
         return self.successor(obligation_graph=graph)
 
     def register_accepted_fact(
@@ -475,14 +523,14 @@ class ProofWorkspace:
         obligation_id: str,
         *,
         statement: str,
-        source_attempt_index: int | None = None,
-        checker_category: str = "",
+        source_attempt_index: int,
+        check_result: CheckResult,
+        safety_accepted: bool,
     ) -> ProofWorkspace:
         """Mark an obligation ACCEPTED and record a provenance-carrying fact.
 
-        The fact is pinned to the obligation's current version, and the
-        obligation itself transitions to ``ACCEPTED``. A superseded obligation
-        cannot be registered: doing so would attach a fact to stale provenance.
+        The fact is pinned to the obligation's current version and may only be
+        registered from a checker-accepted, safety-accepted attempt.
         """
         graph = self.obligation_graph
         obligation = graph.by_id(obligation_id)
@@ -493,6 +541,16 @@ class ProofWorkspace:
                 f"cannot register a fact against superseded obligation "
                 f"{obligation_id!r}"
             )
+        if not check_result.accepted:
+            raise ValueError("cannot register a fact from a rejected checker result")
+        if check_result.category != DiagnosticCategory.PROOF_ACCEPTED:
+            raise ValueError(
+                "accepted checker result must use the proof_accepted category"
+            )
+        if not safety_accepted:
+            raise ValueError("cannot register a fact rejected by the safety reviewer")
+        if source_attempt_index < 0:
+            raise ValueError("source_attempt_index must be non-negative")
         accepted = replace(obligation, status=ObligationStatus.ACCEPTED)
         new_graph = graph.with_obligation(accepted)
         fact = VerifiedFact(
@@ -500,7 +558,8 @@ class ProofWorkspace:
             obligation_version=obligation.version,
             statement=statement,
             source_attempt_index=source_attempt_index,
-            checker_category=checker_category,
+            checker_category=check_result.category.value,
+            safety_accepted=True,
         )
         accepted_facts = (*self.accepted_facts, fact)
         return self.successor(
@@ -626,24 +685,11 @@ def _detect_cycle(
     return None
 
 
-def _reverse_reachable(
+def _dependency_reachable(
     source_id: str,
     by_id: dict[str, ProofObligation],
 ) -> set[str]:
-    """Return ids that can reach ``source_id`` following dependency edges.
-
-    If ``B`` depends on ``A`` (edge ``B -> A``), then ``A`` is reached from
-    ``B`` by walking the edge backwards. Starting at the root and walking
-    backwards yields every obligation that (forwards) reaches the root.
-    """
-    dependents: dict[str, list[str]] = {
-        obligation_id: [] for obligation_id in by_id
-    }
-    for obligation_id, obligation in by_id.items():
-        for dependency_id in obligation.dependency_ids:
-            if dependency_id in dependents:
-                dependents[dependency_id].append(obligation_id)
-
+    """Return the proof dependencies reachable from ``source_id``."""
     visited: set[str] = set()
     frontier = [source_id]
     while frontier:
@@ -651,5 +697,11 @@ def _reverse_reachable(
         if node_id in visited:
             continue
         visited.add(node_id)
-        frontier.extend(dependents.get(node_id, []))
+        obligation = by_id.get(node_id)
+        if obligation is not None:
+            frontier.extend(
+                dependency_id
+                for dependency_id in obligation.dependency_ids
+                if dependency_id in by_id
+            )
     return visited

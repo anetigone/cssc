@@ -100,10 +100,10 @@ agent/
 ## Phase 3 ProofWorkspace 与 Obligation DAG
 
 - 结构化状态原语集中在 `agent/proof_system/workspace.py`（与 `ProofTask`/`CheckResult` 同模块，proof-system-neutral 纯数据）：`ProofObligation`、`ObligationGraph`、`ProofWorkspace`、`FormalSpecification`、`VerifiedFact`，全部 frozen + `to_dict`/`from_dict`。
-- `ObligationGraph.validate()` 确定性检查无环、依赖存在、活跃依赖不指向 SUPERSEDED 版本、根存在且可由所有非根义务经依赖闭包到达；返回 `ObligationGraphReport`，不抛异常。
+- `ObligationGraph.validate()` 确定性检查无环、依赖存在、活跃依赖不指向 SUPERSEDED 版本、根存在且根的证明依赖闭包覆盖所有活跃义务；`dependency_ids` 从使用者指向其所需前提（root → helper）；返回 `ObligationGraphReport`，不抛异常。
 - 版本规则：statement/assumption/dependency 变化走 `ObligationGraph.new_version`，旧实例置 SUPERSEDED 并保留作 provenance；`by_id` 只解析到最新非 SUPERSEDED 版本。
-- `initialize_from_task` 从 `ProofTask` 造单 root obligation 的合法工作区，是 structured 模式入口；`decompose` 加辅助义务并重校验 DAG，`register_accepted_fact` 把 obligation 置 ACCEPTED 并记录带 obligation version 的 `VerifiedFact`，拒绝登记到 SUPERSEDED 版本。
-- `agent/proof_system/assembler.py` 的 `ArtifactAssembler.assemble` 在所有活跃 obligation 均 ACCEPTED 且带版本匹配的 `LeanArtifact` 时，按依赖序拼装并整体复检一次；前置失败返回 blocked `AssemblyResult`，不抛。
+- `initialize_from_task` 从 `ProofTask` 造单 root obligation 的合法工作区，是 structured 模式入口；`decompose` 加辅助义务并创建依赖这些子义务的新 parent 版本；`register_accepted_fact` 只接受 checker 与 safety 均通过的证据，把 obligation 置 ACCEPTED 并记录带 obligation version 的 `VerifiedFact`。
+- `agent/proof_system/assembler.py` 的 `ArtifactAssembler.assemble` 在所有活跃 obligation 均 ACCEPTED 且 artifact id/version 匹配时，按依赖序拼装、整体复检并执行 safety review；前置失败返回 blocked `AssemblyResult`，不抛。
 - 序列化产物经 `ControllerResult.metadata["workspace"]` 进入 trace，`trace_store.workspace_payload` 透传；minimal 运行不写该键，`ProofController` 不 import workspace 模块，因此 minimal 不承担 DAG 成本。
 - 本阶段只交付数据结构 + 序列化 + trace + DAG 规则 + final-assembly 复检 + root 初始化。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`：驱动这些状态的 frontier / AND-OR 搜索是 Phase 4-6，未提前引入。
 

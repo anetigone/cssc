@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from agent.proof_system.base import CheckResult, DiagnosticCategory
 from agent.proof_system.workspace import (
     FormalSpecification,
     ObligationGraph,
@@ -34,6 +35,18 @@ def _obligation(
         lean_statement=lean_statement,
         dependency_ids=dependency_ids,
         status=status,
+    )
+
+
+def _check_result(*, accepted: bool = True) -> CheckResult:
+    return CheckResult(
+        accepted=accepted,
+        category=(
+            DiagnosticCategory.PROOF_ACCEPTED
+            if accepted
+            else DiagnosticCategory.UNSOLVED_GOALS
+        ),
+        raw_output="",
     )
 
 
@@ -78,15 +91,17 @@ class ObligationGraphTests(unittest.TestCase):
         self.assertEqual(graph.active(), (root,))
         self.assertEqual(graph.superseded(), (helper,))
 
-    def test_with_obligation_replaces_prior_version(self) -> None:
+    def test_with_obligation_replaces_only_exact_version(self) -> None:
         root = _obligation(obligation_id="root", version=1)
         graph = ObligationGraph(obligations=(root,), root_obligation_id="root")
 
-        root_v2 = _obligation(obligation_id="root", version=2)
-        updated = graph.with_obligation(root_v2)
+        accepted_root = _obligation(
+            obligation_id="root", version=1, status=ObligationStatus.ACCEPTED
+        )
+        updated = graph.with_obligation(accepted_root)
 
         self.assertEqual(len(updated.obligations), 1)
-        self.assertIs(updated.by_id("root"), root_v2)
+        self.assertIs(updated.by_id("root"), accepted_root)
 
     def test_round_trip(self) -> None:
         root = _obligation(obligation_id="root")
@@ -106,8 +121,8 @@ class ObligationGraphTests(unittest.TestCase):
 
 
 def _valid_graph() -> ObligationGraph:
-    root = _obligation(obligation_id="root")
-    helper = _obligation(obligation_id="helper", dependency_ids=("root",))
+    root = _obligation(obligation_id="root", dependency_ids=("helper",))
+    helper = _obligation(obligation_id="helper")
     return ObligationGraph(
         obligations=(root, helper),
         root_obligation_id="root",
@@ -132,9 +147,9 @@ class ObligationGraphValidationTests(unittest.TestCase):
         self.assertTrue(any("missing" in e for e in report.errors))
 
     def test_missing_dependency_reported(self) -> None:
-        helper = _obligation(obligation_id="helper", dependency_ids=("ghost",))
+        root = _obligation(obligation_id="root", dependency_ids=("ghost",))
         graph = ObligationGraph(
-            obligations=(_obligation(obligation_id="root"), helper),
+            obligations=(root,),
             root_obligation_id="root",
         )
 
@@ -154,12 +169,12 @@ class ObligationGraphValidationTests(unittest.TestCase):
         self.assertTrue(any("cycle" in e for e in report.errors))
 
     def test_unreachable_from_root_reported(self) -> None:
-        root = _obligation(obligation_id="root")
-        orphan = _obligation(obligation_id="orphan", dependency_ids=("root",))
-        # An island that neither depends on root nor is depended on by root.
+        root = _obligation(obligation_id="root", dependency_ids=("helper",))
+        helper = _obligation(obligation_id="helper")
+        # An island outside the root's proof-dependency closure.
         island = _obligation(obligation_id="island")
         graph = ObligationGraph(
-            obligations=(root, orphan, island),
+            obligations=(root, helper, island),
             root_obligation_id="root",
         )
 
@@ -198,6 +213,37 @@ class ObligationGraphVersioningTests(unittest.TestCase):
         self.assertTrue(
             report.ok, f"graph invalid after new_version: {report.errors}"
         )
+
+    def test_repeated_versions_preserve_full_history(self) -> None:
+        graph = ObligationGraph(
+            obligations=(_obligation(obligation_id="root", version=1),),
+            root_obligation_id="root",
+        )
+
+        updated = graph.new_version("root").new_version("root")
+
+        self.assertEqual(
+            [(o.version, o.status) for o in updated.obligations],
+            [
+                (1, ObligationStatus.SUPERSEDED),
+                (2, ObligationStatus.SUPERSEDED),
+                (3, ObligationStatus.OPEN),
+            ],
+        )
+
+    def test_multiple_active_versions_are_invalid(self) -> None:
+        graph = ObligationGraph(
+            obligations=(
+                _obligation(obligation_id="root", version=1),
+                _obligation(obligation_id="root", version=2),
+            ),
+            root_obligation_id="root",
+        )
+
+        report = graph.validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("active versions" in error for error in report.errors))
 
     def test_active_dependency_on_superseded_reported(self) -> None:
         root = _obligation(obligation_id="root", version=1)
@@ -285,7 +331,6 @@ class WorkspaceMutationTests(unittest.TestCase):
         child = ProofObligation(
             obligation_id="helper",
             version=1,
-            dependency_ids=("root",),
             lean_statement="lemma helper : True := by\n  trivial",
         )
 
@@ -294,6 +339,12 @@ class WorkspaceMutationTests(unittest.TestCase):
         self.assertEqual(updated.version, workspace.version + 1)
         self.assertEqual(updated.parent_version, workspace.version)
         self.assertIsNotNone(updated.obligation_graph.by_id("helper"))
+        root = updated.obligation_graph.by_id("root")
+        self.assertEqual(root.version, 2)
+        self.assertEqual(root.dependency_ids, ("helper",))
+        self.assertEqual(
+            [o.version for o in updated.obligation_graph.superseded()], [1]
+        )
         # Decomposition must keep the DAG invariant intact.
         self.assertTrue(
             updated.obligation_graph.validate().ok,
@@ -311,7 +362,11 @@ class WorkspaceMutationTests(unittest.TestCase):
         workspace = self._workspace()
 
         updated = workspace.register_accepted_fact(
-            "root", statement="root proven", source_attempt_index=3
+            "root",
+            statement="root proven",
+            source_attempt_index=3,
+            check_result=_check_result(),
+            safety_accepted=True,
         )
 
         self.assertEqual(updated.version, workspace.version + 1)
@@ -322,6 +377,8 @@ class WorkspaceMutationTests(unittest.TestCase):
         self.assertEqual(fact.obligation_id, "root")
         self.assertEqual(fact.obligation_version, 1)
         self.assertEqual(fact.source_attempt_index, 3)
+        self.assertEqual(fact.checker_category, "proof_accepted")
+        self.assertTrue(fact.safety_accepted)
 
     def test_register_accepted_fact_refuses_superseded_obligation(self) -> None:
         workspace = self._workspace()
@@ -348,13 +405,79 @@ class WorkspaceMutationTests(unittest.TestCase):
         bad_workspace = replace(workspace, obligation_graph=bad_graph)
 
         with self.assertRaises(ValueError):
-            bad_workspace.register_accepted_fact("dead", statement="stale")
+            bad_workspace.register_accepted_fact(
+                "dead",
+                statement="stale",
+                source_attempt_index=1,
+                check_result=_check_result(),
+                safety_accepted=True,
+            )
 
         # Sanity: registering against a live obligation still works.
         self.assertTrue(
             revised_workspace.register_accepted_fact(
-                "root", statement="ok"
+                "root",
+                statement="ok",
+                source_attempt_index=1,
+                check_result=_check_result(),
+                safety_accepted=True,
             ).obligation_graph.validate().ok
+        )
+
+    def test_register_accepted_fact_requires_checker_and_safety_acceptance(self) -> None:
+        workspace = self._workspace()
+
+        with self.assertRaisesRegex(ValueError, "checker"):
+            workspace.register_accepted_fact(
+                "root",
+                statement="not proven",
+                source_attempt_index=1,
+                check_result=_check_result(accepted=False),
+                safety_accepted=True,
+            )
+        with self.assertRaisesRegex(ValueError, "safety"):
+            workspace.register_accepted_fact(
+                "root",
+                statement="unsafe",
+                source_attempt_index=1,
+                check_result=_check_result(),
+                safety_accepted=False,
+            )
+        inconsistent = CheckResult(
+            accepted=True,
+            category=DiagnosticCategory.UNSOLVED_GOALS,
+            raw_output="",
+        )
+        with self.assertRaisesRegex(ValueError, "proof_accepted"):
+            workspace.register_accepted_fact(
+                "root",
+                statement="inconsistent",
+                source_attempt_index=1,
+                check_result=inconsistent,
+                safety_accepted=True,
+            )
+
+    def test_accepting_latest_version_preserves_superseded_history(self) -> None:
+        workspace = self._workspace()
+        graph = workspace.obligation_graph.new_version("root").new_version("root")
+        from dataclasses import replace
+
+        workspace = replace(workspace, obligation_graph=graph)
+        updated = workspace.register_accepted_fact(
+            "root",
+            statement="root proven",
+            source_attempt_index=3,
+            check_result=_check_result(),
+            safety_accepted=True,
+        )
+
+        self.assertEqual(
+            [(o.version, o.status) for o in updated.obligation_graph.obligations],
+            [
+                (1, ObligationStatus.SUPERSEDED),
+                (2, ObligationStatus.SUPERSEDED),
+                (3, ObligationStatus.ACCEPTED),
+            ],
         )
 
 

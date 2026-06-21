@@ -36,6 +36,7 @@ class _AcceptIfContainsAdapter(ProofSystemAdapter):
     def __init__(self, accepted_token: str = "trivial") -> None:
         self.accepted_token = accepted_token
         self.checked_sources: list[str] = []
+        self.checked_paths: list[Path] = []
 
     def render_candidate(self, task: ProofTask, candidate_edit: CandidateEdit) -> str:
         return task.source_template.replace(task.hole_marker, candidate_edit.text)
@@ -43,6 +44,7 @@ class _AcceptIfContainsAdapter(ProofSystemAdapter):
     def check(self, candidate_file: Path, budget_slice: BudgetSlice) -> CheckResult:
         source = candidate_file.read_text(encoding="utf-8")
         self.checked_sources.append(source)
+        self.checked_paths.append(candidate_file)
         if self.accepted_token in source:
             return CheckResult(
                 accepted=True,
@@ -160,6 +162,25 @@ class ArtifactAssemblerTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertTrue(any("pins version" in error for error in result.errors))
 
+    def test_blocks_when_artifact_obligation_id_mismatched(self) -> None:
+        task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
+        workspace = _accepted_root_workspace(task)
+        artifacts = {
+            task.task_id: LeanArtifact(
+                source="trivial", obligation_id="other", obligation_version=1
+            )
+        }
+
+        result = ArtifactAssembler().assemble(
+            workspace,
+            artifacts,
+            adapter=_AcceptIfContainsAdapter(),
+            task=task,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("obligation id" in error for error in result.errors))
+
     def test_blocks_when_recheck_rejects(self) -> None:
         task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
         workspace = _accepted_root_workspace(task)
@@ -180,6 +201,48 @@ class ArtifactAssemblerTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertTrue(any("recheck rejected" in error for error in result.errors))
+
+    def test_blocks_when_checker_accepts_but_safety_rejects(self) -> None:
+        task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
+        workspace = _accepted_root_workspace(task)
+        artifacts = {
+            task.task_id: LeanArtifact(
+                source="sorry", obligation_id=task.task_id, obligation_version=1
+            )
+        }
+        adapter = _AcceptIfContainsAdapter(accepted_token="sorry")
+
+        result = ArtifactAssembler().assemble(
+            workspace,
+            artifacts,
+            adapter=adapter,
+            task=task,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertTrue(result.check_result.accepted)
+        self.assertFalse(result.safety_verdict.accepted)
+        self.assertTrue(any("safety review" in error for error in result.errors))
+
+    def test_temporary_check_file_is_cleaned_up(self) -> None:
+        task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
+        workspace = _accepted_root_workspace(task)
+        artifacts = {
+            task.task_id: LeanArtifact(
+                source="trivial", obligation_id=task.task_id, obligation_version=1
+            )
+        }
+        adapter = _AcceptIfContainsAdapter()
+
+        result = ArtifactAssembler().assemble(
+            workspace,
+            artifacts,
+            adapter=adapter,
+            task=task,
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertFalse(adapter.checked_paths[0].exists())
 
 
 if __name__ == "__main__":
