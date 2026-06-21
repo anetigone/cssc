@@ -21,7 +21,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # Avoid an eager import of the tasks package at module load; only the type
+    # checker needs ``ProofTask`` for the ``initialize_from_task`` annotation.
+    from ..tasks.types import ProofTask
 
 
 class ObligationStatus(str, Enum):
@@ -312,6 +317,178 @@ def obligation_graph_from_dict(data: dict[str, Any]) -> ObligationGraph:
     return ObligationGraph(
         obligations=obligations,
         root_obligation_id=data.get("root_obligation_id", ""),
+    )
+
+
+class WorkspaceStatus(str, Enum):
+    """Lifecycle state of a :class:`ProofWorkspace`."""
+
+    INITIALIZING = "initializing"
+    SEARCHING = "searching"
+    ASSEMBLING = "assembling"
+    ACCEPTED = "accepted"
+    BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class FormalSpecification:
+    """The fixed target of a structured run: original problem + Lean statement.
+
+    Phase 3 only needs enough structure to seed the root obligation and let the
+    final assembler rebuild the full source. NL↔Lean alignment and a richer
+    specification (definitions, hypotheses, main goal) are Phase 4+ concerns;
+    here it is a thin carrier of provenance.
+    """
+
+    statement_nl: str = ""
+    lean_statement: str = ""
+    source_task_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "statement_nl": self.statement_nl,
+            "lean_statement": self.lean_statement,
+            "source_task_id": self.source_task_id,
+        }
+
+
+def formal_specification_from_dict(data: dict[str, Any]) -> FormalSpecification:
+    return FormalSpecification(
+        statement_nl=data.get("statement_nl", ""),
+        lean_statement=data.get("lean_statement", ""),
+        source_task_id=data.get("source_task_id", ""),
+    )
+
+
+@dataclass(frozen=True)
+class VerifiedFact:
+    """A checker-verified conclusion reusable across branches.
+
+    Provenance is mandatory: an accepted fact always carries the obligation
+    version and the attempt that produced it, so a later revision of the
+    obligation cannot silently reuse a stale verification.
+    """
+
+    obligation_id: str
+    obligation_version: int
+    statement: str
+    source_attempt_index: int | None = None
+    checker_category: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "obligation_id": self.obligation_id,
+            "obligation_version": self.obligation_version,
+            "statement": self.statement,
+            "source_attempt_index": self.source_attempt_index,
+            "checker_category": self.checker_category,
+        }
+
+
+def verified_fact_from_dict(data: dict[str, Any]) -> VerifiedFact:
+    return VerifiedFact(
+        obligation_id=data["obligation_id"],
+        obligation_version=int(data["obligation_version"]),
+        statement=data.get("statement", ""),
+        source_attempt_index=data.get("source_attempt_index"),
+        checker_category=data.get("checker_category", ""),
+    )
+
+
+@dataclass(frozen=True)
+class ProofWorkspace:
+    """The authoritative structured-mode search state.
+
+    Field shape follows the Phase 3 design note (``tmp/plan1.md`` §3). A
+    workspace is immutable: every mutation (decomposition, accepted fact, new
+    obligation version) returns a successor workspace with a bumped ``version``
+    and ``parent_version`` pointing back. The minimal loop never constructs one.
+    """
+
+    workspace_id: str
+    version: int = 1
+    parent_version: int | None = None
+
+    specification: FormalSpecification = field(default_factory=FormalSpecification)
+    obligation_graph: ObligationGraph = field(default_factory=ObligationGraph)
+    accepted_facts: tuple[VerifiedFact, ...] = ()
+
+    root_obligation_ids: tuple[str, ...] = ()
+    status: WorkspaceStatus = WorkspaceStatus.INITIALIZING
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workspace_id": self.workspace_id,
+            "version": self.version,
+            "parent_version": self.parent_version,
+            "specification": self.specification.to_dict(),
+            "obligation_graph": self.obligation_graph.to_dict(),
+            "accepted_facts": [fact.to_dict() for fact in self.accepted_facts],
+            "root_obligation_ids": list(self.root_obligation_ids),
+            "status": self.status.value,
+        }
+
+
+def workspace_from_dict(data: dict[str, Any]) -> ProofWorkspace:
+    return ProofWorkspace(
+        workspace_id=data["workspace_id"],
+        version=int(data.get("version", 1)),
+        parent_version=data.get("parent_version"),
+        specification=formal_specification_from_dict(
+            data.get("specification", {}) or {}
+        ),
+        obligation_graph=obligation_graph_from_dict(
+            data.get("obligation_graph", {}) or {}
+        ),
+        accepted_facts=tuple(
+            verified_fact_from_dict(item) for item in data.get("accepted_facts", ())
+        ),
+        root_obligation_ids=tuple(data.get("root_obligation_ids", ())),
+        status=WorkspaceStatus(
+            data.get("status", WorkspaceStatus.INITIALIZING.value)
+        ),
+    )
+
+
+def initialize_from_task(task: ProofTask) -> ProofWorkspace:
+    """Seed a single-root workspace from a checker-ready :class:`ProofTask`.
+
+    The structured run begins with exactly one root obligation derived from the
+    task's verifier-facing source. The root ``lean_statement`` is the full
+    ``source_template`` (the hole marker stays in place; a later phase replaces
+    it with a proved artifact), and ``statement_nl`` is taken from the task's
+    natural-language provenance in metadata when present. Phase 3 does not
+    decompose automatically — decomposition is an explicit later action.
+    """
+    metadata = dict(task.metadata)
+    statement_nl = str(metadata.get("natural_language_problem") or "").strip()
+
+    root = ProofObligation(
+        obligation_id=task.task_id,
+        version=1,
+        title=task.task_id,
+        statement_nl=statement_nl,
+        lean_statement=task.source_template,
+        status=ObligationStatus.OPEN,
+    )
+    graph = ObligationGraph(
+        obligations=(root,),
+        root_obligation_id=task.task_id,
+    )
+    specification = FormalSpecification(
+        statement_nl=statement_nl,
+        lean_statement=task.source_template,
+        source_task_id=task.task_id,
+    )
+    return ProofWorkspace(
+        workspace_id=task.task_id,
+        version=1,
+        parent_version=None,
+        specification=specification,
+        obligation_graph=graph,
+        accepted_facts=(),
+        root_obligation_ids=(task.task_id,),
+        status=WorkspaceStatus.SEARCHING,
     )
 
 

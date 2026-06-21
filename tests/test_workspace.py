@@ -3,13 +3,19 @@ from __future__ import annotations
 import unittest
 
 from agent.proof_system.workspace import (
+    FormalSpecification,
     ObligationGraph,
     ObligationGraphReport,
     ObligationStatus,
     ProofObligation,
+    ProofWorkspace,
+    WorkspaceStatus,
+    initialize_from_task,
     obligation_from_dict,
     obligation_graph_from_dict,
+    workspace_from_dict,
 )
+from agent.tasks.types import ProofTask
 
 
 def _obligation(
@@ -219,6 +225,51 @@ class ObligationGraphVersioningTests(unittest.TestCase):
 
         self.assertFalse(report.ok)
         self.assertTrue(any("superseded" in e for e in report.errors))
+
+
+class ProofWorkspaceTests(unittest.TestCase):
+    def test_round_trip(self) -> None:
+        root = _obligation(obligation_id="root")
+        graph = ObligationGraph(obligations=(root,), root_obligation_id="root")
+        workspace = ProofWorkspace(
+            workspace_id="run-1",
+            specification=FormalSpecification(statement_nl="show True"),
+            obligation_graph=graph,
+            root_obligation_ids=("root",),
+            status=WorkspaceStatus.SEARCHING,
+        )
+
+        restored = workspace_from_dict(workspace.to_dict())
+
+        self.assertEqual(restored.workspace_id, "run-1")
+        self.assertEqual(restored.version, 1)
+        self.assertEqual(restored.status, WorkspaceStatus.SEARCHING)
+        self.assertEqual(restored.root_obligation_ids, ("root",))
+        self.assertEqual(restored.obligation_graph.root().obligation_id, "root")
+        self.assertEqual(restored.specification.statement_nl, "show True")
+
+    def test_initialize_from_task_seeds_single_root(self) -> None:
+        task = ProofTask(
+            task_id="demo",
+            source_template="theorem demo : True := by\n  {{proof}}\n",
+            metadata={"natural_language_problem": "prove True"},
+        )
+
+        workspace = initialize_from_task(task)
+
+        self.assertEqual(workspace.workspace_id, "demo")
+        self.assertEqual(workspace.version, 1)
+        self.assertIsNone(workspace.parent_version)
+        self.assertEqual(workspace.root_obligation_ids, ("demo",))
+        self.assertEqual(workspace.status, WorkspaceStatus.SEARCHING)
+        root = workspace.obligation_graph.root()
+        self.assertIsNotNone(root)
+        assert root is not None
+        self.assertEqual(root.version, 1)
+        self.assertEqual(root.statement_nl, "prove True")
+        self.assertEqual(root.lean_statement, task.source_template)
+        # The freshly seeded graph must satisfy the DAG invariant.
+        self.assertTrue(workspace.obligation_graph.validate().ok)
 
 
 if __name__ == "__main__":
