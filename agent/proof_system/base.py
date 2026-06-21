@@ -97,6 +97,33 @@ class ProgressSignal:
     moved_to_semantic_obligation: bool = False
     features: dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "accepted_prefix_chars": self.accepted_prefix_chars,
+            "goal_count_delta": self.goal_count_delta,
+            "goal_size_delta": self.goal_size_delta,
+            "diagnostic_category": self.diagnostic_category.value,
+            "introduced_obligations": self.introduced_obligations,
+            "moved_to_semantic_obligation": self.moved_to_semantic_obligation,
+            "features": dict(self.features),
+        }
+
+
+def progress_signal_from_dict(data: dict[str, Any]) -> ProgressSignal:
+    return ProgressSignal(
+        accepted_prefix_chars=int(data.get("accepted_prefix_chars", 0)),
+        goal_count_delta=data.get("goal_count_delta"),
+        goal_size_delta=data.get("goal_size_delta"),
+        diagnostic_category=DiagnosticCategory(
+            data.get("diagnostic_category", DiagnosticCategory.UNKNOWN.value)
+        ),
+        introduced_obligations=bool(data.get("introduced_obligations", False)),
+        moved_to_semantic_obligation=bool(
+            data.get("moved_to_semantic_obligation", False)
+        ),
+        features=dict(data.get("features", {}) or {}),
+    )
+
 
 @dataclass(frozen=True)
 class CheckResult:
