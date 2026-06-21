@@ -8,6 +8,7 @@ from agent.proof_system.workspace import (
     ObligationGraph,
     ObligationGraphReport,
     ObligationStatus,
+    ProofBranch,
     ProofObligation,
     ProofWorkspace,
     WorkspaceStatus,
@@ -294,6 +295,36 @@ class ProofWorkspaceTests(unittest.TestCase):
         self.assertEqual(restored.obligation_graph.root().obligation_id, "root")
         self.assertEqual(restored.specification.statement_nl, "show True")
 
+    def test_round_trip_preserves_branches(self) -> None:
+        root = _obligation(obligation_id="root")
+        graph = ObligationGraph(obligations=(root,), root_obligation_id="root")
+        branch = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+        )
+        workspace = ProofWorkspace(
+            workspace_id="run-1",
+            specification=FormalSpecification(statement_nl="show True"),
+            obligation_graph=graph,
+            branches=(branch,),
+            root_obligation_ids=("root",),
+            status=WorkspaceStatus.SEARCHING,
+        )
+
+        restored = workspace_from_dict(workspace.to_dict())
+
+        self.assertEqual(restored.branches, (branch,))
+        # Default-constructed workspaces carry no branches.
+        seeded = initialize_from_task(
+            ProofTask(
+                task_id="demo",
+                source_template="theorem demo : True := by\n  {{proof}}\n",
+            )
+        )
+        self.assertEqual(seeded.branches, ())
+        self.assertEqual(workspace_from_dict(seeded.to_dict()).branches, ())
+
     def test_initialize_from_task_seeds_single_root(self) -> None:
         task = ProofTask(
             task_id="demo",
@@ -316,6 +347,56 @@ class ProofWorkspaceTests(unittest.TestCase):
         self.assertEqual(root.lean_statement, task.source_template)
         # The freshly seeded graph must satisfy the DAG invariant.
         self.assertTrue(workspace.obligation_graph.validate().ok)
+
+
+class ProofWorkspaceValidationTests(unittest.TestCase):
+    def _workspace(self, *branches: ProofBranch) -> ProofWorkspace:
+        root = _obligation(obligation_id="root")
+        return ProofWorkspace(
+            workspace_id="run-1",
+            obligation_graph=ObligationGraph(
+                obligations=(root,), root_obligation_id="root"
+            ),
+            branches=branches,
+            root_obligation_ids=("root",),
+            status=WorkspaceStatus.SEARCHING,
+        )
+
+    def test_valid_parent_child_branch_tree(self) -> None:
+        parent = ProofBranch("b1", "root", 1)
+        child = ProofBranch("b2", "root", 1, parent_branch_id="b1")
+
+        report = self._workspace(parent, child).validate()
+
+        self.assertTrue(report.ok, report.errors)
+        self.assertEqual(report.to_dict(), {"ok": True, "errors": []})
+
+    def test_duplicate_and_missing_parent_are_reported(self) -> None:
+        first = ProofBranch("b1", "root", 1)
+        duplicate = ProofBranch("b1", "root", 1, parent_branch_id="ghost")
+
+        report = self._workspace(first, duplicate).validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("duplicate proof branch" in e for e in report.errors))
+        self.assertTrue(any("missing parent" in e for e in report.errors))
+
+    def test_parent_cycle_is_reported(self) -> None:
+        first = ProofBranch("b1", "root", 1, parent_branch_id="b2")
+        second = ProofBranch("b2", "root", 1, parent_branch_id="b1")
+
+        report = self._workspace(first, second).validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("parent cycle" in e for e in report.errors))
+
+    def test_missing_obligation_version_is_reported(self) -> None:
+        branch = ProofBranch("b1", "root", 2)
+
+        report = self._workspace(branch).validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("missing obligation" in e for e in report.errors))
 
 
 class WorkspaceMutationTests(unittest.TestCase):

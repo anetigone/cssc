@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ..base import CheckResult, DiagnosticCategory
+from .branch import BranchStatus, ProofBranch, proof_branch_from_dict
 from .graph import ObligationGraph, obligation_graph_from_dict
 from .obligation import ObligationStatus, ProofObligation
 from .spec import (
@@ -18,6 +19,17 @@ from .spec import (
 
 if TYPE_CHECKING:
     from ...tasks.types import ProofTask
+
+
+@dataclass(frozen=True)
+class ProofWorkspaceReport:
+    """Deterministic result of validating authoritative workspace state."""
+
+    ok: bool
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "errors": list(self.errors)}
 
 
 @dataclass(frozen=True)
@@ -37,15 +49,67 @@ class ProofWorkspace:
     specification: FormalSpecification = field(default_factory=FormalSpecification)
     obligation_graph: ObligationGraph = field(default_factory=ObligationGraph)
     accepted_facts: tuple[VerifiedFact, ...] = ()
+    branches: tuple[ProofBranch, ...] = ()
 
     root_obligation_ids: tuple[str, ...] = ()
     status: WorkspaceStatus = WorkspaceStatus.INITIALIZING
+
+    def validate(self) -> ProofWorkspaceReport:
+        """Check obligation, branch-tree, and cross-object references."""
+        errors = list(self.obligation_graph.validate().errors)
+        obligation_versions = {
+            (obligation.obligation_id, obligation.version): obligation
+            for obligation in self.obligation_graph.obligations
+        }
+
+        branches_by_id: dict[str, ProofBranch] = {}
+        for branch in self.branches:
+            if branch.branch_id in branches_by_id:
+                errors.append(f"duplicate proof branch id {branch.branch_id!r}")
+            else:
+                branches_by_id[branch.branch_id] = branch
+            errors.extend(branch.validate().errors)
+
+            obligation = obligation_versions.get(
+                (branch.obligation_id, branch.obligation_version)
+            )
+            if obligation is None:
+                errors.append(
+                    f"branch {branch.branch_id!r} references missing obligation "
+                    f"{branch.obligation_id!r} v{branch.obligation_version}"
+                )
+            elif (
+                obligation.status == ObligationStatus.SUPERSEDED
+                and branch.status != BranchStatus.SUPERSEDED
+            ):
+                errors.append(
+                    f"branch {branch.branch_id!r} remains {branch.status.value} "
+                    f"on superseded obligation {branch.obligation_id!r} "
+                    f"v{branch.obligation_version}"
+                )
+
+        for branch in self.branches:
+            if (
+                branch.parent_branch_id is not None
+                and branch.parent_branch_id not in branches_by_id
+            ):
+                errors.append(
+                    f"branch {branch.branch_id!r} references missing parent branch "
+                    f"{branch.parent_branch_id!r}"
+                )
+
+        cycle = _detect_branch_cycle(branches_by_id)
+        if cycle is not None:
+            errors.append(f"branch parent cycle detected: {' -> '.join(cycle)}")
+
+        return ProofWorkspaceReport(ok=not errors, errors=tuple(errors))
 
     def successor(
         self,
         *,
         obligation_graph: ObligationGraph | None = None,
         accepted_facts: tuple[VerifiedFact, ...] | None = None,
+        branches: tuple[ProofBranch, ...] | None = None,
         root_obligation_ids: tuple[str, ...] | None = None,
         status: WorkspaceStatus | None = None,
     ) -> ProofWorkspace:
@@ -66,6 +130,7 @@ class ProofWorkspace:
             accepted_facts=(
                 accepted_facts if accepted_facts is not None else self.accepted_facts
             ),
+            branches=branches if branches is not None else self.branches,
             root_obligation_ids=(
                 root_obligation_ids
                 if root_obligation_ids is not None
@@ -168,6 +233,7 @@ class ProofWorkspace:
             "specification": self.specification.to_dict(),
             "obligation_graph": self.obligation_graph.to_dict(),
             "accepted_facts": [fact.to_dict() for fact in self.accepted_facts],
+            "branches": [branch.to_dict() for branch in self.branches],
             "root_obligation_ids": list(self.root_obligation_ids),
             "status": self.status.value,
         }
@@ -187,11 +253,32 @@ def workspace_from_dict(data: dict[str, Any]) -> ProofWorkspace:
         accepted_facts=tuple(
             verified_fact_from_dict(item) for item in data.get("accepted_facts", ())
         ),
+        branches=tuple(
+            proof_branch_from_dict(item) for item in data.get("branches", ())
+        ),
         root_obligation_ids=tuple(data.get("root_obligation_ids", ())),
         status=WorkspaceStatus(
             data.get("status", WorkspaceStatus.INITIALIZING.value)
         ),
     )
+
+
+def _detect_branch_cycle(
+    branches_by_id: dict[str, ProofBranch],
+) -> tuple[str, ...] | None:
+    """Return a parent-link cycle witness, if one exists."""
+    for start_id in branches_by_id:
+        path: list[str] = []
+        positions: dict[str, int] = {}
+        current_id: str | None = start_id
+        while current_id is not None and current_id in branches_by_id:
+            if current_id in positions:
+                start = positions[current_id]
+                return tuple(path[start:] + [current_id])
+            positions[current_id] = len(path)
+            path.append(current_id)
+            current_id = branches_by_id[current_id].parent_branch_id
+    return None
 
 
 def initialize_from_task(task: ProofTask) -> ProofWorkspace:

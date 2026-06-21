@@ -23,6 +23,7 @@ from agent.proof_system.base import (
 from agent.proof_system.workspace import (
     ObligationGraph,
     ObligationStatus,
+    ProofBranch,
     ProofObligation,
     ProofWorkspace,
     WorkspaceStatus,
@@ -180,6 +181,44 @@ class ArtifactAssemblerTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertTrue(any("obligation id" in error for error in result.errors))
+
+    def test_blocks_when_workspace_contains_stale_branch_artifact(self) -> None:
+        task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
+        workspace = _accepted_root_workspace(task)
+        from dataclasses import replace
+
+        workspace = replace(
+            workspace,
+            branches=(
+                ProofBranch(
+                    branch_id="b1",
+                    obligation_id=task.task_id,
+                    obligation_version=1,
+                    lean_artifact=LeanArtifact(
+                        source="trivial",
+                        obligation_id="other",
+                        obligation_version=1,
+                    ),
+                ),
+            ),
+        )
+        artifacts = {
+            task.task_id: LeanArtifact(
+                source="trivial", obligation_id=task.task_id, obligation_version=1
+            )
+        }
+        adapter = _AcceptIfContainsAdapter()
+
+        result = ArtifactAssembler().assemble(
+            workspace,
+            artifacts,
+            adapter=adapter,
+            task=task,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("artifact is pinned" in error for error in result.errors))
+        self.assertEqual(adapter.checked_sources, [])
 
     def test_blocks_when_recheck_rejects(self) -> None:
         task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
