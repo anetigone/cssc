@@ -239,7 +239,3 @@ def parse_json_object(content: str, *, context: str = "Model response") -> Mappi
     if not isinstance(decoded, Mapping):
         raise ModelAdapterError(f"{context} JSON must be an object.")
     return decoded
-
-
-# Backwards-compatible alias for code that still uses the old, longer name.
-OpenAIChatConfig = ChatConfig

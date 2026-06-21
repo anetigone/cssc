@@ -33,14 +33,23 @@ agent/
 ├── agents/              # 各 agent 角色与共享模型基础设施
 │   ├── chat_driver.py   # 通用 chat-completion 驱动（payload、tool loop）
 │   ├── openai.py        # ChatConfig / ChatTransport / OpenAI 兼容 HTTP 层
-│   ├── tools.py         # Tool 协议、LeanEnvironmentToolProvider、run_tool_loop
+│   ├── tools/           # Tool 协议与 Lean 环境工具（__init__ 向后兼容 re-export）
+│   │   ├── base.py      # Tool / FunctionTool / ToolCall / extract_tool_calls
+│   │   ├── lean_env.py  # LeanEnvironmentToolProvider / extract_missing_imports
+│   │   ├── lean_proof.py# LeanProofToolProvider（bounded scratch checker）
+│   │   └── loop.py      # run_tool_loop
 │   ├── formalization.py # Formalizer：自然语言 -> Lean scaffold
 │   ├── proof.py         # Proof generator：补全 proof hole
 │   ├── context.py       # ContextSummarizer：压缩反馈与历史上下文
 │   └── config.py        # AgentRole / RoleModelConfig
 ├── search/              # 搜索控制
 │   ├── action.py        # ActionGenerator 协议与 ActionCandidate
-│   ├── controller.py    # ProofController 主循环
+│   ├── controller/      # ProofController 主循环（__init__ 向后兼容 re-export）
+│   │   ├── core.py      # ProofController
+│   │   ├── types.py     # ControllerConfig / AttemptRecord / ControllerResult
+│   │   ├── results.py   # 结果构造与 Phase 0 metrics
+│   │   ├── context.py   # 检索与上下文摘要
+│   │   └── utils.py     # _proof_phase / _edit_with_controller_metadata
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
 │   ├── factory.py       # 按执行模式构造 controller 的唯一选择点
 │   ├── budget.py        # 预算管理（checks / model calls / time）
@@ -56,6 +65,12 @@ agent/
 │   ├── lean_subprocess.py # 子进程执行与进程树清理
 │   ├── lean_feedback.py # Lean 诊断输出解析
 │   ├── lean_server.py   # 持久化 Lean server
+│   ├── workspace/       # Phase 3 ProofWorkspace / ObligationGraph 等纯数据
+│   │   ├── obligation.py# ProofObligation / ObligationStatus
+│   │   ├── graph.py     # ObligationGraph / ObligationGraphReport / DAG 校验
+│   │   ├── spec.py      # FormalSpecification / VerifiedFact / WorkspaceStatus
+│   │   └── workspace.py # ProofWorkspace / initialize_from_task
+│   ├── assembler.py     # Phase 3 final-assembly 整体复检
 │   └── base.py          # ProofSystemAdapter / ProofTask / CheckResult
 ├── retrieval/           # 检索（当前为词法检索 LexicalLeanRetriever）
 ├── input/               # 输入解析、规范化、scaffold 校验
@@ -64,6 +79,8 @@ agent/
 └── cli/                 # 命令行入口 app.py
 ```
 
+> `controller`、`workspace`、`tools` 已拆分为子模块包；每个包的 `__init__.py` 通过向后兼容的 re-export 保留原有公共 API，现有 `from agent.search.controller import ...`、`from agent.proof_system.workspace import ...`、`from agent.agents import ...` 等导入路径无需修改。
+
 ## Agent 角色
 
 | 角色 | 类 | 输入 | 输出 | 说明 |
@@ -71,8 +88,6 @@ agent/
 | Formalizer | `ChatFormalizationAgent` | `FormalizationRequest` | `FormalizationResult` | 生成含 `{{proof}}` 的 Lean scaffold，可接 checker 做校验重试。 |
 | Proof Generator | `ChatActionGenerator` | `ActionGenerationRequest` | `Sequence[ActionCandidate]` | 根据当前 proof state 生成候选证明体。 |
 | Context Manager | `ChatContextSummarizer` | `SummarizationRequest` | `SummarizationResult` | 在 retry 前把 checker 输出与历史反馈压缩成简短、可操作的摘要，降低 proof generator 的 prompt 成本。 |
-
-> 旧名保留兼容别名：`OpenAIChatConfig`、`OpenAIChatFormalizationAgent`、`OpenAIChatActionGenerator`。
 
 当前证明修订保持单一 Proof Generator + `ProofController`，不为数学推理、形式化和错误修复继续拆分多级 proof agent。`Context Manager` 是可选的上下文压缩器，不拥有证明分支或错误归因责任。
 
@@ -94,6 +109,16 @@ agent/
 - `execution_mode` 作为共同观测字段记录在 `RunMetrics`，经 `_metrics_payload` 进入 `run_summary.metrics`，便于跨模式公平比较。
 - 共同观测层只记录原始事实（attempt、checker category、goal fingerprints、耗时、预算、execution_mode），不推导 progress、stall 或跨运行统计。
 - 运行中不存在任何切换模式的代码路径：`ControllerConfig` 是 frozen、`_ControllerRunState` 不持有 mode、`ProofController` 在本阶段不读 mode 做控制流。
+
+## Phase 3 ProofWorkspace 与 Obligation DAG
+
+- 结构化状态原语集中在 `agent/proof_system/workspace.py`（与 `ProofTask`/`CheckResult` 同模块，proof-system-neutral 纯数据）：`ProofObligation`、`ObligationGraph`、`ProofWorkspace`、`FormalSpecification`、`VerifiedFact`，全部 frozen + `to_dict`/`from_dict`。
+- `ObligationGraph.validate()` 确定性检查无环、依赖存在、活跃依赖不指向 SUPERSEDED 版本、根存在且根的证明依赖闭包覆盖所有活跃义务；`dependency_ids` 从使用者指向其所需前提（root → helper）；返回 `ObligationGraphReport`，不抛异常。
+- 版本规则：statement/assumption/dependency 变化走 `ObligationGraph.new_version`，旧实例置 SUPERSEDED 并保留作 provenance；`by_id` 只解析到最新非 SUPERSEDED 版本。
+- `initialize_from_task` 从 `ProofTask` 造单 root obligation 的合法工作区，是 structured 模式入口；`decompose` 加辅助义务并创建依赖这些子义务的新 parent 版本；`register_accepted_fact` 只接受 checker 与 safety 均通过的证据，把 obligation 置 ACCEPTED 并记录带 obligation version 的 `VerifiedFact`。
+- `agent/proof_system/assembler.py` 的 `ArtifactAssembler.assemble` 在所有活跃 obligation 均 ACCEPTED 且 artifact id/version 匹配时，按依赖序拼装、整体复检并执行 safety review；前置失败返回 blocked `AssemblyResult`，不抛。
+- 序列化产物经 `ControllerResult.metadata["workspace"]` 进入 trace，`trace_store.workspace_payload` 透传；minimal 运行不写该键，`ProofController` 不 import workspace 模块，因此 minimal 不承担 DAG 成本。
+- 本阶段只交付数据结构 + 序列化 + trace + DAG 规则 + final-assembly 复检 + root 初始化。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`：驱动这些状态的 frontier / AND-OR 搜索是 Phase 4-6，未提前引入。
 
 ## `ChatDriver` 抽象
 
@@ -189,8 +214,10 @@ python -m pytest tests/ -q
 - `tests/test_goal_state.py`：结构化 goal state、fingerprint、sorry 标记。
 - `tests/test_memory.py`：ProofMemory 更新、来源追踪和 prompt 表示。
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查。
-- `tests/test_trace_store.py`：原始 attempt、结构化 goal state 和最终 memory 持久化。
+- `tests/test_trace_store.py`：原始 attempt、结构化 goal state、最终 memory 和 workspace 持久化。
 - `tests/test_factory.py`：执行模式选择，structured 硬失败。
+- `tests/test_workspace.py`：ProofWorkspace / ObligationGraph 数据结构、DAG 校验、版本规则、初始化与变异。
+- `tests/test_assembler.py`：final-assembly 整体复检与 blocked 语义。
 
 ## 注意事项
 

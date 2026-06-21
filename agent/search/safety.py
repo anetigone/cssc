@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -29,8 +30,10 @@ logger = logging.getLogger(__name__)
 # Residual shortcuts that close a goal without proving it.
 _SHORTCUT_RE = re.compile(r"\b(sorry|admit)\b")
 
-# Top-level ``axiom`` declarations introduce unproven assumptions.
-_AXIOM_RE = re.compile(r"^\s*axiom\b", re.MULTILINE)
+# Top-level ``axiom`` declarations introduce unproven assumptions. Capture the
+# declaration name so an existing axiom does not mask a different one added by
+# the candidate.
+_AXIOM_RE = re.compile(r"^[ \t]*axiom[ \t]+([^\s:({]+)", re.MULTILINE)
 
 # A bare ``sorry``/``admit`` term on its own also bypasses the obligation.
 # Matched independently so the reason names the precise shortcut.
@@ -137,13 +140,9 @@ class StatementSafetyReviewer:
 
     def _axiom_reasons(self, task: ProofTask, candidate_source: str) -> list[str]:
         existing_source = _strip_lean_comments_and_strings(task.source_template)
-        existing = set(_AXIOM_RE.findall(existing_source))
-        introduced = [
-            match.group(0).strip()
-            for match in _AXIOM_RE.finditer(candidate_source)
-            if match.group(0).strip() not in existing
-        ]
-        if introduced:
+        existing = Counter(_AXIOM_RE.findall(existing_source))
+        candidate = Counter(_AXIOM_RE.findall(candidate_source))
+        if any(count > existing[name] for name, count in candidate.items()):
             return ["new_axiom_declared"]
         return []
 

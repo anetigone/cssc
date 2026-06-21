@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ class TraceStoreTests(unittest.TestCase):
         self.assertEqual(events[0]["task"]["task_id"], "sample")
         self.assertEqual(events[1]["attempt"]["check_result"]["category"], "unsolved_goals")
         self.assertNotIn("raw_output", events[1]["attempt"]["check_result"])
+        self.assertNotIn("progress", events[1]["attempt"]["check_result"])
 
     def test_run_summary_carries_proof_memory_snapshot(self) -> None:
         result = _sample_result()
@@ -42,6 +44,32 @@ class TraceStoreTests(unittest.TestCase):
         self.assertTrue(
             memory["failed_approaches"][0].startswith("static:unsolved_goals")
         )
+
+    def test_minimal_run_summary_omits_workspace(self) -> None:
+        result = _sample_result()
+
+        events = list(result_events(result))
+
+        self.assertNotIn("workspace", events[0])
+
+    def test_structured_run_summary_carries_workspace(self) -> None:
+        from agent.proof_system.workspace import initialize_from_task
+
+        task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}\n")
+        workspace = initialize_from_task(task)
+        result = _sample_result()
+        result = _with_metadata(result, {"workspace": workspace.to_dict()})
+
+        events = list(result_events(result))
+
+        self.assertEqual(events[0]["workspace"]["workspace_id"], "sample")
+        self.assertEqual(events[0]["workspace"]["version"], 1)
+        self.assertEqual(
+            events[0]["workspace"]["obligation_graph"]["root_obligation_id"],
+            "sample",
+        )
+        # The serialized dict also survives a JSON round-trip.
+        json.loads(json.dumps(events[0]["workspace"]))
 
     def test_attempt_trace_carries_structured_goal_state(self) -> None:
         result = _sample_result()
@@ -93,6 +121,12 @@ class TraceStoreTests(unittest.TestCase):
 
             self.assertEqual(path.read_text(encoding="utf-8"), '{"existing": true}\n')
             self.assertEqual(list(path.parent.glob(".run.jsonl.*.tmp")), [])
+
+
+def _with_metadata(result: ControllerResult, extra: dict) -> ControllerResult:
+    """Return a copy of ``result`` with ``extra`` merged into its metadata."""
+    merged = {**result.metadata, **extra}
+    return replace(result, metadata=merged)
 
 
 def _sample_result() -> ControllerResult:

@@ -260,7 +260,3 @@ def _truncate_text(text: str, *, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "\n...[diagnostics truncated]"
-
-
-# Backwards-compatible alias for callers that used an earlier name.
-OpenAIChatContextSummarizer = ChatContextSummarizer

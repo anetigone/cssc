@@ -5,7 +5,6 @@ from .config import AgentRole, RoleModelConfig
 from .context import (
     ChatContextSummarizer,
     ContextSummarizer,
-    OpenAIChatContextSummarizer,
     SummarizationRequest,
     SummarizationResult,
 )
@@ -14,7 +13,6 @@ from .formalization import (
     FormalizationAgent,
     FormalizationRequest,
     FormalizationResult,
-    OpenAIChatFormalizationAgent,
     ScaffoldChecker,
     StaticFormalizationAgent,
     VerifiedFormalizationCache,
@@ -23,10 +21,9 @@ from .openai import (
     ChatConfig,
     ChatTransport,
     ModelAdapterError,
-    OpenAIChatConfig,
     UrllibChatTransport,
 )
-from .proof import ChatActionGenerator, OpenAIChatActionGenerator
+from .proof import ChatActionGenerator
 from .tools import (
     FunctionTool,
     LeanEnvironmentToolProvider,
@@ -54,7 +51,6 @@ __all__ = [
     "LeanEnvironmentToolProvider",
     "LeanProofToolProvider",
     "ModelAdapterError",
-    "OpenAIChatContextSummarizer",
     "RoleModelConfig",
     "ScaffoldChecker",
     "SummarizationRequest",

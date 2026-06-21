@@ -31,8 +31,15 @@
   - controller + prompt 接入 memory：`agent/search/controller.py`、`agent/agents/proof.py`
   - trace 记录 memory/goal_state：`agent/search/metrics.py`、`agent/runtime/trace_store.py`
   - SafetyReviewer：`agent/search/safety.py`（确定性 statement-preservation + anti-cheating）
-- **Phase 2**（下一步）：执行模式参数 `ExecutionMode.MINIMAL/STRUCTURED` + `--execution-mode` CLI + 共同观测。**明确禁止运行时自动切换模式。**
-- Phase 3+：ProofWorkspace / Obligation DAG / ProofBranch / Frontier / AND-OR 搜索。见 plan1.md。
+- **Phase 2** ✅ 已完成：执行模式参数 `ExecutionMode.MINIMAL/STRUCTURED` + `--execution-mode` CLI + 共同观测。**明确禁止运行时自动切换模式。**
+- **Phase 3** ✅ 已完成：ProofWorkspace 与 Obligation DAG
+  - 结构化状态原语：`agent/proof_system/workspace.py`（`ProofObligation`/`ObligationGraph`/`ProofWorkspace`/`FormalSpecification`/`VerifiedFact`，frozen + 序列化）
+  - DAG 合法性、版本规则（`new_version`/SUPERSEDED）、`initialize_from_task`、`decompose`、`register_accepted_fact`
+  - final-assembly 整体复检：`agent/proof_system/assembler.py:ArtifactAssembler`
+  - trace 集成：`workspace_payload` 透传 `metadata["workspace"]`；minimal 零成本
+  - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR 是 Phase 4-6）
+- **Phase 4**（下一步）：ProofBranch / ArgumentStep / Alignment / Observation。见 plan1.md。
+- Phase 5+：统一 ProofAgent 动作与失败假设 / Frontier 与 AND-OR 搜索。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 

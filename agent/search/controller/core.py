@@ -3,128 +3,38 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace
-from pathlib import Path
-from typing import Any, Protocol
+from dataclasses import replace
 
-from .safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
-from .action import ActionCandidate, ActionGenerationRequest, ActionGenerator
-from .execution import ExecutionMode
-from .budget import BudgetConfig, BudgetManager, BudgetSnapshot
-from .memory import (
-    MemoryProcessor,
-    MemoryUpdate,
-    ProofMemory,
-    empty_memory,
-    memory_to_dict,
+from ..action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from ..budget import BudgetConfig, BudgetManager
+from .context import maybe_retrieve, summarize_context
+from ..memory import MemoryProcessor, MemoryUpdate
+from ..metrics import attempt_metric
+from .results import (
+    build_accepted_result,
+    build_final_result,
+    build_tool_unavailable_result,
 )
-from .metrics import (
-    AttemptMetric,
-    RunMetrics,
-    attempt_metric,
-    new_sample_id,
-    summarize_run,
+from ..safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
+from ..state_encoder import encode_proof_state
+from .types import (
+    AttemptRecord,
+    ControllerConfig,
+    ControllerResult,
+    Retriever,
+    _ControllerRunState,
 )
-from .state_encoder import encode_proof_state
-from ..agents.context import ContextSummarizer, SummarizationRequest
-from ..proof_system.base import (
-    CandidateEdit,
-    CheckResult,
+from .utils import _edit_with_controller_metadata, _proof_phase
+from ...agents.context import ContextSummarizer
+from ...proof_system.base import (
     DiagnosticCategory,
-    ParsedFeedback,
     ProofSystemAdapter,
     ProofTask,
 )
-from ..retrieval import RetrievalResult
-from ..runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
+from ...runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
 
 
 logger = logging.getLogger(__name__)
-
-
-class Retriever(Protocol):
-    """Minimal retrieval boundary used by the controller."""
-
-    def retrieve(
-        self,
-        query: str | None = None,
-        *,
-        task: ProofTask | None = None,
-        feedback: ParsedFeedback | None = None,
-        top_k: int = 5,
-    ) -> tuple[RetrievalResult, ...]:
-        """Return snippets relevant to the current proof state."""
-        ...
-
-
-@dataclass(frozen=True)
-class ControllerConfig:
-    """Small policy knobs for the MVP controller."""
-
-    max_candidates_per_model_call: int = 1
-    candidate_extension: str = ".lean"
-    stop_on_tool_unavailable: bool = True
-    max_feedback_history: int = 5
-    max_retrieval_results: int = 5
-    retrieve_before_first_model_call: bool = False
-    retrieve_on_categories: tuple[DiagnosticCategory, ...] = (
-        DiagnosticCategory.UNKNOWN_IDENTIFIER,
-        DiagnosticCategory.INVALID_REFERENCE,
-        DiagnosticCategory.UNSOLVED_GOALS,
-    )
-    # 执行模式：由启动参数决定，运行中不可变；factory 是唯一选择点。
-    execution_mode: ExecutionMode = ExecutionMode.MINIMAL
-
-
-@dataclass(frozen=True)
-class AttemptRecord:
-    """One generated candidate and its checker result."""
-
-    attempt_index: int
-    candidate_id: str
-    edit: CandidateEdit
-    candidate_file: Path
-    check_result: CheckResult
-
-
-@dataclass(frozen=True)
-class ControllerResult:
-    """Final outcome of one controller run."""
-
-    task: ProofTask
-    accepted: bool
-    attempts: tuple[AttemptRecord, ...]
-    budget: BudgetSnapshot
-    stop_reason: str
-    accepted_attempt: AttemptRecord | None = None
-    metrics: RunMetrics | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _ControllerRunState:
-    """Mutable working state for a single controller run.
-
-    Encapsulates everything that changes from one loop iteration to the next so
-    that ``run()`` can be expressed as a short pipeline of phase methods.
-    """
-
-    attempts: list[AttemptRecord] = field(default_factory=list)
-    feedback_history: list[ParsedFeedback] = field(default_factory=list)
-    retrieved_history: list[RetrievalResult] = field(default_factory=list)
-    seen_candidate_keys: set[tuple[str, str]] = field(default_factory=set)
-    current_retrieved: tuple[RetrievalResult, ...] = ()
-    stop_reason: str = "budget"
-    attempt_index: int = 0
-    retrieved_this_iteration: bool = False
-    attempt_metrics: list[AttemptMetric] = field(default_factory=list)
-    # Self-managed compact memory updated after every check; replaces the fixed
-    # full-history stack as the loop's carried context.
-    memory: ProofMemory = field(default_factory=empty_memory)
-    # Accepted candidates that the safety reviewer rejected, with reasons.
-    safety_rejections: list[dict[str, Any]] = field(default_factory=list)
-    # Unique per controller run so trace events from repeated runs never collide.
-    sample_id: str = field(default_factory=new_sample_id)
 
 
 class ProofController:
@@ -135,7 +45,6 @@ class ProofController:
     into the next model call. Every model call and every check counts against
     the budget. There is no separate repair agent.
     """
-
     def __init__(
         self,
         *,
@@ -167,9 +76,11 @@ class ProofController:
         while self.budget.can_check():
             # A fresh iteration starts here; allow this iteration to retrieve.
             state.retrieved_this_iteration = False
-            state.current_retrieved = self._maybe_retrieve(
+            state.current_retrieved = maybe_retrieve(
                 task,
-                state.feedback_history[-1] if state.feedback_history else None,
+                state,
+                self.retriever,
+                self.config,
                 is_first_iteration=not state.attempts,
             )
             if state.current_retrieved:
@@ -196,15 +107,36 @@ class ProofController:
                 )
                 break
 
-            accepted_record = self._evaluate_candidates(state, task, actions, max_candidates)
+            accepted_record = self._evaluate_candidates(
+                state, task, actions, max_candidates
+            )
             if accepted_record is not None:
-                return self._build_accepted_result(state, task, accepted_record)
+                return build_accepted_result(
+                    state,
+                    task,
+                    accepted_record,
+                    self.budget,
+                    self.config.execution_mode,
+                    self.safety_reviewer,
+                )
             if state.stop_reason == "tool_unavailable":
-                return self._build_tool_unavailable_result(state, task)
+                return build_tool_unavailable_result(
+                    state,
+                    task,
+                    self.budget,
+                    self.config.execution_mode,
+                    self.safety_reviewer,
+                )
             if state.stop_reason == "no_new_actions":
                 break
 
-        return self._build_final_result(state, task)
+        return build_final_result(
+            state,
+            task,
+            self.budget,
+            self.config.execution_mode,
+            self.safety_reviewer,
+        )
 
     def _initial_state(self) -> _ControllerRunState:
         return _ControllerRunState()
@@ -254,9 +186,10 @@ class ProofController:
                 "category": last.check_result.category.value,
                 "raw_output": last.check_result.raw_output,
             }
-        summarized_context = self._summarize_context(
+        summarized_context = summarize_context(
             task,
             state,
+            self.context_summarizer,
             previous_attempt,
         )
         return ActionGenerationRequest(
@@ -418,110 +351,6 @@ class ProofController:
             check_result=check_result,
         )
 
-    def _build_accepted_result(
-        self,
-        state: _ControllerRunState,
-        task: ProofTask,
-        record: AttemptRecord,
-    ) -> ControllerResult:
-        logger.info(
-            "Controller accepted proof: task_id=%s attempt_index=%d",
-            task.task_id,
-            record.attempt_index,
-        )
-        return ControllerResult(
-            task=task,
-            accepted=True,
-            attempts=tuple(state.attempts),
-            budget=self.budget.snapshot(),
-            stop_reason="accepted",
-            accepted_attempt=record,
-            metrics=self._run_metrics(state, task, accepted=True, stop_reason="accepted"),
-            metadata=self._result_metadata(state),
-        )
-
-    def _build_tool_unavailable_result(
-        self,
-        state: _ControllerRunState,
-        task: ProofTask,
-    ) -> ControllerResult:
-        logger.warning(
-            "Controller stopped: task_id=%s reason=%s",
-            task.task_id,
-            state.stop_reason,
-        )
-        return ControllerResult(
-            task=task,
-            accepted=False,
-            attempts=tuple(state.attempts),
-            budget=self.budget.snapshot(),
-            stop_reason=state.stop_reason,
-            metrics=self._run_metrics(state, task, accepted=False, stop_reason=state.stop_reason),
-            metadata=self._result_metadata(state),
-        )
-
-    def _build_final_result(
-        self,
-        state: _ControllerRunState,
-        task: ProofTask,
-    ) -> ControllerResult:
-        reason = self.budget.exhausted_reason()
-        if reason is not None and not state.stop_reason.startswith("budget:"):
-            state.stop_reason = f"budget:{reason}"
-        logger.info(
-            "Controller run finished: task_id=%s accepted=False stop_reason=%s attempts=%d",
-            task.task_id,
-            state.stop_reason,
-            len(state.attempts),
-        )
-        return ControllerResult(
-            task=task,
-            accepted=False,
-            attempts=tuple(state.attempts),
-            budget=self.budget.snapshot(),
-            stop_reason=state.stop_reason,
-            metrics=self._run_metrics(state, task, accepted=False, stop_reason=state.stop_reason),
-            metadata=self._result_metadata(state),
-        )
-
-    def _result_metadata(self, state: _ControllerRunState) -> dict[str, Any]:
-        """Shared metadata block recorded on every controller result.
-
-        Includes a snapshot of the final self-managed memory so the trace
-        preserves the compact context the loop actually carried, alongside the
-        raw Phase 0 fields. The memory snapshot is a plain dict, never the live
-        object, so it serializes cleanly.
-        """
-        return {
-            "retrieved_results": tuple(state.retrieved_history),
-            "feedback_count": len(state.feedback_history),
-            "proof_memory": memory_to_dict(state.memory),
-            "safety_rejections": tuple(state.safety_rejections),
-            "safety_reviewer": type(self.safety_reviewer).__name__,
-        }
-
-    def _run_metrics(
-        self,
-        state: _ControllerRunState,
-        task: ProofTask,
-        *,
-        accepted: bool,
-        stop_reason: str,
-    ) -> RunMetrics:
-        """Build the Phase 0 baseline roll-up for the current run state."""
-        snapshot = self.budget.snapshot()
-        return summarize_run(
-            sample_id=state.sample_id,
-            task_id=task.task_id,
-            accepted=accepted,
-            stop_reason=stop_reason,
-            attempts=state.attempt_metrics,
-            budget_checks_used=snapshot.checks_used,
-            budget_model_calls_used=snapshot.model_calls_used,
-            budget_exhausted_reason=snapshot.exhausted_reason,
-            execution_mode=self.config.execution_mode,
-        )
-
     def _review_accepted_candidate(
         self,
         task: ProofTask,
@@ -568,84 +397,3 @@ class ProofController:
                 safety_reasons=safety_verdict.reasons,
             ),
         )
-
-    def _summarize_context(
-        self,
-        task: ProofTask,
-        state: _ControllerRunState,
-        previous_attempt: dict[str, Any] | None,
-    ) -> Any:
-        if self.context_summarizer is None or state.attempt_index == 0:
-            return None
-        try:
-            return self.context_summarizer.summarize(
-                SummarizationRequest(
-                    task=task,
-                    attempt_index=state.attempt_index,
-                    previous_attempt=previous_attempt,
-                    feedback_history=tuple(state.feedback_history),
-                    retrieved_results=state.current_retrieved,
-                )
-            )
-        except Exception:
-            logger.debug("Context summarization failed", exc_info=True)
-            return None
-
-    def _maybe_retrieve(
-        self,
-        task: ProofTask,
-        feedback: ParsedFeedback | None,
-        *,
-        is_first_iteration: bool,
-    ) -> tuple[RetrievalResult, ...]:
-        if self.retriever is None:
-            return ()
-        if is_first_iteration:
-            if not self.config.retrieve_before_first_model_call:
-                return ()
-        elif feedback is None or feedback.category not in self.config.retrieve_on_categories:
-            return ()
-        logger.debug(
-            "Retrieving context: task_id=%s feedback_category=%s",
-            task.task_id,
-            feedback.category.value if feedback else None,
-        )
-        return self.retriever.retrieve(
-            task=task,
-            feedback=feedback,
-            top_k=self.config.max_retrieval_results,
-        )
-
-
-def _proof_phase(state: _ControllerRunState) -> str:
-    """Expose the loop's intent for prompts and traces."""
-    return "propose" if not state.attempts else "retry"
-
-
-def _edit_with_controller_metadata(
-    edit: CandidateEdit,
-    *,
-    proof_phase: str,
-    retrieved: tuple[RetrievalResult, ...],
-) -> CandidateEdit:
-    metadata = dict(edit.metadata)
-    metadata["proof_phase"] = proof_phase
-    if retrieved:
-        metadata["retrieved_results"] = tuple(_retrieval_payload(item) for item in retrieved)
-    return CandidateEdit(
-        text=edit.text,
-        action=edit.action,
-        parent_node_id=edit.parent_node_id,
-        metadata=metadata,
-    )
-
-
-def _retrieval_payload(result: RetrievalResult) -> dict[str, Any]:
-    return {
-        "name": result.name,
-        "source_path": result.source_path,
-        "start_line": result.start_line,
-        "snippet": result.snippet,
-        "score": result.score,
-        "metadata": result.metadata,
-    }
