@@ -65,7 +65,7 @@ agent/
 │   ├── lean_subprocess.py # 子进程执行与进程树清理
 │   ├── lean_feedback.py # Lean 诊断输出解析
 │   ├── lean_server.py   # 持久化 Lean server
-│   ├── workspace/       # Phase 3-4 ProofWorkspace / ObligationGraph / 分支等纯数据
+│   ├── workspace/       # Phase 3-5 ProofWorkspace / ObligationGraph / 分支 / 动作协议等纯数据
 │   │   ├── obligation.py# ProofObligation / ObligationStatus
 │   │   ├── graph.py     # ObligationGraph / ObligationGraphReport / DAG 校验
 │   │   ├── spec.py      # FormalSpecification / VerifiedFact / WorkspaceStatus
@@ -74,7 +74,9 @@ agent/
 │   │   ├── artifact.py  # Phase 4 LeanArtifact（从 assembler.py 迁入并扩展）
 │   │   ├── alignment.py # Phase 4 AlignmentLink / AlignmentRelation
 │   │   ├── observation.py# Phase 4 Observation / ObservationSource / checker 提取器
-│   │   └── branch.py    # Phase 4 ProofBranch / BranchStatus
+│   │   ├── branch.py    # Phase 4 ProofBranch / BranchStatus
+│   │   ├── action.py    # Phase 5 SearchAction / SearchActionKind / MutationKind / 作用域校验
+│   │   └── hypothesis.py# Phase 5 FailureHypothesis / FailureKind
 │   ├── assembler.py     # Phase 3 final-assembly 整体复检
 │   └── base.py          # ProofSystemAdapter / ProofTask / CheckResult / ProgressSignal
 ├── retrieval/           # 检索（当前为词法检索 LexicalLeanRetriever）
@@ -123,7 +125,7 @@ agent/
 - `initialize_from_task` 从 `ProofTask` 造单 root obligation 的合法工作区，是 structured 模式入口；`decompose` 加辅助义务并创建依赖这些子义务的新 parent 版本；`register_accepted_fact` 只接受 checker 与 safety 均通过的证据，把 obligation 置 ACCEPTED 并记录带 obligation version 的 `VerifiedFact`。
 - `agent/proof_system/assembler.py` 的 `ArtifactAssembler.assemble` 在所有活跃 obligation 均 ACCEPTED 且 artifact id/version 匹配时，按依赖序拼装、整体复检并执行 safety review；前置失败返回 blocked `AssemblyResult`，不抛。
 - 序列化产物经 `ControllerResult.metadata["workspace"]` 进入 trace，`trace_store.workspace_payload` 透传；minimal 运行不写该键，`ProofController` 不 import workspace 模块，因此 minimal 不承担 DAG 成本。
-- 本阶段只交付数据结构 + 序列化 + trace + DAG 规则 + final-assembly 复检 + root 初始化。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`：驱动这些状态的 frontier / AND-OR 搜索是 Phase 4-6，未提前引入。
+- 本阶段只交付数据结构 + 序列化 + trace + DAG 规则 + final-assembly 复检 + root 初始化。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`：驱动这些状态的 frontier / AND-OR 搜索是 Phase 6，未提前引入。
 
 ## Phase 4 ProofBranch / ArgumentStep / Alignment / Observation
 
@@ -134,6 +136,14 @@ agent/
 - `ProofBranch` 串起 `argument`/`lean_artifact`/`alignment`/`observations`/`progress`/`status`，`obligation_id`+`obligation_version` 锚定到具体义务版本；`parent_branch_id` 表示修复/策略切换派生的子分支。`progress` 复用 `base.py:ProgressSignal`（本阶段给它补了 `to_dict`/`progress_signal_from_dict`）。
 - `ProofWorkspace` 新增 `branches: tuple[ProofBranch, ...]`，经 `successor(branches=...)`、`to_dict`、`workspace_from_dict` 序列化；`initialize_from_task` 默认 `branches=()`。branches 随 workspace 序列化自动进 trace（Phase 3 已透传 `metadata["workspace"]`），不改 trace_store。
 - 本阶段只交付数据结构 + 序列化 + workspace 接入 + 确定性 observation 提取器 + 测试。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`；不引入 `SearchAction`/`FailureHypothesis`（Phase 5）、不写 frontier/AND-OR 选择（Phase 6）、minimal 路径不 import workspace 包。
+
+## Phase 5 统一 ProofAgent 动作与失败假设
+
+- 动作协议原语补齐在 `agent/proof_system/workspace/` 子包：`SearchAction`/`SearchActionKind`/`MutationKind` + `DEFAULT_ALLOWED_MUTATIONS` 默认作用域表（`action.py`）、`FailureHypothesis`/`FailureKind`（`hypothesis.py`），全部 frozen + `to_dict`/`from_dict`。`SearchAction` 引用其他原语只靠字符串 id（branch/step），自身 branch-agnostic。
+- 每个 `SearchAction` 显式声明 `allowed_mutations`（8 个 `MutationKind`：formal_specification / obligation / obligation_dependency / argument_step / lean_artifact / alignment_link / branch_status / new_structure；observation 不是 mutation kind，因为它是 append-only 证据）。`SearchAction.validate()` 确定性校验 target_branch_id 非空、rationale 非空、allowed_mutations 是 `DEFAULT_ALLOWED_MUTATIONS[kind]` 子集（**允许 narrow、禁止 broaden**，跨界须另起动作）、target_step_ids 非空唯一，返回 `SearchActionReport`，不抛。
+- `FailureHypothesis` 承载多个竞争性失败假设：`evidence_ids`（非空，引用 Phase 4 `Observation`）、`confidence`、`affected_step_ids`（可空）、`proposed_tests`（`SearchAction` 元组，可空）。`FailureKind` 仅含 6 个模型竞争语义类别（theorem_misuse / argument_gap / insufficient_assumptions / alignment_mismatch / implementation_defect / capability_missing），**不含**基础设施错误——保持"假设 = 模型竞争产物"边界纯粹，基础设施错误由确定性规则单独处理。
+- `FailureHypothesis.validate()` 确定性校验 hypothesis_id 非空、kind 合法、confidence ∈ [0,1] 且有限、evidence_ids 非空唯一、affected_step_ids 唯一、proposed_tests 委托 `SearchAction.validate()` 并以 `proposed_tests[i]:` 前缀聚合 child errors，返回 `FailureHypothesisReport`，不抛。
+- 本阶段只交付数据结构 + 序列化 + 校验 + 测试。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`（消息措辞已更新为 frontier/AND-OR driver 是 Phase 6）；**不**生成假设、**不**执行动作、**不**把 `SearchAction` 接进 `ProofBranch`（wiring 是 Phase 6）、minimal 路径不 import workspace 包。
 
 ## `ChatDriver` 抽象
 
@@ -238,6 +248,8 @@ python -m pytest tests/ -q
 - `tests/test_alignment.py`：AlignmentLink / AlignmentRelation 往返。
 - `tests/test_observation.py`：Observation 序列化与 checker 提取器。
 - `tests/test_branch.py`：ProofBranch 嵌套序列化与状态枚举。
+- `tests/test_search_action.py`：SearchAction 序列化、默认作用域表完整性、narrow/broaden 校验。
+- `tests/test_hypothesis.py`：FailureHypothesis 序列化、confidence/evidence 校验、嵌套 proposed_tests 聚合。
 
 ## 注意事项
 
