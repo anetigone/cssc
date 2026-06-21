@@ -17,7 +17,7 @@ the caller free to keep searching or report a partial result.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -27,29 +27,16 @@ from .workspace import (
     ObligationStatus,
     ProofWorkspace,
 )
+from .workspace.artifact import LeanArtifact
 
-
-@dataclass(frozen=True)
-class LeanArtifact:
-    """The Lean realization of one accepted obligation.
-
-    Phase 3 only needs the source fragment; richer artifact metadata
-    (alignment links, declaration ids, source spans) arrives in Phase 4 with
-    the branch layer. ``obligation_id`` and ``version`` pin the artifact to a
-    specific obligation version so a stale artifact can never silently attach
-    to a revised obligation.
-    """
-
-    source: str
-    obligation_id: str
-    obligation_version: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "source": self.source,
-            "obligation_id": self.obligation_id,
-            "obligation_version": self.obligation_version,
-        }
+# Re-export LeanArtifact from this module's historical location so existing
+# ``from agent.proof_system.assembler import LeanArtifact`` imports keep
+# working; the single source of truth lives in ``workspace.artifact``.
+__all__ = [
+    "LeanArtifact",
+    "AssemblyResult",
+    "ArtifactAssembler",
+]
 
 
 @dataclass(frozen=True)
