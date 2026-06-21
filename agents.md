@@ -89,8 +89,6 @@ agent/
 | Proof Generator | `ChatActionGenerator` | `ActionGenerationRequest` | `Sequence[ActionCandidate]` | 根据当前 proof state 生成候选证明体。 |
 | Context Manager | `ChatContextSummarizer` | `SummarizationRequest` | `SummarizationResult` | 在 retry 前把 checker 输出与历史反馈压缩成简短、可操作的摘要，降低 proof generator 的 prompt 成本。 |
 
-> 旧名保留兼容别名：`OpenAIChatConfig`、`OpenAIChatFormalizationAgent`、`OpenAIChatActionGenerator`。
-
 当前证明修订保持单一 Proof Generator + `ProofController`，不为数学推理、形式化和错误修复继续拆分多级 proof agent。`Context Manager` 是可选的上下文压缩器，不拥有证明分支或错误归因责任。
 
 ## Phase 1 Minimal Refinement Core

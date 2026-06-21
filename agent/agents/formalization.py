@@ -381,7 +381,3 @@ def _build_retry_prompt(
             ]
         )
     return "\n".join(parts)
-
-
-# Backwards-compatible alias for code that still uses the old, longer name.
-OpenAIChatFormalizationAgent = ChatFormalizationAgent
