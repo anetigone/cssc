@@ -127,6 +127,23 @@ class FailureHypothesisValidateTest(unittest.TestCase):
         report = FailureHypothesisReport(ok=True, errors=())
         self.assertEqual(report.to_dict(), {"ok": True, "errors": []})
 
+    def test_huge_integer_confidence_is_reported_without_overflow(self) -> None:
+        report = self._ok(confidence=10**10000).validate()
+        self.assertFalse(report.ok)
+        self.assertTrue(any("out of range" in error for error in report.errors))
+
+    def test_non_string_ids_are_reported_without_raising(self) -> None:
+        hypothesis = self._ok(
+            evidence_ids=(1,),  # type: ignore[arg-type]
+            affected_step_ids=(2,),  # type: ignore[arg-type]
+            hypothesis_id=3,  # type: ignore[arg-type]
+        )
+
+        report = hypothesis.validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("hypothesis_id" in error for error in report.errors))
+
 
 if __name__ == "__main__":
     unittest.main()

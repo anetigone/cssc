@@ -19,9 +19,14 @@ from enum import Enum
 from typing import Any
 
 from ..base import ProgressSignal, progress_signal_from_dict
+from .action import SearchAction, search_action_from_dict
 from .alignment import AlignmentLink, AlignmentRelation, alignment_link_from_dict
 from .argument import ArgumentGraph, argument_graph_from_dict
 from .artifact import LeanArtifact, lean_artifact_from_dict
+from .hypothesis import (
+    FailureHypothesis,
+    failure_hypothesis_from_dict,
+)
 from .observation import Observation, observation_from_dict
 
 
@@ -52,8 +57,9 @@ class ProofBranch:
 
     ``obligation_id`` / ``obligation_version`` pin the branch to a specific
     obligation version; a branch must never silently attach to a revised
-    obligation. ``last_action_summary`` is a free-form note about the most
-    recent step — the structured ``SearchAction`` protocol is Phase 5.
+    obligation. Phase 5's ``last_action`` and ``failure_hypotheses`` remain in
+    this authoritative record so mutation scope and evidence survive trace
+    serialization. ``last_action_summary`` only preserves older Phase 4 data.
     """
 
     branch_id: str
@@ -64,6 +70,9 @@ class ProofBranch:
     lean_artifact: LeanArtifact | None = None
     alignment: tuple[AlignmentLink, ...] = ()
     observations: tuple[Observation, ...] = ()
+    failure_hypotheses: tuple[FailureHypothesis, ...] = ()
+    last_action: SearchAction | None = None
+    # Retained for old Phase 4 traces. New state should use ``last_action``.
     last_action_summary: str | None = None
     progress: ProgressSignal = field(default_factory=ProgressSignal)
     status: BranchStatus = BranchStatus.ACTIVE
@@ -126,6 +135,54 @@ class ProofBranch:
                 "alignment; record an explicit unaligned link"
             )
 
+        observation_ids = {observation.observation_id for observation in self.observations}
+        hypothesis_ids: set[str] = set()
+        for hypothesis in self.failure_hypotheses:
+            if hypothesis.hypothesis_id in hypothesis_ids:
+                errors.append(
+                    f"branch {self.branch_id!r} has duplicate failure hypothesis "
+                    f"id {hypothesis.hypothesis_id!r}"
+                )
+            hypothesis_ids.add(hypothesis.hypothesis_id)
+            errors.extend(
+                f"hypothesis {hypothesis.hypothesis_id!r}: {error}"
+                for error in hypothesis.validate().errors
+            )
+            for evidence_id in hypothesis.evidence_ids:
+                if evidence_id not in observation_ids:
+                    errors.append(
+                        f"hypothesis {hypothesis.hypothesis_id!r} references "
+                        f"missing observation {evidence_id!r}"
+                    )
+            for step_id in hypothesis.affected_step_ids:
+                if step_id not in step_ids:
+                    errors.append(
+                        f"hypothesis {hypothesis.hypothesis_id!r} references "
+                        f"missing argument step {step_id!r}"
+                    )
+            for test in hypothesis.proposed_tests:
+                if test.target_branch_id != self.branch_id:
+                    errors.append(
+                        f"hypothesis {hypothesis.hypothesis_id!r} proposes a test "
+                        f"for branch {test.target_branch_id!r}, not {self.branch_id!r}"
+                    )
+
+        if self.last_action is not None:
+            errors.extend(
+                f"last_action: {error}" for error in self.last_action.validate().errors
+            )
+            if self.last_action.target_branch_id != self.branch_id:
+                errors.append(
+                    f"branch {self.branch_id!r} last action targets branch "
+                    f"{self.last_action.target_branch_id!r}"
+                )
+            for step_id in self.last_action.target_step_ids:
+                if step_id not in step_ids:
+                    errors.append(
+                        f"branch {self.branch_id!r} last action references missing "
+                        f"argument step {step_id!r}"
+                    )
+
         return ProofBranchReport(ok=not errors, errors=tuple(errors))
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,6 +195,10 @@ class ProofBranch:
             "lean_artifact": self.lean_artifact.to_dict() if self.lean_artifact else None,
             "alignment": [link.to_dict() for link in self.alignment],
             "observations": [obs.to_dict() for obs in self.observations],
+            "failure_hypotheses": [
+                hypothesis.to_dict() for hypothesis in self.failure_hypotheses
+            ],
+            "last_action": self.last_action.to_dict() if self.last_action else None,
             "last_action_summary": self.last_action_summary,
             "progress": self.progress.to_dict(),
             "status": self.status.value,
@@ -146,6 +207,7 @@ class ProofBranch:
 
 def proof_branch_from_dict(data: dict[str, Any]) -> ProofBranch:
     artifact_data = data.get("lean_artifact")
+    last_action_data = data.get("last_action")
     return ProofBranch(
         branch_id=data["branch_id"],
         obligation_id=data["obligation_id"],
@@ -160,6 +222,13 @@ def proof_branch_from_dict(data: dict[str, Any]) -> ProofBranch:
         ),
         observations=tuple(
             observation_from_dict(item) for item in data.get("observations", ())
+        ),
+        failure_hypotheses=tuple(
+            failure_hypothesis_from_dict(item)
+            for item in data.get("failure_hypotheses", ())
+        ),
+        last_action=(
+            search_action_from_dict(last_action_data) if last_action_data else None
         ),
         last_action_summary=data.get("last_action_summary"),
         progress=progress_signal_from_dict(data.get("progress", {}) or {}),

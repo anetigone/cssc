@@ -93,7 +93,7 @@ class FailureHypothesis:
         """
         errors: list[str] = []
 
-        if not self.hypothesis_id or not self.hypothesis_id.strip():
+        if not isinstance(self.hypothesis_id, str) or not self.hypothesis_id.strip():
             errors.append("failure hypothesis hypothesis_id must be non-empty")
         if not isinstance(self.kind, FailureKind):
             errors.append(f"unknown failure kind {self.kind!r}")
@@ -102,12 +102,10 @@ class FailureHypothesis:
             self.confidence, bool
         ):
             errors.append("confidence must be a number")
-        elif math.isnan(self.confidence) or math.isinf(self.confidence):
+        elif isinstance(self.confidence, float) and not math.isfinite(self.confidence):
             errors.append("confidence must be finite")
-        elif not (0.0 <= float(self.confidence) <= 1.0):
-            errors.append(
-                f"confidence {self.confidence!r} out of range [0.0, 1.0]"
-            )
+        elif not (0 <= self.confidence <= 1):
+            errors.append("confidence out of range [0.0, 1.0]")
 
         errors.extend(_check_id_tuple("evidence_ids", self.evidence_ids, required=True))
         errors.extend(
@@ -167,7 +165,7 @@ def _check_id_tuple(
         return tuple(errors)
     seen: set[str] = set()
     for value in ids:
-        if not value or not value.strip():
+        if not isinstance(value, str) or not value.strip():
             errors.append(f"{field} contains an empty id")
             continue
         if value in seen:

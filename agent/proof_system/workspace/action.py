@@ -21,7 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 
 class MutationKind(str, Enum):
@@ -68,15 +69,26 @@ class SearchActionKind(str, Enum):
 #: Read-only actions (``RUN_CHECK`` / ``RUN_CAPABILITY_TEST`` / ``ASSEMBLE``)
 #: carry an empty scope: they invoke subsystems over existing state and record
 #: observations / assembly results as side-effects.
-DEFAULT_ALLOWED_MUTATIONS: dict[SearchActionKind, tuple[MutationKind, ...]] = {
+DEFAULT_ALLOWED_MUTATIONS: Mapping[
+    SearchActionKind, tuple[MutationKind, ...]
+] = MappingProxyType({
     SearchActionKind.FORMALIZE: (MutationKind.FORMAL_SPECIFICATION,),
     SearchActionKind.DECOMPOSE: (
         MutationKind.NEW_STRUCTURE,
         MutationKind.OBLIGATION_DEPENDENCY,
     ),
-    SearchActionKind.PROPOSE_ARGUMENT: (MutationKind.ARGUMENT_STEP,),
-    SearchActionKind.REFINE_ARGUMENT: (MutationKind.ARGUMENT_STEP,),
-    SearchActionKind.IMPLEMENT: (MutationKind.LEAN_ARTIFACT,),
+    SearchActionKind.PROPOSE_ARGUMENT: (
+        MutationKind.ARGUMENT_STEP,
+        MutationKind.ALIGNMENT_LINK,
+    ),
+    SearchActionKind.REFINE_ARGUMENT: (
+        MutationKind.ARGUMENT_STEP,
+        MutationKind.ALIGNMENT_LINK,
+    ),
+    SearchActionKind.IMPLEMENT: (
+        MutationKind.LEAN_ARTIFACT,
+        MutationKind.ALIGNMENT_LINK,
+    ),
     # Per §8: a repair may touch the Lean artifact and its alignment mapping
     # only. Changing assumptions or math steps needs a new action.
     SearchActionKind.REPAIR_IMPLEMENTATION: (
@@ -98,7 +110,7 @@ DEFAULT_ALLOWED_MUTATIONS: dict[SearchActionKind, tuple[MutationKind, ...]] = {
     SearchActionKind.RUN_CHECK: (),
     SearchActionKind.RUN_CAPABILITY_TEST: (),
     SearchActionKind.ASSEMBLE: (),
-}
+})
 
 
 @dataclass(frozen=True)
@@ -152,30 +164,35 @@ class SearchAction:
         """
         errors: list[str] = []
 
-        if not isinstance(self.kind, SearchActionKind):
+        kind_is_valid = isinstance(self.kind, SearchActionKind)
+        if not kind_is_valid:
             errors.append(f"unknown search action kind {self.kind!r}")
-        if not self.target_branch_id or not self.target_branch_id.strip():
+        if not isinstance(self.target_branch_id, str) or not self.target_branch_id.strip():
             errors.append("search action target_branch_id must be non-empty")
-        if not self.rationale or not self.rationale.strip():
+        if not isinstance(self.rationale, str) or not self.rationale.strip():
             errors.append("search action rationale must be non-empty")
 
-        default_scope = DEFAULT_ALLOWED_MUTATIONS.get(self.kind, ())
+        default_scope = DEFAULT_ALLOWED_MUTATIONS.get(self.kind, ()) if kind_is_valid else ()
         seen_mutations: set[MutationKind] = set()
         for mutation in self.allowed_mutations:
+            if not isinstance(mutation, MutationKind):
+                errors.append(f"unknown allowed mutation {mutation!r}")
+                continue
             if mutation in seen_mutations:
                 errors.append(
                     f"duplicate allowed mutation {mutation.value!r}"
                 )
             seen_mutations.add(mutation)
             if mutation not in default_scope:
+                kind_label = self.kind.value if kind_is_valid else repr(self.kind)
                 errors.append(
-                    f"action kind {self.kind.value} cannot allow mutation "
+                    f"action kind {kind_label} cannot allow mutation "
                     f"{mutation.value!r} (not in default scope)"
                 )
 
         seen_steps: set[str] = set()
         for step_id in self.target_step_ids:
-            if not step_id or not step_id.strip():
+            if not isinstance(step_id, str) or not step_id.strip():
                 errors.append("search action target_step_ids contains an empty id")
                 continue
             if step_id in seen_steps:

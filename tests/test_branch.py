@@ -4,6 +4,11 @@ import unittest
 
 from agent.proof_system.base import DiagnosticCategory, ProgressSignal
 from agent.proof_system.workspace.alignment import AlignmentLink, AlignmentRelation
+from agent.proof_system.workspace.action import (
+    MutationKind,
+    SearchAction,
+    SearchActionKind,
+)
 from agent.proof_system.workspace.argument import ArgumentGraph, ArgumentStep
 from agent.proof_system.workspace.artifact import LeanArtifact
 from agent.proof_system.workspace.branch import (
@@ -15,6 +20,7 @@ from agent.proof_system.workspace.observation import (
     Observation,
     ObservationSource,
 )
+from agent.proof_system.workspace.hypothesis import FailureHypothesis, FailureKind
 
 
 class ProofBranchSerializationTest(unittest.TestCase):
@@ -163,6 +169,68 @@ class ProofBranchValidationTest(unittest.TestCase):
 
         self.assertFalse(unaligned_with_target.validate().ok)
         self.assertFalse(implements_without_target.validate().ok)
+
+    def test_action_and_hypothesis_are_authoritative_branch_state(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.REPAIR_IMPLEMENTATION,
+            target_branch_id="b1",
+            target_step_ids=("s1",),
+            allowed_mutations=(MutationKind.LEAN_ARTIFACT,),
+            rationale="test implementation",
+        )
+        observation = Observation(
+            observation_id="o1",
+            source=ObservationSource.CHECKER,
+            category="tactic_failed",
+        )
+        hypothesis = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.IMPLEMENTATION_DEFECT,
+            confidence=0.7,
+            evidence_ids=("o1",),
+            affected_step_ids=("s1",),
+            proposed_tests=(action,),
+        )
+        branch = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+            argument=ArgumentGraph(
+                steps=(ArgumentStep(step_id="s1", claim="claim"),)
+            ),
+            alignment=(AlignmentLink(argument_step_id="s1"),),
+            observations=(observation,),
+            failure_hypotheses=(hypothesis,),
+            last_action=action,
+        )
+
+        report = branch.validate()
+        restored = proof_branch_from_dict(branch.to_dict())
+
+        self.assertTrue(report.ok, report.errors)
+        self.assertEqual(restored, branch)
+
+    def test_hypothesis_references_must_resolve_inside_branch(self) -> None:
+        branch = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+            failure_hypotheses=(
+                FailureHypothesis(
+                    hypothesis_id="h1",
+                    kind=FailureKind.ARGUMENT_GAP,
+                    confidence=0.5,
+                    evidence_ids=("missing-observation",),
+                    affected_step_ids=("missing-step",),
+                ),
+            ),
+        )
+
+        report = branch.validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("missing observation" in e for e in report.errors))
+        self.assertTrue(any("missing argument step" in e for e in report.errors))
 
 
 if __name__ == "__main__":

@@ -140,10 +140,10 @@ agent/
 ## Phase 5 统一 ProofAgent 动作与失败假设
 
 - 动作协议原语补齐在 `agent/proof_system/workspace/` 子包：`SearchAction`/`SearchActionKind`/`MutationKind` + `DEFAULT_ALLOWED_MUTATIONS` 默认作用域表（`action.py`）、`FailureHypothesis`/`FailureKind`（`hypothesis.py`），全部 frozen + `to_dict`/`from_dict`。`SearchAction` 引用其他原语只靠字符串 id（branch/step），自身 branch-agnostic。
-- 每个 `SearchAction` 显式声明 `allowed_mutations`（8 个 `MutationKind`：formal_specification / obligation / obligation_dependency / argument_step / lean_artifact / alignment_link / branch_status / new_structure；observation 不是 mutation kind，因为它是 append-only 证据）。`SearchAction.validate()` 确定性校验 target_branch_id 非空、rationale 非空、allowed_mutations 是 `DEFAULT_ALLOWED_MUTATIONS[kind]` 子集（**允许 narrow、禁止 broaden**，跨界须另起动作）、target_step_ids 非空唯一，返回 `SearchActionReport`，不抛。
+- 每个 `SearchAction` 显式声明 `allowed_mutations`（8 个 `MutationKind`：formal_specification / obligation / obligation_dependency / argument_step / lean_artifact / alignment_link / branch_status / new_structure；observation 不是 mutation kind，因为它是 append-only 证据）。只读 `DEFAULT_ALLOWED_MUTATIONS` 定义各动作的最大作用域；argument/implement 动作允许同步维护 alignment。`SearchAction.validate()` 确定性校验 target_branch_id、rationale、作用域和 target_step_ids，返回 `SearchActionReport`，不抛。
 - `FailureHypothesis` 承载多个竞争性失败假设：`evidence_ids`（非空，引用 Phase 4 `Observation`）、`confidence`、`affected_step_ids`（可空）、`proposed_tests`（`SearchAction` 元组，可空）。`FailureKind` 仅含 6 个模型竞争语义类别（theorem_misuse / argument_gap / insufficient_assumptions / alignment_mismatch / implementation_defect / capability_missing），**不含**基础设施错误——保持"假设 = 模型竞争产物"边界纯粹，基础设施错误由确定性规则单独处理。
 - `FailureHypothesis.validate()` 确定性校验 hypothesis_id 非空、kind 合法、confidence ∈ [0,1] 且有限、evidence_ids 非空唯一、affected_step_ids 唯一、proposed_tests 委托 `SearchAction.validate()` 并以 `proposed_tests[i]:` 前缀聚合 child errors，返回 `FailureHypothesisReport`，不抛。
-- 本阶段只交付数据结构 + 序列化 + 校验 + 测试。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`（消息措辞已更新为 frontier/AND-OR driver 是 Phase 6）；**不**生成假设、**不**执行动作、**不**把 `SearchAction` 接进 `ProofBranch`（wiring 是 Phase 6）、minimal 路径不 import workspace 包。
+- `ProofBranch` 将 `last_action` 与 `failure_hypotheses` 作为权威状态持久化，并校验 action target、observation evidence 和 affected step 引用；旧 `last_action_summary` 仅用于 Phase 4 trace 兼容。本阶段仍不生成假设或执行动作；`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`，frontier/AND-OR driver 属于 Phase 6，minimal 路径不 import workspace 包。
 
 ## `ChatDriver` 抽象
 

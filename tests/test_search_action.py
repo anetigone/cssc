@@ -168,6 +168,38 @@ class SearchActionValidateTest(unittest.TestCase):
             set(DEFAULT_ALLOWED_MUTATIONS), set(SearchActionKind)
         )
 
+    def test_default_scope_table_is_immutable(self) -> None:
+        with self.assertRaises(TypeError):
+            DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.RUN_CHECK] = (  # type: ignore[index]
+                MutationKind.OBLIGATION,
+            )
+
+    def test_argument_and_implementation_actions_may_maintain_alignment(self) -> None:
+        for kind in (
+            SearchActionKind.PROPOSE_ARGUMENT,
+            SearchActionKind.REFINE_ARGUMENT,
+            SearchActionKind.IMPLEMENT,
+        ):
+            self.assertIn(
+                MutationKind.ALIGNMENT_LINK,
+                DEFAULT_ALLOWED_MUTATIONS[kind],
+            )
+
+    def test_malformed_runtime_values_are_reported_without_raising(self) -> None:
+        action = SearchAction(
+            kind="bad",  # type: ignore[arg-type]
+            target_branch_id=1,  # type: ignore[arg-type]
+            target_step_ids=(3,),  # type: ignore[arg-type]
+            allowed_mutations=("bad",),  # type: ignore[arg-type]
+            rationale=object(),  # type: ignore[arg-type]
+        )
+
+        report = action.validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("unknown search action kind" in e for e in report.errors))
+        self.assertTrue(any("unknown allowed mutation" in e for e in report.errors))
+
 
 if __name__ == "__main__":
     unittest.main()

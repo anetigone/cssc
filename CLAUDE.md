@@ -45,8 +45,8 @@
   - `build_controller` 对 STRUCTURED 仍抛错（动作协议是 Phase 5、frontier 是 Phase 6）；minimal 路径不 import workspace 包
 - **Phase 5** ✅ 已完成：统一 ProofAgent 动作与失败假设
   - 动作协议原语在 `agent/proof_system/workspace/` 子包：`action.py`（`SearchAction`/`SearchActionKind`/`MutationKind` + `DEFAULT_ALLOWED_MUTATIONS` 默认作用域表）、`hypothesis.py`（`FailureHypothesis`/`FailureKind`），frozen + 序列化。
-  - 每个动作显式声明 `allowed_mutations`；`SearchAction.validate()` 确定性校验 target_branch_id、rationale、allowed_mutations（允许 narrow、禁止 broaden，跨界须另起新动作）、target_step_ids 唯一性，返回 `SearchActionReport` 不抛。
-  - `FailureHypothesis` 承载多个竞争性失败假设；`FailureKind` 仅含 6 个模型竞争语义类别（不含基础设施错误，保持"假设 = 模型产物"边界）；`validate()` 校验 confidence ∈ [0,1]、evidence_ids 非空、proposed_tests 委托 `SearchAction.validate()` 聚合，返回 `FailureHypothesisReport`。
+  - 每个动作显式声明 `allowed_mutations`；只读默认作用域允许 argument/implement 同步维护 alignment；`SearchAction.validate()` 确定性校验 target_branch_id、rationale、allowed_mutations（允许 narrow、禁止 broaden，跨界须另起新动作）、target_step_ids 唯一性，返回 `SearchActionReport` 不抛。
+  - `FailureHypothesis` 承载多个竞争性失败假设；`ProofBranch.last_action` / `failure_hypotheses` 将动作和假设纳入权威 workspace 与 trace，并校验 evidence/step/branch 引用；`FailureKind` 仅含 6 个模型竞争语义类别（不含基础设施错误）。
   - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR driver 是 Phase 6）；minimal 路径不 import workspace 包。
 - **Phase 6**（下一步）：Frontier 与 AND-OR 搜索。见 plan1.md。
 
