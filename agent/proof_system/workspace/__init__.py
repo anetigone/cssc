@@ -25,6 +25,7 @@ from .artifact import LeanArtifact, lean_artifact_from_dict
 from .branch import (
     BranchStatus,
     ProofBranch,
+    ProofBranchReport,
     proof_branch_from_dict,
 )
 from .graph import (
@@ -52,6 +53,7 @@ from .spec import (
 )
 from .workspace import (
     ProofWorkspace,
+    ProofWorkspaceReport,
     initialize_from_task,
     workspace_from_dict,
 )
@@ -71,8 +73,10 @@ __all__ = [
     "ObligationGraphReport",
     "ObligationStatus",
     "ProofBranch",
+    "ProofBranchReport",
     "ProofObligation",
     "ProofWorkspace",
+    "ProofWorkspaceReport",
     "VerifiedFact",
     "WorkspaceStatus",
     "alignment_link_from_dict",

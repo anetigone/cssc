@@ -91,12 +91,12 @@ class ArtifactAssembler:
         budget_slice: BudgetSlice | None = None,
         safety_reviewer: SafetyReviewer | None = None,
     ) -> AssemblyResult:
-        report = workspace.obligation_graph.validate()
+        report = workspace.validate()
         if not report.ok:
             return AssemblyResult(
                 accepted=False,
                 source="",
-                errors=tuple(f"invalid obligation graph: {error}" for error in report.errors),
+                errors=tuple(f"invalid workspace: {error}" for error in report.errors),
             )
 
         active = [

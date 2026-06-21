@@ -349,6 +349,56 @@ class ProofWorkspaceTests(unittest.TestCase):
         self.assertTrue(workspace.obligation_graph.validate().ok)
 
 
+class ProofWorkspaceValidationTests(unittest.TestCase):
+    def _workspace(self, *branches: ProofBranch) -> ProofWorkspace:
+        root = _obligation(obligation_id="root")
+        return ProofWorkspace(
+            workspace_id="run-1",
+            obligation_graph=ObligationGraph(
+                obligations=(root,), root_obligation_id="root"
+            ),
+            branches=branches,
+            root_obligation_ids=("root",),
+            status=WorkspaceStatus.SEARCHING,
+        )
+
+    def test_valid_parent_child_branch_tree(self) -> None:
+        parent = ProofBranch("b1", "root", 1)
+        child = ProofBranch("b2", "root", 1, parent_branch_id="b1")
+
+        report = self._workspace(parent, child).validate()
+
+        self.assertTrue(report.ok, report.errors)
+        self.assertEqual(report.to_dict(), {"ok": True, "errors": []})
+
+    def test_duplicate_and_missing_parent_are_reported(self) -> None:
+        first = ProofBranch("b1", "root", 1)
+        duplicate = ProofBranch("b1", "root", 1, parent_branch_id="ghost")
+
+        report = self._workspace(first, duplicate).validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("duplicate proof branch" in e for e in report.errors))
+        self.assertTrue(any("missing parent" in e for e in report.errors))
+
+    def test_parent_cycle_is_reported(self) -> None:
+        first = ProofBranch("b1", "root", 1, parent_branch_id="b2")
+        second = ProofBranch("b2", "root", 1, parent_branch_id="b1")
+
+        report = self._workspace(first, second).validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("parent cycle" in e for e in report.errors))
+
+    def test_missing_obligation_version_is_reported(self) -> None:
+        branch = ProofBranch("b1", "root", 2)
+
+        report = self._workspace(branch).validate()
+
+        self.assertFalse(report.ok)
+        self.assertTrue(any("missing obligation" in e for e in report.errors))
+
+
 class WorkspaceMutationTests(unittest.TestCase):
     def _workspace(self) -> ProofWorkspace:
         task = ProofTask(

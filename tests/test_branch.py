@@ -89,5 +89,81 @@ class ProofBranchSerializationTest(unittest.TestCase):
             )
 
 
+class ProofBranchValidationTest(unittest.TestCase):
+    def test_valid_branch_with_explicit_unaligned_step(self) -> None:
+        branch = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+            argument=ArgumentGraph(
+                steps=(ArgumentStep(step_id="s1", claim="claim"),)
+            ),
+            alignment=(AlignmentLink(argument_step_id="s1"),),
+        )
+
+        self.assertTrue(branch.validate().ok, branch.validate().errors)
+
+    def test_artifact_pin_must_match_branch(self) -> None:
+        branch = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+            lean_artifact=LeanArtifact(
+                source="theorem helper : True := by trivial",
+                obligation_id="helper",
+                obligation_version=2,
+            ),
+        )
+
+        report = branch.validate()
+        self.assertFalse(report.ok)
+        self.assertTrue(any("artifact is pinned" in error for error in report.errors))
+
+    def test_each_argument_step_requires_explicit_alignment(self) -> None:
+        branch = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+            argument=ArgumentGraph(
+                steps=(ArgumentStep(step_id="s1", claim="claim"),)
+            ),
+        )
+
+        report = branch.validate()
+        self.assertFalse(report.ok)
+        self.assertTrue(any("explicit unaligned" in error for error in report.errors))
+
+    def test_alignment_target_must_be_consistent_with_relation(self) -> None:
+        step = ArgumentStep(step_id="s1", claim="claim")
+        unaligned_with_target = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+            argument=ArgumentGraph(steps=(step,)),
+            alignment=(
+                AlignmentLink(
+                    argument_step_id="s1",
+                    lean_declaration_id="root",
+                    relation=AlignmentRelation.UNALIGNED,
+                ),
+            ),
+        )
+        implements_without_target = ProofBranch(
+            branch_id="b2",
+            obligation_id="root",
+            obligation_version=1,
+            argument=ArgumentGraph(steps=(step,)),
+            alignment=(
+                AlignmentLink(
+                    argument_step_id="s1",
+                    relation=AlignmentRelation.IMPLEMENTS,
+                ),
+            ),
+        )
+
+        self.assertFalse(unaligned_with_target.validate().ok)
+        self.assertFalse(implements_without_target.validate().ok)
+
+
 if __name__ == "__main__":
     unittest.main()

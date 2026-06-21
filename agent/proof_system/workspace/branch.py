@@ -14,12 +14,12 @@ arrive in Phase 6.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 from ..base import ProgressSignal, progress_signal_from_dict
-from .alignment import AlignmentLink, alignment_link_from_dict
+from .alignment import AlignmentLink, AlignmentRelation, alignment_link_from_dict
 from .argument import ArgumentGraph, argument_graph_from_dict
 from .artifact import LeanArtifact, lean_artifact_from_dict
 from .observation import Observation, observation_from_dict
@@ -33,6 +33,17 @@ class BranchStatus(str, Enum):
     SUPERSEDED = "superseded"
     BLOCKED = "blocked"
     ACCEPTED = "accepted"
+
+
+@dataclass(frozen=True)
+class ProofBranchReport:
+    """Deterministic result of validating one proof branch."""
+
+    ok: bool
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "errors": list(self.errors)}
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,66 @@ class ProofBranch:
     last_action_summary: str | None = None
     progress: ProgressSignal = field(default_factory=ProgressSignal)
     status: BranchStatus = BranchStatus.ACTIVE
+
+    def validate(self) -> ProofBranchReport:
+        """Check branch-local pins and argument/alignment integrity."""
+        errors = list(self.argument.validate().errors)
+
+        if self.obligation_version < 1:
+            errors.append(
+                f"branch {self.branch_id!r} has invalid obligation version "
+                f"{self.obligation_version}"
+            )
+
+        if self.lean_artifact is not None:
+            artifact_pin = (
+                self.lean_artifact.obligation_id,
+                self.lean_artifact.obligation_version,
+            )
+            branch_pin = (self.obligation_id, self.obligation_version)
+            if artifact_pin != branch_pin:
+                errors.append(
+                    f"branch {self.branch_id!r} artifact is pinned to "
+                    f"{artifact_pin[0]!r} v{artifact_pin[1]}, not "
+                    f"{branch_pin[0]!r} v{branch_pin[1]}"
+                )
+
+        step_ids = {step.step_id for step in self.argument.steps}
+        aligned_step_ids: set[str] = set()
+        for link in self.alignment:
+            if link.argument_step_id not in step_ids:
+                errors.append(
+                    f"branch {self.branch_id!r} alignment references missing "
+                    f"argument step {link.argument_step_id!r}"
+                )
+                continue
+            aligned_step_ids.add(link.argument_step_id)
+            has_target = any(
+                target is not None
+                for target in (
+                    link.lean_declaration_id,
+                    link.source_span,
+                    link.goal_fingerprint,
+                )
+            )
+            if link.relation == AlignmentRelation.UNALIGNED and has_target:
+                errors.append(
+                    f"branch {self.branch_id!r} marks step "
+                    f"{link.argument_step_id!r} unaligned but supplies a Lean target"
+                )
+            elif link.relation != AlignmentRelation.UNALIGNED and not has_target:
+                errors.append(
+                    f"branch {self.branch_id!r} alignment for step "
+                    f"{link.argument_step_id!r} has no Lean target"
+                )
+
+        for step_id in sorted(step_ids - aligned_step_ids):
+            errors.append(
+                f"branch {self.branch_id!r} argument step {step_id!r} has no "
+                "alignment; record an explicit unaligned link"
+            )
+
+        return ProofBranchReport(ok=not errors, errors=tuple(errors))
 
     def to_dict(self) -> dict[str, Any]:
         return {
