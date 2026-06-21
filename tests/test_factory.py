@@ -39,6 +39,15 @@ class BuildControllerTests(unittest.TestCase):
         self.assertIsInstance(controller, ProofController)
         self.assertEqual(controller.config.execution_mode, ExecutionMode.MINIMAL)
 
+    def test_rejects_mode_mismatch_between_factory_and_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                build_controller(
+                    ExecutionMode.MINIMAL,
+                    **self._kwargs(tmp),
+                    config=ControllerConfig(execution_mode=ExecutionMode.STRUCTURED),
+                )
+
     def test_structured_raises_loudly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(StructuredModeUnavailableError) as ctx:

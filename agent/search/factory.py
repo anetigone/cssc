@@ -43,6 +43,13 @@ def build_controller(
     :class:`StructuredModeUnavailableError`.
     """
     if execution_mode is ExecutionMode.MINIMAL:
+        if config is not None:
+            configured_mode = getattr(config, "execution_mode", execution_mode)
+            if configured_mode != execution_mode:
+                raise ValueError(
+                    "Controller config execution_mode does not match the mode "
+                    f"selected by the factory: {configured_mode!s} != {execution_mode!s}."
+                )
         # Lazy import avoids a factory -> controller -> metrics -> execution
         # import chain being eagerly pulled when only the enum is needed.
         from .controller import ProofController

@@ -31,6 +31,7 @@ class TraceStoreTests(unittest.TestCase):
         self.assertEqual(events[0]["task"]["task_id"], "sample")
         self.assertEqual(events[1]["attempt"]["check_result"]["category"], "unsolved_goals")
         self.assertNotIn("raw_output", events[1]["attempt"]["check_result"])
+        self.assertNotIn("progress", events[1]["attempt"]["check_result"])
 
     def test_run_summary_carries_proof_memory_snapshot(self) -> None:
         result = _sample_result()

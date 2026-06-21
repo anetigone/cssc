@@ -15,7 +15,6 @@ from ..proof_system.base import (
     CandidateEdit,
     CheckResult,
     ParsedFeedback,
-    ProgressSignal,
     ProofTask,
 )
 from ..search.budget import BudgetSnapshot
@@ -192,7 +191,6 @@ def _check_result_payload(
         "parsed_feedback": (
             _feedback_payload(result.parsed_feedback) if result.parsed_feedback is not None else None
         ),
-        "progress": _progress_payload(result.progress) if result.progress is not None else None,
     }
     if include_raw_output:
         payload["raw_output"] = result.raw_output
@@ -217,19 +215,6 @@ def _feedback_payload(feedback: ParsedFeedback) -> dict[str, Any]:
             for state in feedback.goal_state
         ],
     }
-
-
-def _progress_payload(progress: ProgressSignal) -> dict[str, Any]:
-    return {
-        "accepted_prefix_chars": progress.accepted_prefix_chars,
-        "goal_count_delta": progress.goal_count_delta,
-        "goal_size_delta": progress.goal_size_delta,
-        "diagnostic_category": progress.diagnostic_category.value,
-        "introduced_obligations": progress.introduced_obligations,
-        "moved_to_semantic_obligation": progress.moved_to_semantic_obligation,
-        "features": progress.features,
-    }
-
 
 def _json_default(value: Any) -> Any:
     if isinstance(value, Path):

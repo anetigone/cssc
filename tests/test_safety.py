@@ -64,6 +64,16 @@ class StatementSafetyReviewerTests(unittest.TestCase):
 
         self.assertTrue(verdict.accepted)
 
+    def test_existing_axiom_does_not_mask_new_axiom(self) -> None:
+        template = "axiom base : True\ntheorem sample : True := by\n  {{proof}}\n"
+        task = ProofTask("sample", template)
+        candidate = template.replace("{{proof}}", "exact base") + "\naxiom injected : False\n"
+
+        verdict = self.reviewer.accepts(task, candidate, _accepted_result())
+
+        self.assertFalse(verdict.accepted)
+        self.assertIn("new_axiom_declared", verdict.reasons)
+
     def test_rejects_rewritten_statement_header(self) -> None:
         # The model changed the theorem signature before the hole.
         candidate = (
