@@ -33,14 +33,23 @@ agent/
 ├── agents/              # 各 agent 角色与共享模型基础设施
 │   ├── chat_driver.py   # 通用 chat-completion 驱动（payload、tool loop）
 │   ├── openai.py        # ChatConfig / ChatTransport / OpenAI 兼容 HTTP 层
-│   ├── tools.py         # Tool 协议、LeanEnvironmentToolProvider、run_tool_loop
+│   ├── tools/           # Tool 协议与 Lean 环境工具（__init__ 向后兼容 re-export）
+│   │   ├── base.py      # Tool / FunctionTool / ToolCall / extract_tool_calls
+│   │   ├── lean_env.py  # LeanEnvironmentToolProvider / extract_missing_imports
+│   │   ├── lean_proof.py# LeanProofToolProvider（bounded scratch checker）
+│   │   └── loop.py      # run_tool_loop
 │   ├── formalization.py # Formalizer：自然语言 -> Lean scaffold
 │   ├── proof.py         # Proof generator：补全 proof hole
 │   ├── context.py       # ContextSummarizer：压缩反馈与历史上下文
 │   └── config.py        # AgentRole / RoleModelConfig
 ├── search/              # 搜索控制
 │   ├── action.py        # ActionGenerator 协议与 ActionCandidate
-│   ├── controller.py    # ProofController 主循环
+│   ├── controller/      # ProofController 主循环（__init__ 向后兼容 re-export）
+│   │   ├── core.py      # ProofController
+│   │   ├── types.py     # ControllerConfig / AttemptRecord / ControllerResult
+│   │   ├── results.py   # 结果构造与 Phase 0 metrics
+│   │   ├── context.py   # 检索与上下文摘要
+│   │   └── utils.py     # _proof_phase / _edit_with_controller_metadata
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
 │   ├── factory.py       # 按执行模式构造 controller 的唯一选择点
 │   ├── budget.py        # 预算管理（checks / model calls / time）
@@ -56,7 +65,11 @@ agent/
 │   ├── lean_subprocess.py # 子进程执行与进程树清理
 │   ├── lean_feedback.py # Lean 诊断输出解析
 │   ├── lean_server.py   # 持久化 Lean server
-│   ├── workspace.py     # Phase 3 ProofWorkspace / ObligationGraph 等纯数据
+│   ├── workspace/       # Phase 3 ProofWorkspace / ObligationGraph 等纯数据
+│   │   ├── obligation.py# ProofObligation / ObligationStatus
+│   │   ├── graph.py     # ObligationGraph / ObligationGraphReport / DAG 校验
+│   │   ├── spec.py      # FormalSpecification / VerifiedFact / WorkspaceStatus
+│   │   └── workspace.py # ProofWorkspace / initialize_from_task
 │   ├── assembler.py     # Phase 3 final-assembly 整体复检
 │   └── base.py          # ProofSystemAdapter / ProofTask / CheckResult
 ├── retrieval/           # 检索（当前为词法检索 LexicalLeanRetriever）
@@ -65,6 +78,8 @@ agent/
 ├── runtime/             # workspace、trace store、logging、env loader
 └── cli/                 # 命令行入口 app.py
 ```
+
+> `controller`、`workspace`、`tools` 已拆分为子模块包；每个包的 `__init__.py` 通过向后兼容的 re-export 保留原有公共 API，现有 `from agent.search.controller import ...`、`from agent.proof_system.workspace import ...`、`from agent.agents import ...` 等导入路径无需修改。
 
 ## Agent 角色
 

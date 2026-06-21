@@ -125,7 +125,7 @@ class LeanProofToolProviderTests(unittest.TestCase):
             completed = subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr="Attempt.lean:1:1: error: bad"
             )
-            with patch("agent.agents.tools.subprocess.run", return_value=completed) as run:
+            with patch("agent.agents.tools.lean_proof.subprocess.run", return_value=completed) as run:
                 result = json.loads(provider.tools()[0].execute({"code": "#check Missing"}))
 
             self.assertFalse(result["ok"])
