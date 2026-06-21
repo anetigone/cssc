@@ -65,13 +65,18 @@ agent/
 │   ├── lean_subprocess.py # 子进程执行与进程树清理
 │   ├── lean_feedback.py # Lean 诊断输出解析
 │   ├── lean_server.py   # 持久化 Lean server
-│   ├── workspace/       # Phase 3 ProofWorkspace / ObligationGraph 等纯数据
+│   ├── workspace/       # Phase 3-4 ProofWorkspace / ObligationGraph / 分支等纯数据
 │   │   ├── obligation.py# ProofObligation / ObligationStatus
 │   │   ├── graph.py     # ObligationGraph / ObligationGraphReport / DAG 校验
 │   │   ├── spec.py      # FormalSpecification / VerifiedFact / WorkspaceStatus
-│   │   └── workspace.py # ProofWorkspace / initialize_from_task
+│   │   ├── workspace.py # ProofWorkspace / initialize_from_task / branches 接入
+│   │   ├── argument.py  # Phase 4 ArgumentStep / ArgumentGraph
+│   │   ├── artifact.py  # Phase 4 LeanArtifact（从 assembler.py 迁入并扩展）
+│   │   ├── alignment.py # Phase 4 AlignmentLink / AlignmentRelation
+│   │   ├── observation.py# Phase 4 Observation / ObservationSource / checker 提取器
+│   │   └── branch.py    # Phase 4 ProofBranch / BranchStatus
 │   ├── assembler.py     # Phase 3 final-assembly 整体复检
-│   └── base.py          # ProofSystemAdapter / ProofTask / CheckResult
+│   └── base.py          # ProofSystemAdapter / ProofTask / CheckResult / ProgressSignal
 ├── retrieval/           # 检索（当前为词法检索 LexicalLeanRetriever）
 ├── input/               # 输入解析、规范化、scaffold 校验
 ├── tasks/               # 任务构建
@@ -112,13 +117,23 @@ agent/
 
 ## Phase 3 ProofWorkspace 与 Obligation DAG
 
-- 结构化状态原语集中在 `agent/proof_system/workspace.py`（与 `ProofTask`/`CheckResult` 同模块，proof-system-neutral 纯数据）：`ProofObligation`、`ObligationGraph`、`ProofWorkspace`、`FormalSpecification`、`VerifiedFact`，全部 frozen + `to_dict`/`from_dict`。
+- 结构化状态原语集中在 `agent/proof_system/workspace/` 包（与 `ProofTask`/`CheckResult` 同层，proof-system-neutral 纯数据）：`ProofObligation`、`ObligationGraph`、`ProofWorkspace`、`FormalSpecification`、`VerifiedFact`，全部 frozen + `to_dict`/`from_dict`。
 - `ObligationGraph.validate()` 确定性检查无环、依赖存在、活跃依赖不指向 SUPERSEDED 版本、根存在且根的证明依赖闭包覆盖所有活跃义务；`dependency_ids` 从使用者指向其所需前提（root → helper）；返回 `ObligationGraphReport`，不抛异常。
 - 版本规则：statement/assumption/dependency 变化走 `ObligationGraph.new_version`，旧实例置 SUPERSEDED 并保留作 provenance；`by_id` 只解析到最新非 SUPERSEDED 版本。
 - `initialize_from_task` 从 `ProofTask` 造单 root obligation 的合法工作区，是 structured 模式入口；`decompose` 加辅助义务并创建依赖这些子义务的新 parent 版本；`register_accepted_fact` 只接受 checker 与 safety 均通过的证据，把 obligation 置 ACCEPTED 并记录带 obligation version 的 `VerifiedFact`。
 - `agent/proof_system/assembler.py` 的 `ArtifactAssembler.assemble` 在所有活跃 obligation 均 ACCEPTED 且 artifact id/version 匹配时，按依赖序拼装、整体复检并执行 safety review；前置失败返回 blocked `AssemblyResult`，不抛。
 - 序列化产物经 `ControllerResult.metadata["workspace"]` 进入 trace，`trace_store.workspace_payload` 透传；minimal 运行不写该键，`ProofController` 不 import workspace 模块，因此 minimal 不承担 DAG 成本。
 - 本阶段只交付数据结构 + 序列化 + trace + DAG 规则 + final-assembly 复检 + root 初始化。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`：驱动这些状态的 frontier / AND-OR 搜索是 Phase 4-6，未提前引入。
+
+## Phase 4 ProofBranch / ArgumentStep / Alignment / Observation
+
+- 数学论证层原语补齐在 `agent/proof_system/workspace/` 子包：`ArgumentStep`/`ArgumentGraph`（`argument.py`）、`LeanArtifact`（`artifact.py`，从 `assembler.py` 迁入并新增 `declaration_id`/`source_span`/`proof_body`）、`AlignmentLink`/`AlignmentRelation`（`alignment.py`）、`Observation`/`ObservationSource`（`observation.py`）、`ProofBranch`/`BranchStatus`（`branch.py`），全部 frozen + `to_dict`/`from_dict`。
+- `ArgumentGraph.validate()` 确定性校验 step id 唯一、`depends_on` 引用存在、依赖边无环，复用 Phase 3 `graph.py` 的 DFS 三色标记；返回 `ArgumentGraphReport`，不抛。
+- `AlignmentRelation` 三态：`IMPLEMENTS`/`PARTIAL`/`UNALIGNED`，无法精确对齐时显式记 `UNALIGNED`，不伪装确定归因。
+- `observations_from_check_result(check_result, attempt_index)` 是确定性提取器：非 accepted 的 `CheckResult` 按 `parsed_feedback.goal_state` 每个 goal 生成一条 `Observation`（`raw_evidence_ref="attempt:<N>"`），无 goal 时回退单条 summary；accepted 返回空 tuple。`category` 存为 str 以兼容未来新增分类。
+- `ProofBranch` 串起 `argument`/`lean_artifact`/`alignment`/`observations`/`progress`/`status`，`obligation_id`+`obligation_version` 锚定到具体义务版本；`parent_branch_id` 表示修复/策略切换派生的子分支。`progress` 复用 `base.py:ProgressSignal`（本阶段给它补了 `to_dict`/`progress_signal_from_dict`）。
+- `ProofWorkspace` 新增 `branches: tuple[ProofBranch, ...]`，经 `successor(branches=...)`、`to_dict`、`workspace_from_dict` 序列化；`initialize_from_task` 默认 `branches=()`。branches 随 workspace 序列化自动进 trace（Phase 3 已透传 `metadata["workspace"]`），不改 trace_store。
+- 本阶段只交付数据结构 + 序列化 + workspace 接入 + 确定性 observation 提取器 + 测试。`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`；不引入 `SearchAction`/`FailureHypothesis`（Phase 5）、不写 frontier/AND-OR 选择（Phase 6）、minimal 路径不 import workspace 包。
 
 ## `ChatDriver` 抽象
 
@@ -216,8 +231,13 @@ python -m pytest tests/ -q
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查。
 - `tests/test_trace_store.py`：原始 attempt、结构化 goal state、最终 memory 和 workspace 持久化。
 - `tests/test_factory.py`：执行模式选择，structured 硬失败。
-- `tests/test_workspace.py`：ProofWorkspace / ObligationGraph 数据结构、DAG 校验、版本规则、初始化与变异。
+- `tests/test_workspace.py`：ProofWorkspace / ObligationGraph 数据结构、DAG 校验、版本规则、初始化与变异、branches 往返。
 - `tests/test_assembler.py`：final-assembly 整体复检与 blocked 语义。
+- `tests/test_argument.py`：ArgumentStep / ArgumentGraph 序列化与 DAG 校验。
+- `tests/test_artifact.py`：LeanArtifact 字段序列化。
+- `tests/test_alignment.py`：AlignmentLink / AlignmentRelation 往返。
+- `tests/test_observation.py`：Observation 序列化与 checker 提取器。
+- `tests/test_branch.py`：ProofBranch 嵌套序列化与状态枚举。
 
 ## 注意事项
 
