@@ -37,14 +37,18 @@
   - DAG 合法性、版本规则（`new_version`/SUPERSEDED）、`initialize_from_task`、`decompose`、`register_accepted_fact`
   - final-assembly 整体复检：`agent/proof_system/assembler.py:ArtifactAssembler`
   - trace 集成：`workspace_payload` 透传 `metadata["workspace"]`；minimal 零成本
-  - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR 是 Phase 4-6）
+  - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR 是 Phase 6）
 - **Phase 4** ✅ 已完成：ProofBranch / ArgumentStep / Alignment / Observation
   - 数学论证层原语在 `agent/proof_system/workspace/` 子包：`argument.py`（`ArgumentStep`/`ArgumentGraph`）、`artifact.py`（`LeanArtifact` 从 `assembler.py` 迁入并扩展）、`alignment.py`（`AlignmentLink`/`AlignmentRelation`）、`observation.py`（`Observation`/`ObservationSource` + 确定性 checker 提取器）、`branch.py`（`ProofBranch`/`BranchStatus`）
   - `ArgumentGraph.validate()` 确定性 DAG 校验；`observations_from_check_result` 把非 accepted 检查结果转成中立 Observation；无法对齐显式记 `UNALIGNED`
   - `ProofWorkspace` 接入 `branches: tuple[ProofBranch, ...]` + 序列化；`base.py:ProgressSignal` 补 `to_dict`/`from_dict`
   - `build_controller` 对 STRUCTURED 仍抛错（动作协议是 Phase 5、frontier 是 Phase 6）；minimal 路径不 import workspace 包
-- **Phase 5**（下一步）：统一 ProofAgent 动作（`SearchAction`/`MutationKind`）与失败假设（`FailureHypothesis`）。见 plan1.md。
-- Phase 6+：Frontier 与 AND-OR 搜索。
+- **Phase 5** ✅ 已完成：统一 ProofAgent 动作与失败假设
+  - 动作协议原语在 `agent/proof_system/workspace/` 子包：`action.py`（`SearchAction`/`SearchActionKind`/`MutationKind` + `DEFAULT_ALLOWED_MUTATIONS` 默认作用域表）、`hypothesis.py`（`FailureHypothesis`/`FailureKind`），frozen + 序列化。
+  - 每个动作显式声明 `allowed_mutations`；只读默认作用域允许 argument/implement 同步维护 alignment；`SearchAction.validate()` 确定性校验 target_branch_id、rationale、allowed_mutations（允许 narrow、禁止 broaden，跨界须另起新动作）、target_step_ids 唯一性，返回 `SearchActionReport` 不抛。
+  - `FailureHypothesis` 承载多个竞争性失败假设；`ProofBranch.last_action` / `failure_hypotheses` 将动作和假设纳入权威 workspace 与 trace，并校验 evidence/step/branch 引用；`FailureKind` 仅含 6 个模型竞争语义类别（不含基础设施错误）。
+  - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR driver 是 Phase 6）；minimal 路径不 import workspace 包。
+- **Phase 6**（下一步）：Frontier 与 AND-OR 搜索。见 plan1.md。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 

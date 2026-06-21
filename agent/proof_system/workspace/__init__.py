@@ -5,10 +5,22 @@ proof obligations, their acyclic dependency DAG, and the top-level workspace.
 Phase 4 adds the argument/Lean alignment layer — versionable argument steps,
 Lean artifacts, alignment links, checker observations, and the
 :class:`ProofBranch` that ties them together — and wires branches into the
-workspace. These are proof-system-neutral frozen dataclasses. The minimal loop
-never imports this package, so it pays no DAG or branch cost.
+workspace. Phase 5 adds the unified action protocol and competing failure
+hypotheses (:class:`SearchAction` / :class:`MutationKind` /
+:class:`FailureHypothesis` / :class:`FailureKind`) that the structured
+executor will eventually drive. These are proof-system-neutral frozen
+dataclasses. The minimal loop never imports this package, so it pays no DAG,
+branch, or action cost.
 """
 
+from .action import (
+    DEFAULT_ALLOWED_MUTATIONS,
+    MutationKind,
+    SearchAction,
+    SearchActionKind,
+    SearchActionReport,
+    search_action_from_dict,
+)
 from .alignment import (
     AlignmentLink,
     AlignmentRelation,
@@ -32,6 +44,12 @@ from .graph import (
     ObligationGraph,
     ObligationGraphReport,
     obligation_graph_from_dict,
+)
+from .hypothesis import (
+    FailureHypothesis,
+    FailureHypothesisReport,
+    FailureKind,
+    failure_hypothesis_from_dict,
 )
 from .obligation import (
     ObligationStatus,
@@ -65,8 +83,13 @@ __all__ = [
     "ArgumentGraphReport",
     "ArgumentStep",
     "BranchStatus",
+    "DEFAULT_ALLOWED_MUTATIONS",
+    "FailureHypothesis",
+    "FailureHypothesisReport",
+    "FailureKind",
     "FormalSpecification",
     "LeanArtifact",
+    "MutationKind",
     "Observation",
     "ObservationSource",
     "ObligationGraph",
@@ -77,11 +100,16 @@ __all__ = [
     "ProofObligation",
     "ProofWorkspace",
     "ProofWorkspaceReport",
+    "SearchAction",
+    "SearchActionKind",
+    "SearchActionReport",
     "VerifiedFact",
     "WorkspaceStatus",
     "alignment_link_from_dict",
     "argument_graph_from_dict",
     "argument_step_from_dict",
+    "failure_hypothesis_from_dict",
+    "formal_specification_from_dict",
     "initialize_from_task",
     "lean_artifact_from_dict",
     "obligation_from_dict",
@@ -89,7 +117,7 @@ __all__ = [
     "observation_from_dict",
     "observations_from_check_result",
     "proof_branch_from_dict",
-    "formal_specification_from_dict",
+    "search_action_from_dict",
     "verified_fact_from_dict",
     "workspace_from_dict",
 ]
