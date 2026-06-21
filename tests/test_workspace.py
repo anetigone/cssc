@@ -8,6 +8,7 @@ from agent.proof_system.workspace import (
     ObligationGraph,
     ObligationGraphReport,
     ObligationStatus,
+    ProofBranch,
     ProofObligation,
     ProofWorkspace,
     WorkspaceStatus,
@@ -293,6 +294,36 @@ class ProofWorkspaceTests(unittest.TestCase):
         self.assertEqual(restored.root_obligation_ids, ("root",))
         self.assertEqual(restored.obligation_graph.root().obligation_id, "root")
         self.assertEqual(restored.specification.statement_nl, "show True")
+
+    def test_round_trip_preserves_branches(self) -> None:
+        root = _obligation(obligation_id="root")
+        graph = ObligationGraph(obligations=(root,), root_obligation_id="root")
+        branch = ProofBranch(
+            branch_id="b1",
+            obligation_id="root",
+            obligation_version=1,
+        )
+        workspace = ProofWorkspace(
+            workspace_id="run-1",
+            specification=FormalSpecification(statement_nl="show True"),
+            obligation_graph=graph,
+            branches=(branch,),
+            root_obligation_ids=("root",),
+            status=WorkspaceStatus.SEARCHING,
+        )
+
+        restored = workspace_from_dict(workspace.to_dict())
+
+        self.assertEqual(restored.branches, (branch,))
+        # Default-constructed workspaces carry no branches.
+        seeded = initialize_from_task(
+            ProofTask(
+                task_id="demo",
+                source_template="theorem demo : True := by\n  {{proof}}\n",
+            )
+        )
+        self.assertEqual(seeded.branches, ())
+        self.assertEqual(workspace_from_dict(seeded.to_dict()).branches, ())
 
     def test_initialize_from_task_seeds_single_root(self) -> None:
         task = ProofTask(

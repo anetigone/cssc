@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ..base import CheckResult, DiagnosticCategory
+from .branch import ProofBranch, proof_branch_from_dict
 from .graph import ObligationGraph, obligation_graph_from_dict
 from .obligation import ObligationStatus, ProofObligation
 from .spec import (
@@ -37,6 +38,7 @@ class ProofWorkspace:
     specification: FormalSpecification = field(default_factory=FormalSpecification)
     obligation_graph: ObligationGraph = field(default_factory=ObligationGraph)
     accepted_facts: tuple[VerifiedFact, ...] = ()
+    branches: tuple[ProofBranch, ...] = ()
 
     root_obligation_ids: tuple[str, ...] = ()
     status: WorkspaceStatus = WorkspaceStatus.INITIALIZING
@@ -46,6 +48,7 @@ class ProofWorkspace:
         *,
         obligation_graph: ObligationGraph | None = None,
         accepted_facts: tuple[VerifiedFact, ...] | None = None,
+        branches: tuple[ProofBranch, ...] | None = None,
         root_obligation_ids: tuple[str, ...] | None = None,
         status: WorkspaceStatus | None = None,
     ) -> ProofWorkspace:
@@ -66,6 +69,7 @@ class ProofWorkspace:
             accepted_facts=(
                 accepted_facts if accepted_facts is not None else self.accepted_facts
             ),
+            branches=branches if branches is not None else self.branches,
             root_obligation_ids=(
                 root_obligation_ids
                 if root_obligation_ids is not None
@@ -168,6 +172,7 @@ class ProofWorkspace:
             "specification": self.specification.to_dict(),
             "obligation_graph": self.obligation_graph.to_dict(),
             "accepted_facts": [fact.to_dict() for fact in self.accepted_facts],
+            "branches": [branch.to_dict() for branch in self.branches],
             "root_obligation_ids": list(self.root_obligation_ids),
             "status": self.status.value,
         }
@@ -186,6 +191,9 @@ def workspace_from_dict(data: dict[str, Any]) -> ProofWorkspace:
         ),
         accepted_facts=tuple(
             verified_fact_from_dict(item) for item in data.get("accepted_facts", ())
+        ),
+        branches=tuple(
+            proof_branch_from_dict(item) for item in data.get("branches", ())
         ),
         root_obligation_ids=tuple(data.get("root_obligation_ids", ())),
         status=WorkspaceStatus(
