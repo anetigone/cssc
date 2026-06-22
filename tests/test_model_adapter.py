@@ -153,6 +153,74 @@ class ChatActionGeneratorTests(unittest.TestCase):
         system_prompt = transport.calls[0][2]["messages"][0]["content"]
         self.assertIn("Reconsider the failing", system_prompt)
 
+    def test_repair_phase_treated_as_revision(self) -> None:
+        # Structured mode emits proof_phase="repair" on subsequent attempts;
+        # it must reach the same revision guidance as minimal's "retry",
+        # otherwise a repair request is silently treated as a fresh propose.
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "corrected"}, "finish_reason": "stop"}]}
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+        generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=1,
+                metadata={"proof_phase": "repair"},
+            )
+        )
+        system_prompt = transport.calls[0][2]["messages"][0]["content"]
+        self.assertIn("previous attempt failed", system_prompt)
+
+    def test_structured_projection_renders_in_prompt(self) -> None:
+        transport = RecordingTransport(
+            {"choices": [{"message": {"content": "fixed"}, "finish_reason": "stop"}]}
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+        task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}")
+        generator.generate(
+            ActionGenerationRequest(
+                task=task,
+                attempt_index=2,
+                metadata={
+                    "proof_phase": "repair",
+                    "branch_obligation": {
+                        "obligation_id": "sample",
+                        "lean_statement": "theorem sample : True := by",
+                        "statement_nl": "Show the sample theorem holds.",
+                    },
+                    "previous_attempt": {
+                        "branch_id": "sample:root",
+                        "proof_text": "exact trivial",
+                        "observations": [
+                            {
+                                "category": "unsolved_goals",
+                                "message": "unsolved goals",
+                                "goal_fingerprint": "fp1",
+                            }
+                        ],
+                    },
+                    "verified_facts": (
+                        {
+                            "obligation_id": "helper",
+                            "statement": "lemma helper : True := rfl",
+                        },
+                    ),
+                },
+            )
+        )
+        prompt = transport.calls[0][2]["messages"][1]["content"]
+        # The branch's obligation anchors the proposal to the right goal.
+        self.assertIn("Show the sample theorem holds.", prompt)
+        self.assertIn("theorem sample : True := by", prompt)
+        # The failed realization from the retained artifact must be revisable.
+        self.assertIn("exact trivial", prompt)
+        # Accepted facts from other branches are surfaced for reuse.
+        self.assertIn("lemma helper : True := rfl", prompt)
+
     def test_removes_exploration_commands_from_final_candidate(self) -> None:
         transport = RecordingTransport(
             {

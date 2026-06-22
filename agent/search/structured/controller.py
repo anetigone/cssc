@@ -293,6 +293,15 @@ class StructuredController:
         if branch.observations:
             previous_attempt = {
                 "branch_id": branch.branch_id,
+                # The reducer retains the failed realization as the branch's
+                # LeanArtifact (provenance). Surfacing its proof body lets the
+                # prompt actually revise the previous attempt instead of
+                # generating blind.
+                "proof_text": (
+                    branch.lean_artifact.proof_body
+                    if branch.lean_artifact is not None
+                    else None
+                ),
                 "observations": [
                     {
                         "category": obs.category,
@@ -323,6 +332,13 @@ class StructuredController:
                 else None
             ),
             "previous_attempt": previous_attempt,
+            "verified_facts": tuple(
+                {
+                    "obligation_id": fact.obligation_id,
+                    "statement": fact.statement,
+                }
+                for fact in workspace.accepted_facts
+            ),
             "retrieved_results": state.current_retrieved,
             "retrieved_history": tuple(state.retrieved_history),
             "summarized_context": summarized_context,

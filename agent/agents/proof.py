@@ -137,7 +137,7 @@ def _build_messages(
         else ""
     )
     phase = request.metadata.get("proof_phase", "propose")
-    if phase == "retry":
+    if phase in ("retry", "repair"):
         phase_guidance = (
             " A previous attempt failed Lean checking. Reconsider the failing subargument or "
             "proof strategy, keeping verified parts when useful, and make the smallest change "
@@ -184,6 +184,33 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
     proof_phase = request.metadata.get("proof_phase")
     if isinstance(proof_phase, str):
         parts.append(f"Proof loop phase: {proof_phase}")
+    branch_obligation = request.metadata.get("branch_obligation")
+    if isinstance(branch_obligation, Mapping):
+        # In structured mode the obligation being proved is the anchor of the
+        # current branch; surface it so the proposal targets the right goal
+        # rather than drifting toward the root template.
+        if isinstance(branch_obligation.get("statement_nl"), str):
+            nl = branch_obligation["statement_nl"].strip()
+            if nl:
+                parts.extend(["Obligation to prove:", nl])
+        if isinstance(branch_obligation.get("lean_statement"), str):
+            lean_stmt = branch_obligation["lean_statement"].strip()
+            if lean_stmt:
+                parts.extend(
+                    ["Obligation Lean statement:", "```lean", lean_stmt, "```"]
+                )
+    verified_facts = request.metadata.get("verified_facts")
+    if isinstance(verified_facts, Sequence) and verified_facts:
+        # Accepted facts from other branches are reusable conclusions with
+        # checker+safety provenance; the model may invoke them instead of
+        # re-proving already-verified obligations.
+        parts.append("Verified facts reusable in this proof:")
+        for fact in verified_facts:
+            if not isinstance(fact, Mapping):
+                continue
+            statement = fact.get("statement")
+            if isinstance(statement, str) and statement.strip():
+                parts.append(f"- {statement.strip()}")
     encoded_state = request.metadata.get("encoded_state")
     if encoded_state is not None and hasattr(encoded_state, "to_prompt_context"):
         parts.extend(["Controller state:", str(encoded_state.to_prompt_context())])
