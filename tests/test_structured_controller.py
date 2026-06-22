@@ -124,14 +124,22 @@ class StructuredControllerTests(unittest.TestCase):
         budget: BudgetConfig | None = None,
         safety_reviewer: Any = None,
         adapter: ProofSystemAdapter | None = None,
+        max_candidates: int = 1,
+        retriever: Any = None,
+        context_summarizer: Any = None,
     ) -> StructuredController:
         return StructuredController(
             adapter=adapter or StructuredFakeAdapter(),
             action_generator=generator,
             workspace=AttemptWorkspace(tmp),
             budget_config=budget or BudgetConfig(max_checks=8, max_model_calls=8),
-            config=ControllerConfig(execution_mode=ExecutionMode.STRUCTURED),
+            config=ControllerConfig(
+                execution_mode=ExecutionMode.STRUCTURED,
+                max_candidates_per_model_call=max_candidates,
+            ),
             safety_reviewer=safety_reviewer,
+            retriever=retriever,
+            context_summarizer=context_summarizer,
         )
 
     def test_accepted_path_serializes_workspace(self) -> None:
@@ -218,6 +226,61 @@ class StructuredControllerTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.stop_reason, "tool_unavailable")
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(result.metrics.budget_checks_used, 1)
+        observations = result.metadata["workspace"]["branches"][0]["observations"]
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["category"], "tool_unavailable")
+
+    def test_checks_all_candidates_and_preserves_or_branches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["fail", "trivial"]]),
+                max_candidates=2,
+                budget=BudgetConfig(max_checks=3, max_model_calls=1),
+            )
+            result = controller.run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(result.attempts), 2)
+        branches = result.metadata["workspace"]["branches"]
+        self.assertEqual(len(branches), 2)
+        self.assertTrue(any(branch["parent_branch_id"] for branch in branches))
+
+    def test_final_assembly_inserts_proof_snippet_only_once(self) -> None:
+        class StrictSourceAdapter(StructuredFakeAdapter):
+            def check(self, candidate_file, budget_slice):
+                source = candidate_file.read_text(encoding="utf-8")
+                if source.count("theorem sample") != 1:
+                    return CheckResult(
+                        accepted=False,
+                        category=DiagnosticCategory.ELABORATION_ERROR,
+                        raw_output="nested theorem",
+                        candidate_file=candidate_file,
+                    )
+                return super().check(candidate_file, budget_slice)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                adapter=StrictSourceAdapter(),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+
+    def test_no_actions_blocks_only_selected_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, QueueGenerator([]))
+            result = controller.run(_task())
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.stop_reason, "no_actions")
+        self.assertEqual(
+            result.metadata["workspace"]["branches"][0]["status"],
+            "blocked",
+        )
 
     def test_assembly_reserves_its_own_check_budget(self) -> None:
         # max_checks=2: one attempt + the assembly recheck. The run must still

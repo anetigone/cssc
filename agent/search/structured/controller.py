@@ -57,6 +57,7 @@ from ..controller.types import (
     ControllerResult,
     Retriever,
 )
+from ..controller.context import maybe_retrieve, summarize_context
 from ..execution import ExecutionMode
 from ..metrics import attempt_metric
 from ..safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
@@ -126,84 +127,103 @@ class StructuredController:
             if branch is None or branch.status != BranchStatus.ACTIVE:
                 continue
 
-            if not self.budget.can_call_model():
-                state.stop_reason = "budget:model_calls"
-                break
+            state.retrieved_this_iteration = False
+            state.current_retrieved = maybe_retrieve(
+                task,
+                state,
+                self.retriever,
+                self.config,
+                is_first_iteration=not state.attempts,
+            )
+            if state.current_retrieved:
+                state.retrieved_history.extend(state.current_retrieved)
             self.budget.reserve_model_call()
-            action = self._pick_action(branch)
             candidates = self._generate(task, branch, workspace, state)
             if not candidates:
-                state.stop_reason = "no_actions"
-                logger.info(
-                    "Structured controller stopped: task_id=%s reason=no_actions",
-                    task.task_id,
-                )
-                break
-            candidate = candidates[0]
-            edit = _edit_with_structured_metadata(candidate.to_edit(), action, branch)
+                workspace = _block_branch(workspace, branch.branch_id)
+                frontier.update(workspace, branch.branch_id, accepted=False)
+                if not frontier.has_work():
+                    state.stop_reason = "no_actions"
+                continue
 
-            if not self.budget.can_check():
-                state.stop_reason = "budget:checks"
-                logger.info(
-                    "Structured controller stopped: task_id=%s reason=budget:checks",
-                    task.task_id,
-                )
-                break
-            check_result = self._check(task, edit, state)
-            if (
-                self.config.stop_on_tool_unavailable
-                and check_result.category == DiagnosticCategory.TOOL_UNAVAILABLE
-            ):
-                state.stop_reason = "tool_unavailable"
-                logger.warning(
-                    "Structured controller stopped: task_id=%s reason=tool_unavailable",
-                    task.task_id,
-                )
-                break
-
-            safety_verdict = self._review(task, edit, check_result, state)
-
-            record = AttemptRecord(
-                attempt_index=state.attempt_index,
-                candidate_id=edit.action,
-                edit=edit,
-                candidate_file=check_result.candidate_file,
-                check_result=check_result,
-            )
-            state.attempts.append(record)
-            state.attempt_metrics.append(
-                attempt_metric(
-                    state.attempt_index,
-                    action=edit.action,
-                    check_result=check_result,
-                )
-            )
-            state.attempt_index += 1
-            logger.info(
-                "Structured attempt checked: task_id=%s attempt_index=%d accepted=%s category=%s",
-                task.task_id,
-                record.attempt_index,
-                check_result.accepted,
-                check_result.category.value,
-            )
-
-            accepted = check_result.accepted and safety_verdict.accepted
-            workspace = apply(
+            workspace, candidate_branches = _expand_candidate_branches(
                 workspace,
-                action,
-                StructuredActionResult(
-                    branch_id=branch.branch_id,
-                    check_result=check_result,
-                    safety_verdict=safety_verdict,
-                    proof_text=candidate.proof_text,
-                    source=self.adapter.render_candidate(task, edit),
-                    attempt_index=record.attempt_index,
-                ),
+                branch,
+                len(candidates[: self.config.max_candidates_per_model_call]),
+                state.attempt_index,
             )
-            frontier.update(workspace, branch.branch_id, accepted)
+            stop_for_tool = False
+            attempted_branch_ids: list[str] = []
+            for candidate, candidate_branch in zip(candidates, candidate_branches):
+                if not self.budget.can_check():
+                    state.stop_reason = "budget:checks"
+                    break
+                action = self._pick_action(candidate_branch)
+                edit = _edit_with_structured_metadata(
+                    candidate.to_edit(parent_node_id=branch.branch_id),
+                    action,
+                    candidate_branch,
+                )
+                check_result = self._check(task, edit, state)
+                attempted_branch_ids.append(candidate_branch.branch_id)
+                safety_verdict = self._review(task, edit, check_result, state)
+                record = AttemptRecord(
+                    attempt_index=state.attempt_index,
+                    candidate_id=edit.action,
+                    edit=edit,
+                    candidate_file=check_result.candidate_file,
+                    check_result=check_result,
+                )
+                state.attempts.append(record)
+                state.attempt_metrics.append(
+                    attempt_metric(
+                        state.attempt_index,
+                        action=edit.action,
+                        check_result=check_result,
+                    )
+                )
+                if check_result.parsed_feedback is not None:
+                    state.feedback_history.append(check_result.parsed_feedback)
+                state.attempt_index += 1
+                workspace = apply(
+                    workspace,
+                    action,
+                    StructuredActionResult(
+                        branch_id=candidate_branch.branch_id,
+                        check_result=check_result,
+                        safety_verdict=safety_verdict,
+                        proof_text=candidate.proof_text,
+                        # LeanArtifact.source is an obligation snippet; the
+                        # assembler renders it into the task exactly once.
+                        source=candidate.proof_text,
+                        attempt_index=record.attempt_index,
+                    ),
+                )
+                logger.info(
+                    "Structured attempt checked: task_id=%s attempt_index=%d accepted=%s category=%s",
+                    task.task_id,
+                    record.attempt_index,
+                    check_result.accepted,
+                    check_result.category.value,
+                )
+                if (
+                    self.config.stop_on_tool_unavailable
+                    and check_result.category == DiagnosticCategory.TOOL_UNAVAILABLE
+                ):
+                    state.stop_reason = "tool_unavailable"
+                    stop_for_tool = True
+                    break
+                if has_complete_solution(workspace):
+                    return self._assemble_and_finalize(task, workspace, state)
 
-            if has_complete_solution(workspace):
-                return self._assemble_and_finalize(task, workspace, state)
+            frontier.update(
+                workspace,
+                branch.branch_id,
+                accepted=False,
+                attempted_branch_ids=tuple(attempted_branch_ids),
+            )
+            if stop_for_tool or state.stop_reason == "budget:checks":
+                break
 
         if state.stop_reason == "budget":
             reason = self.budget.exhausted_reason()
@@ -257,12 +277,16 @@ class StructuredController:
             task=task,
             attempt_index=state.attempt_index,
             max_candidates=self.config.max_candidates_per_model_call,
-            metadata=self._generation_metadata(branch, workspace),
+            metadata=self._generation_metadata(task, branch, workspace, state),
         )
         return tuple(self.action_generator.generate(request))
 
     def _generation_metadata(
-        self, branch: ProofBranch, workspace: ProofWorkspace
+        self,
+        task: ProofTask,
+        branch: ProofBranch,
+        workspace: ProofWorkspace,
+        state: _StructuredRunState,
     ) -> dict[str, Any]:
         obligation = workspace.obligation_graph.by_id(branch.obligation_id)
         previous_attempt = None
@@ -278,6 +302,12 @@ class StructuredController:
                     for obs in branch.observations
                 ],
             }
+        summarized_context = summarize_context(
+            task,
+            state,
+            self.context_summarizer,
+            previous_attempt,
+        )
         return {
             "proof_phase": (
                 "implement" if branch.last_action is None else "repair"
@@ -293,6 +323,9 @@ class StructuredController:
                 else None
             ),
             "previous_attempt": previous_attempt,
+            "retrieved_results": state.current_retrieved,
+            "retrieved_history": tuple(state.retrieved_history),
+            "summarized_context": summarized_context,
             "structured_workspace_version": workspace.version,
             "budget": self.budget.snapshot(),
         }
@@ -427,6 +460,52 @@ def _action_rationale(kind: SearchActionKind, branch: ProofBranch) -> str:
     if kind == SearchActionKind.IMPLEMENT:
         return f"initial implementation for branch {branch.branch_id}"
     return f"repair implementation for branch {branch.branch_id}"
+
+
+def _block_branch(workspace: ProofWorkspace, branch_id: str) -> ProofWorkspace:
+    branches = tuple(
+        replace(branch, status=BranchStatus.BLOCKED)
+        if branch.branch_id == branch_id
+        else branch
+        for branch in workspace.branches
+    )
+    return workspace.successor(branches=branches)
+
+
+def _expand_candidate_branches(
+    workspace: ProofWorkspace,
+    branch: ProofBranch,
+    count: int,
+    batch_index: int,
+) -> tuple[ProofWorkspace, tuple[ProofBranch, ...]]:
+    """Materialize one branch per candidate without overwriting alternatives."""
+    if count <= 1:
+        return workspace, (branch,)
+    alternatives = [branch]
+    existing_ids = {item.branch_id for item in workspace.branches}
+    for candidate_index in range(1, count):
+        candidate_id = f"{branch.branch_id}.c{batch_index}.{candidate_index}"
+        suffix = 0
+        while candidate_id in existing_ids:
+            suffix += 1
+            candidate_id = (
+                f"{branch.branch_id}.c{batch_index}.{candidate_index}.{suffix}"
+            )
+        existing_ids.add(candidate_id)
+        alternatives.append(
+            replace(
+                branch,
+                branch_id=candidate_id,
+                parent_branch_id=branch.branch_id,
+                lean_artifact=None,
+                last_action=None,
+                status=BranchStatus.ACTIVE,
+            )
+        )
+    return (
+        workspace.successor(branches=(*workspace.branches, *alternatives[1:])),
+        tuple(alternatives),
+    )
 
 
 def _edit_with_structured_metadata(edit: Any, action: SearchAction, branch: ProofBranch) -> Any:

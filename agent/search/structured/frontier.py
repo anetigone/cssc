@@ -224,6 +224,8 @@ class Frontier:
         workspace: ProofWorkspace,
         branch_id: str,
         accepted: bool,
+        *,
+        attempted_branch_ids: tuple[str, ...] = (),
     ) -> None:
         """Refresh the pending set after a reducer transition.
 
@@ -232,19 +234,28 @@ class Frontier:
         naturally (they are no longer ACTIVE). Resets the per-round popped set
         so the just-tried branch can be retried next round if it stayed ACTIVE.
         """
-        del accepted  # accepted branches are no longer ACTIVE, so they drop out
-        self._popped_this_round.discard(branch_id)
-        fresh: list[FrontierNode] = []
-        fresh_ids: set[str] = set()
-        for branch in workspace.branches:
-            if branch.status != BranchStatus.ACTIVE:
-                continue
-            if branch.branch_id in self._popped_this_round:
-                fresh.append(_node_for(branch, workspace))
-                fresh_ids.add(branch.branch_id)
-                continue
-            fresh.append(_node_for(branch, workspace))
-            fresh_ids.add(branch.branch_id)
+        del branch_id, accepted  # status in the workspace is authoritative
+        self._popped_this_round.update(attempted_branch_ids)
+
+        active = [
+            branch
+            for branch in workspace.branches
+            if branch.status == BranchStatus.ACTIVE
+        ]
+        # Preserve round-level fairness: branches already tried in this round
+        # stay out while another ACTIVE branch remains. Once every active
+        # branch has had a turn, begin a fresh round.
+        eligible = [
+            branch
+            for branch in active
+            if branch.branch_id not in self._popped_this_round
+        ]
+        if not eligible and active:
+            self._popped_this_round.clear()
+            eligible = active
+
+        fresh = [_node_for(branch, workspace) for branch in eligible]
+        fresh_ids = {node.branch_id for node in fresh}
         self._pending = fresh
         self._pending_ids = fresh_ids
 

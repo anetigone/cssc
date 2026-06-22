@@ -45,6 +45,10 @@ class _StructuredRunState:
     stop_reason: str = "budget"
     sample_id: str = field(default_factory=new_sample_id)
     safety_rejections: list[dict[str, Any]] = field(default_factory=list)
+    feedback_history: list = field(default_factory=list)
+    current_retrieved: tuple = ()
+    retrieved_history: list = field(default_factory=list)
+    retrieved_this_iteration: bool = False
 
 
 def build_structured_result(

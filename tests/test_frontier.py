@@ -272,13 +272,26 @@ class FrontierUpdateTests(unittest.TestCase):
         workspace = _workspace((parent_after, child))
         frontier.update(workspace, "parent", accepted=False)
 
-        popped_ids = []
+        # Parent has already had its turn in this round, so only the fresh
+        # child is eligible. Updating after the child begins the next round.
+        self.assertEqual(frontier.pop().branch_id, "child")
+        frontier.update(workspace, "child", accepted=False)
+        next_round = []
         while frontier.has_work():
-            popped_ids.append(frontier.pop().branch_id)
+            next_round.append(frontier.pop().branch_id)
+        self.assertIn("parent", next_round)
 
-        # Parent has two stalled attempts; the fresh child wins.
-        self.assertEqual(popped_ids[0], "child")
-        self.assertIn("parent", popped_ids)
+    def test_update_does_not_requeue_tried_branch_before_peer(self) -> None:
+        first = _branch("a")
+        peer = _branch("b")
+        frontier = Frontier()
+        frontier.seed(_workspace((first, peer)))
+
+        self.assertEqual(frontier.pop().branch_id, "a")
+        first_after = _branch("a", observations=(_goal_obs(0, "fp-a"),))
+        frontier.update(_workspace((first_after, peer)), "a", accepted=False)
+
+        self.assertEqual(frontier.pop().branch_id, "b")
 
     def test_popped_branch_id_carries_obligation(self) -> None:
         node = FrontierNode(
