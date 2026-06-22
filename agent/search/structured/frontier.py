@@ -127,13 +127,18 @@ def _attempt_count(branch: ProofBranch) -> int:
 
 
 def _stalled_streak(branch: ProofBranch) -> int:
-    """Consecutive attempts whose goal-fingerprint set matched the previous.
+    """Number of trailing attempts stuck on the same goal-fingerprint set.
 
     Walks the observations newest-first, grouping by ``raw_evidence_ref`` to
     recover per-attempt evidence batches, and counts how many trailing
-    attempts share the same fingerprint signature. Deterministic and pure —
-    the reducer recomputes the same value when deciding whether to retire a
-    branch, so the scheduler and the reducer never disagree.
+    attempts share the same non-empty fingerprint signature — *including* the
+    most recent attempt. So one failing attempt on a goal is a streak of 1,
+    three identical failures is a streak of 3. Deterministic and pure — the
+    reducer recomputes the same value when deciding whether to retire or fork
+    a branch, so the scheduler and the reducer never disagree.
+
+    A streak of 0 means the branch either has no observations or its latest
+    attempt differs from the one before it (progress, or first attempt).
     """
     observations = branch.observations
     if not observations:
@@ -156,11 +161,13 @@ def _stalled_streak(branch: ProofBranch) -> int:
             )
         )
         batches.append(batch)
-    if not batches:
+    if not batches or batches[0] == ():
+        # Latest attempt produced no fingerprintable goals: not comparable,
+        # treat as a fresh streak so we don't retire on unparseable output.
         return 0
-    streak = 0
+    streak = 1
     for current, previous in zip(batches, batches[1:]):
-        if current == previous and current != ():
+        if previous == batches[0]:
             streak += 1
         else:
             break

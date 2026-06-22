@@ -176,7 +176,22 @@ class FrontierStallDetectionTests(unittest.TestCase):
         frontier.seed(workspace)
         node = frontier.pop()
 
-        self.assertEqual(node.stalled_streak, 2)
+        # Streak counts the trailing identical attempts including the latest,
+        # so three identical failures is a streak of 3.
+        self.assertEqual(node.stalled_streak, 3)
+
+    def test_single_attempt_is_streak_of_one(self) -> None:
+        branch = _branch(
+            "b",
+            observations=(_goal_obs(0, "fp-a"),),
+        )
+        workspace = _workspace((branch,))
+
+        frontier = Frontier()
+        frontier.seed(workspace)
+        node = frontier.pop()
+
+        self.assertEqual(node.stalled_streak, 1)
 
     def test_progressing_streak_resets_on_change(self) -> None:
         branch = _branch(
@@ -193,7 +208,8 @@ class FrontierStallDetectionTests(unittest.TestCase):
         frontier.seed(workspace)
         node = frontier.pop()
 
-        self.assertEqual(node.stalled_streak, 0)
+        # Latest attempt moved to fp-b: streak counts only that latest batch.
+        self.assertEqual(node.stalled_streak, 1)
 
     def test_stall_threshold_constant(self) -> None:
         # Lock the threshold so the reducer's retirement rule stays in sync.
