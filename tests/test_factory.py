@@ -7,6 +7,7 @@ from agent.runtime.workspace import AttemptWorkspace
 from agent.search.controller import ControllerConfig, ProofController
 from agent.search.execution import ExecutionMode
 from agent.search.factory import StructuredModeUnavailableError, build_controller
+from agent.search.structured import StructuredController
 
 from test_controller import FakeAdapter, QueueGenerator
 
@@ -48,12 +49,30 @@ class BuildControllerTests(unittest.TestCase):
                     config=ControllerConfig(execution_mode=ExecutionMode.STRUCTURED),
                 )
 
-    def test_structured_raises_loudly(self) -> None:
+    def test_structured_returns_structured_controller(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(StructuredModeUnavailableError) as ctx:
-                build_controller(ExecutionMode.STRUCTURED, **self._kwargs(tmp))
+            controller = build_controller(
+                ExecutionMode.STRUCTURED,
+                **self._kwargs(tmp),
+                config=ControllerConfig(execution_mode=ExecutionMode.STRUCTURED),
+            )
 
-        self.assertIn("not implemented", str(ctx.exception))
+        self.assertIsInstance(controller, StructuredController)
+        self.assertEqual(controller.config.execution_mode, ExecutionMode.STRUCTURED)
+
+    def test_structured_rejects_minimal_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                build_controller(
+                    ExecutionMode.STRUCTURED,
+                    **self._kwargs(tmp),
+                    config=ControllerConfig(execution_mode=ExecutionMode.MINIMAL),
+                )
+
+    def test_structured_mode_unavailable_error_class_retained(self) -> None:
+        # The class is kept for backward-compatible imports (CLI defensive
+        # handler, external callers) even though structured is now implemented.
+        self.assertTrue(issubclass(StructuredModeUnavailableError, NotImplementedError))
 
 
 if __name__ == "__main__":
