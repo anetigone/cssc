@@ -50,6 +50,12 @@ agent/
 │   │   ├── results.py   # 结果构造与 Phase 0 metrics
 │   │   ├── context.py   # 检索与上下文摘要
 │   │   └── utils.py     # _proof_phase / _edit_with_controller_metadata
+│   ├── structured/      # Phase 6 StructuredController（frontier/AND-OR 搜索）
+│   │   ├── frontier.py  # Frontier / FrontierNode 调度器（只读 workspace）
+│   │   ├── solution_tracker.py # has_complete_solution / select_solution
+│   │   ├── reducer.py   # apply 纯函数：不可变 workspace 转移
+│   │   ├── run_state.py # _StructuredRunState + build_structured_result
+│   │   └── controller.py# StructuredController（与 ProofController 同签名）
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
 │   ├── factory.py       # 按执行模式构造 controller 的唯一选择点
 │   ├── budget.py        # 预算管理（checks / model calls / time）
@@ -112,7 +118,7 @@ agent/
 
 - `ExecutionMode`（`minimal` / `structured`）由启动参数决定，同一次运行内不可变；`build_controller`（`search/factory.py`）是唯一的选择点。
 - CLI 通过 `--execution-mode`（默认 `minimal`）选择模式，作用于 `solve` 与 `prove`。
-- 当前仅实现 `minimal` 执行器（`ProofController`）。选 `structured` 时 `build_controller` 抛 `StructuredModeUnavailableError`，CLI 以 `stage=execution_mode` 返回非零退出码，**不**静默退化为 minimal，避免把 structured 运行误记成 minimal。
+- Phase 2 时仅实现 `minimal` 执行器（`ProofController`），`structured` 抛 `StructuredModeUnavailableError`；Phase 6 已落地 `StructuredController`，`build_controller` 现按模式返回对应执行器。`StructuredModeUnavailableError` 类保留作向后兼容 import + CLI 防御性 except + 未知 mode 兜底。两种模式仍**不**静默退化为对方，避免把 structured 运行误记成 minimal。
 - `execution_mode` 作为共同观测字段记录在 `RunMetrics`，经 `_metrics_payload` 进入 `run_summary.metrics`，便于跨模式公平比较。
 - 共同观测层只记录原始事实（attempt、checker category、goal fingerprints、耗时、预算、execution_mode），不推导 progress、stall 或跨运行统计。
 - 运行中不存在任何切换模式的代码路径：`ControllerConfig` 是 frozen、`_ControllerRunState` 不持有 mode、`ProofController` 在本阶段不读 mode 做控制流。
@@ -143,7 +149,16 @@ agent/
 - 每个 `SearchAction` 显式声明 `allowed_mutations`（8 个 `MutationKind`：formal_specification / obligation / obligation_dependency / argument_step / lean_artifact / alignment_link / branch_status / new_structure；observation 不是 mutation kind，因为它是 append-only 证据）。只读 `DEFAULT_ALLOWED_MUTATIONS` 定义各动作的最大作用域；argument/implement 动作允许同步维护 alignment。`SearchAction.validate()` 确定性校验 target_branch_id、rationale、作用域和 target_step_ids，返回 `SearchActionReport`，不抛。
 - `FailureHypothesis` 承载多个竞争性失败假设：`evidence_ids`（非空，引用 Phase 4 `Observation`）、`confidence`、`affected_step_ids`（可空）、`proposed_tests`（`SearchAction` 元组，可空）。`FailureKind` 仅含 6 个模型竞争语义类别（theorem_misuse / argument_gap / insufficient_assumptions / alignment_mismatch / implementation_defect / capability_missing），**不含**基础设施错误——保持"假设 = 模型竞争产物"边界纯粹，基础设施错误由确定性规则单独处理。
 - `FailureHypothesis.validate()` 确定性校验 hypothesis_id 非空、kind 合法、confidence ∈ [0,1] 且有限、evidence_ids 非空唯一、affected_step_ids 唯一、proposed_tests 委托 `SearchAction.validate()` 并以 `proposed_tests[i]:` 前缀聚合 child errors，返回 `FailureHypothesisReport`，不抛。
-- `ProofBranch` 将 `last_action` 与 `failure_hypotheses` 作为权威状态持久化，并校验 action target、observation evidence 和 affected step 引用；旧 `last_action_summary` 仅用于 Phase 4 trace 兼容。本阶段仍不生成假设或执行动作；`build_controller` 对 `STRUCTURED` **仍抛** `StructuredModeUnavailableError`，frontier/AND-OR driver 属于 Phase 6，minimal 路径不 import workspace 包。
+- `ProofBranch` 将 `last_action` 与 `failure_hypotheses` 作为权威状态持久化，并校验 action target、observation evidence 和 affected step 引用；旧 `last_action_summary` 仅用于 Phase 4 trace 兼容。
+
+## Phase 6 Frontier 与 AND-OR 搜索
+
+- 结构化执行器在 `agent/search/structured/` 子包（与 `controller/` 平行、**互不 import**，minimal 不承担 structured 成本）：`frontier.py`（`Frontier` 可变调度器 + `FrontierNode` frozen 节点；只读 workspace、从不 mutate；pop 用稳定 tuple 排序 `(stalled_streak, depth_from_root, attempt_count, branch_id)`，确定性、trace 可重放；`_stalled_streak` 纯函数从 `branch.observations` 派生 trailing 相同 goal 指纹的 attempt 总数，reducer 复用同一值）、`solution_tracker.py`（`has_complete_solution`/`select_solution` 纯函数；判定每个 active obligation 是否有 version 相容的 ACCEPTED+artifact branch，与 `ArtifactAssembler.assemble` 前置条件对齐，避免 tracker 与 assembler 对就绪状态不一致）、`reducer.py`（`apply(workspace, action, result)` 纯函数，绝不 mutate，全部走 `replace` + `workspace.successor`）、`run_state.py`（`_StructuredRunState` + `build_structured_result`，平行 `results.py`、复用 `summarize_run`/`new_sample_id`，不改 minimal 的 `results.py`）、`controller.py`（`StructuredController`）。
+- `StructuredController` 与 `ProofController` **同构造签名**（factory 切换零成本），`run(task)` 跑 plan1.md §12 的 structured 循环：`frontier.pop → 确定性选 IMPLEMENT/REPAIR_IMPLEMENTATION`（用 `DEFAULT_ALLOWED_MUTATIONS` 包装，复用现有 `ActionGenerator` 产出 proof body，**不**新增 SearchAction 模型生成器、**不**改 prompt 协议）`→ render+check（复用 AttemptWorkspace.write_candidate + adapter.check）→ safety（仅 check accepted 时）→ reducer.apply 折叠进不可变 workspace → frontier.update → has_complete_solution 命中则 _assemble_and_finalize`。
+- 分支状态机全在 reducer：accepted+safety→`BranchStatus.ACCEPTED` + `register_accepted_fact`（obligation 同步 ACCEPTED）；check rejected→保持 ACTIVE、追加 `observations_from_check_result`、保留 `lean_artifact` 作 provenance（失败实现不否定数学策略）、更新 `last_action`；`stalled_streak >= STALL_THRESHOLD(3)`→DORMANT（终态，保证循环终止）；根策略 branch（无 parent）连续同 goal_fp 失败 `>= REPAIR_THRESHOLD(2)` 且尚未派生过子分支→派生 REPAIR 子 branch（新 `branch_id`、继承 argument/alignment/observations、`lean_artifact=None`，新尝试不覆盖旧分支）。
+- 复用共享预算/metrics/trace 出口：每个 IMPLEMENT attempt=1 model_call+1 check；最终 assemble 额外 reserve 1 check（assembler 接收 `budget_slice` 但不自 reserve，controller 显式 `reserve_check`）；`metadata["workspace"]=workspace.to_dict()` 经 `trace_store.workspace_payload` 透传；`_StructuredRunState` 只持有 attempts/attempt_metrics/safety_rejections（权威状态在 workspace），不复用 minimal 的 `_ControllerRunState`。
+- `factory.build_controller` 解锁 `STRUCTURED` 返回 `StructuredController`（lazy import，minimal import 图不拉 structured 包）；mode-mismatch 检查提公对两分支都跑；`StructuredModeUnavailableError` 类保留（向后兼容 import + CLI 防御性 except + 未知 mode 兜底）。
+- 第一版只驱动单 root obligation（OR 搜索 + 分支状态机 + 终检 assembly）；不接 retriever/context_summarizer、不 decompose、不自动恢复 DORMANT——structured 上下文投影（plan1.md §10）与 DECOMPOSE/能力审计是 Phase 7。
 
 ## `ChatDriver` 抽象
 
@@ -250,6 +265,10 @@ python -m pytest tests/ -q
 - `tests/test_branch.py`：ProofBranch 嵌套序列化与状态枚举。
 - `tests/test_search_action.py`：SearchAction 序列化、默认作用域表完整性、narrow/broaden 校验。
 - `tests/test_hypothesis.py`：FailureHypothesis 序列化、confidence/evidence 校验、嵌套 proposed_tests 聚合。
+- `tests/test_frontier.py`：Frontier seed/pop 排序确定性、stalled_streak 派生、retired 分支不重新入队、REPAIR 子分支优先级。
+- `tests/test_solution_tracker.py`：has_complete_solution / select_solution 的 version 相容、artifact 必需、stale 版本拒绝、多 accepted 取最小 branch_id。
+- `tests/test_reducer.py`：apply 不可变转移、accepted/failure/safety 三态、DORMANT 与 REPAIR 子分支派生、原 workspace 不被 mutate。
+- `tests/test_structured_controller.py`：StructuredController 主循环、metadata["workspace"] 透传、metrics.execution_mode、预算耗尽、REPAIR 派生、safety 拒绝、assemble 预算独立 reserve、tool_unavailable 短路、config mode 校验。
 
 ## 注意事项
 
