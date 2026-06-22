@@ -158,7 +158,7 @@ agent/
 - 分支状态机全在 reducer：accepted+safety→`BranchStatus.ACCEPTED` + `register_accepted_fact`（obligation 同步 ACCEPTED）；check rejected→保持 ACTIVE、追加 `observations_from_check_result`、保留 `lean_artifact` 作 provenance（失败实现不否定数学策略）、更新 `last_action`；`stalled_streak >= STALL_THRESHOLD(3)`→DORMANT（终态，保证循环终止）；根策略 branch（无 parent）连续同 goal_fp 失败 `>= REPAIR_THRESHOLD(2)` 且尚未派生过子分支→派生 REPAIR 子 branch（新 `branch_id`、继承 argument/alignment/observations、`lean_artifact=None`，新尝试不覆盖旧分支）。
 - 复用共享预算/metrics/trace 出口：每个 IMPLEMENT attempt=1 model_call+1 check；最终 assemble 额外 reserve 1 check（assembler 接收 `budget_slice` 但不自 reserve，controller 显式 `reserve_check`）；`metadata["workspace"]=workspace.to_dict()` 经 `trace_store.workspace_payload` 透传；`_StructuredRunState` 只持有 attempts/attempt_metrics/safety_rejections（权威状态在 workspace），不复用 minimal 的 `_ControllerRunState`。
 - `factory.build_controller` 解锁 `STRUCTURED` 返回 `StructuredController`（lazy import，minimal import 图不拉 structured 包）；mode-mismatch 检查提公对两分支都跑；`StructuredModeUnavailableError` 类保留（向后兼容 import + CLI 防御性 except + 未知 mode 兜底）。
-- 第一版只驱动单 root obligation（OR 搜索 + 分支状态机 + 终检 assembly）；不接 retriever/context_summarizer、不 decompose、不自动恢复 DORMANT——structured 上下文投影（plan1.md §10）与 DECOMPOSE/能力审计是 Phase 7。
+- 第一版只驱动单 root obligation（OR 搜索 + 分支状态机 + 终检 assembly）；retriever/context_summarizer 已接入但仍是 minimal 风格摘要（不是 plan1.md §10 的 workspace 投影），不 decompose、不自动恢复 DORMANT——structured 上下文投影、DECOMPOSE、能力审计是 Phase 7。
 
 ## `ChatDriver` 抽象
 

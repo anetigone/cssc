@@ -53,7 +53,7 @@
   - `StructuredController.run` 跑 plan1.md §12 的 structured 循环：`frontier.pop → 确定性选 IMPLEMENT/REPAIR_IMPLEMENTATION`（`DEFAULT_ALLOWED_MUTATIONS` 包装，复用现有 `ActionGenerator` 产出 proof body，不引入新模型协议）`→ render+check（复用 AttemptWorkspace/adapter.check）→ safety（仅 accepted）→ reducer.apply → frontier.update → has_complete_solution → assemble 终检`
   - 复用共享预算/metrics/trace 出口：每个 attempt=1 model_call+1 check，assemble 额外 reserve 1 check；`metadata["workspace"]` 透传序列化 workspace；minimal 路径零成本（factory lazy import，minimal 不 import structured 包）
   - `factory.build_controller` 解锁 `STRUCTURED` 返回 `StructuredController`；`StructuredModeUnavailableError` 类保留（向后兼容 import + CLI 防御性 except + 未知 mode 兜底）；mode-mismatch 检查对两分支都跑
-  - 第一版只驱动单 root obligation（OR 搜索 + 分支状态机），不接 retriever/context_summarizer、不 decompose、不自动恢复 DORMANT——这些是 Phase 7
+  - 第一版只驱动单 root obligation（OR 搜索 + 分支状态机），retriever/context_summarizer 已接入但仍是 minimal 风格摘要（不是 plan1 §10 的 workspace 投影），不 decompose、不自动恢复 DORMANT——structured 上下文投影、DECOMPOSE、能力审计是 Phase 7
 
 ## 三、工作纪律（控制 review-fix 与 token）
 
