@@ -611,8 +611,88 @@ class CliSubcommandTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["prove", "Basic.lean", "--execution-mode", "auto"])
 
-    def test_run_prove_fails_loudly_for_structured_mode(self) -> None:
+    def test_run_prove_runs_structured_mode_end_to_end(self) -> None:
         from agent.cli import app as cli
+        from agent.proof_system.base import (
+            BudgetSlice,
+            ParsedFeedback,
+            ProgressSignal,
+            ProofSystemAdapter,
+        )
+        from typing import Any
+
+        class AcceptingAdapter(ProofSystemAdapter):
+            """Accepts any candidate whose proof body is ``trivial``."""
+
+            def render_candidate(self, task, edit):
+                return task.source_template.replace(task.hole_marker, edit.text)
+
+            def check(self, candidate_file, budget_slice: BudgetSlice):
+                source = Path(candidate_file).read_text(encoding="utf-8")
+                accepted = "trivial" in source
+                category = DiagnosticCategory.PROOF_ACCEPTED if accepted else DiagnosticCategory.UNSOLVED_GOALS
+                return CheckResult(
+                    accepted=accepted,
+                    category=category,
+                    raw_output="",
+                    candidate_file=Path(candidate_file),
+                    parsed_feedback=ParsedFeedback(category=category, message="ok" if accepted else "unsolved"),
+                )
+
+            def parse_feedback(self, raw_output):
+                return ParsedFeedback(category=DiagnosticCategory.UNKNOWN)
+
+            def extract_progress(self, parent_state: Any, check_result):
+                return ProgressSignal(diagnostic_category=check_result.category)
+
+            def close(self) -> None:
+                pass
+
+        adapter = AcceptingAdapter()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lean = Path(tmp) / "Basic.lean"
+            lean.write_text("theorem sample : True := by\n  {{proof}}\n", encoding="utf-8")
+            args = _args(
+                command="prove",
+                source=str(lean),
+                input_kind="lean",
+                execution_mode="structured",
+                max_checks=4,
+                max_model_calls=4,
+                lean_timeout=10.0,
+            )
+            with (
+                patch.object(cli, "_lean_services") as services_ctx,
+                patch.object(cli, "_workspace_context") as ws_ctx,
+                patch.object(cli, "build_check_workspace", return_value=None),
+                patch.object(
+                    cli, "build_action_generator", return_value=StaticActionGenerator(["trivial"])
+                ),
+                patch.object(cli, "build_retriever", return_value=None),
+                patch.object(cli, "build_context_summarizer", return_value=None),
+                patch("builtins.print") as printed,
+            ):
+                services_ctx.return_value.__enter__.return_value = cli._LeanServices(
+                    adapter=adapter, validation_adapter=adapter
+                )
+                ws_ctx.return_value.__enter__.return_value = Path(tmp)
+                rc = cli.run_prove(args, agent_root=Path(tmp), project_root=None)
+
+        # Structured mode now executes the controller end to end (rc 0 on
+        # accepted) rather than short-circuiting to an execution_mode error.
+        self.assertEqual(rc, 0)
+        payload = json.loads(printed.call_args.args[0])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["stage"], "prove")
+
+    def test_run_prove_still_handles_structured_unavailable_error(self) -> None:
+        # The defensive except path for StructuredModeUnavailableError is kept
+        # even though structured is now implemented: if build_controller raises
+        # it (e.g. unknown mode), the CLI still reports a clean execution_mode
+        # error rather than an unhandled traceback.
+        from agent.cli import app as cli
+        from agent.search.factory import StructuredModeUnavailableError
 
         with tempfile.TemporaryDirectory() as tmp:
             lean = Path(tmp) / "Basic.lean"
@@ -630,6 +710,11 @@ class CliSubcommandTests(unittest.TestCase):
                 patch.object(cli, "build_action_generator"),
                 patch.object(cli, "build_retriever"),
                 patch.object(cli, "build_context_summarizer"),
+                patch.object(
+                    cli,
+                    "build_controller",
+                    side_effect=StructuredModeUnavailableError("not implemented"),
+                ),
                 patch("builtins.print") as printed,
             ):
                 services_ctx.return_value.__enter__.return_value = cli._LeanServices(
@@ -642,7 +727,6 @@ class CliSubcommandTests(unittest.TestCase):
         payload = json.loads(printed.call_args.args[0])
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["stage"], "execution_mode")
-        self.assertIn("not implemented", payload["error"])
 
 
 def _format_help(parser, argv) -> str:
