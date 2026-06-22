@@ -2,8 +2,8 @@
 
 This is the single decision point that maps an :class:`ExecutionMode` to a
 concrete executor. Because the mode is decided here at startup and the chosen
-controller never reads it for control flow in Phase 2, no runtime code path
-can switch modes mid-run.
+controller never reads it for control flow, no runtime code path can switch
+modes mid-run.
 """
 
 from __future__ import annotations
@@ -14,18 +14,32 @@ from .execution import ExecutionMode
 
 
 class StructuredModeUnavailableError(NotImplementedError):
-    """Raised when the structured executor is requested before its frontier lands.
+    """Historically raised when structured mode had no executor.
 
-    Phases 3-5 introduced the structured state primitives (``ProofWorkspace`` /
-    ``ProofObligation`` / ``ObligationGraph`` / the ``ArtifactAssembler``,
-    the argument/alignment layer, and the unified ``SearchAction`` /
-    ``FailureHypothesis`` protocol) as pure data plus deterministic validators
-    and a final-assembly whole-recheck, but the structured *executor* — the
-    frontier / AND-OR search that drives them end to end — is Phase 6.
-    Selecting ``--execution-mode structured`` must fail loudly rather than
-    silently behave like minimal, so experiments never record structured runs
-    that were actually minimal.
+    Phase 6 ships the structured executor (:class:`StructuredController`), so
+    ``build_controller`` no longer raises this for a valid structured request.
+    The class is kept for backward compatibility: ``agent.cli.app`` and any
+    external callers still import it, and it is raised if the structured
+    executor is requested with a mismatched (non-STRUCTURED) config.
     """
+
+
+def _check_config_mode(execution_mode: ExecutionMode, config: Any) -> None:
+    """Reject a config whose execution_mode disagrees with the factory choice.
+
+    Keeping a single controller config object is how the trace records the
+    common observation field; if the caller hands a minimal config to a
+    structured request (or vice versa) the two would disagree on the recorded
+    mode, so fail loudly.
+    """
+    if config is None:
+        return
+    configured_mode = getattr(config, "execution_mode", execution_mode)
+    if configured_mode != execution_mode:
+        raise ValueError(
+            "Controller config execution_mode does not match the mode "
+            f"selected by the factory: {configured_mode!s} != {execution_mode!s}."
+        )
 
 
 def build_controller(
@@ -43,17 +57,14 @@ def build_controller(
 ) -> Any:
     """Return the controller for ``execution_mode``.
 
-    For Phase 2 only ``MINIMAL`` is implemented. ``STRUCTURED`` raises
-    :class:`StructuredModeUnavailableError`.
+    Both modes are implemented: ``MINIMAL`` returns the linear
+    :class:`ProofController`, ``STRUCTURED`` returns the frontier-driven
+    :class:`StructuredController`. Both reject a config whose execution_mode
+    disagrees with the requested mode.
     """
+    _check_config_mode(execution_mode, config)
+
     if execution_mode is ExecutionMode.MINIMAL:
-        if config is not None:
-            configured_mode = getattr(config, "execution_mode", execution_mode)
-            if configured_mode != execution_mode:
-                raise ValueError(
-                    "Controller config execution_mode does not match the mode "
-                    f"selected by the factory: {configured_mode!s} != {execution_mode!s}."
-                )
         # Lazy import avoids a factory -> controller -> metrics -> execution
         # import chain being eagerly pulled when only the enum is needed.
         from .controller import ProofController
@@ -69,10 +80,25 @@ def build_controller(
             config=config,
             safety_reviewer=safety_reviewer,
         )
+
+    if execution_mode is ExecutionMode.STRUCTURED:
+        # Lazy import keeps the minimal import graph free of the structured
+        # package: importing the enum (or this factory) never pulls the
+        # workspace / frontier / reducer modules.
+        from .structured import StructuredController
+
+        return StructuredController(
+            adapter=adapter,
+            action_generator=action_generator,
+            workspace=workspace,
+            check_workspace=check_workspace,
+            retriever=retriever,
+            context_summarizer=context_summarizer,
+            budget_config=budget_config,
+            config=config,
+            safety_reviewer=safety_reviewer,
+        )
+
     raise StructuredModeUnavailableError(
-        "the structured executor (frontier / AND-OR search) is not implemented "
-        "until Phase 6. Phases 3-5 ship the structured state primitives "
-        "(ProofWorkspace / ObligationGraph / ArtifactAssembler, the "
-        "argument/alignment layer, and the SearchAction / FailureHypothesis "
-        "protocol) but no driver. Re-run with --execution-mode minimal."
+        f"unknown execution mode {execution_mode!s}"
     )

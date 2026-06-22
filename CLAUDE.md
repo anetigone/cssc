@@ -48,7 +48,12 @@
   - 每个动作显式声明 `allowed_mutations`；只读默认作用域允许 argument/implement 同步维护 alignment；`SearchAction.validate()` 确定性校验 target_branch_id、rationale、allowed_mutations（允许 narrow、禁止 broaden，跨界须另起新动作）、target_step_ids 唯一性，返回 `SearchActionReport` 不抛。
   - `FailureHypothesis` 承载多个竞争性失败假设；`ProofBranch.last_action` / `failure_hypotheses` 将动作和假设纳入权威 workspace 与 trace，并校验 evidence/step/branch 引用；`FailureKind` 仅含 6 个模型竞争语义类别（不含基础设施错误）。
   - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR driver 是 Phase 6）；minimal 路径不 import workspace 包。
-- **Phase 6**（下一步）：Frontier 与 AND-OR 搜索。见 plan1.md。
+- **Phase 6** ✅ 已完成：Frontier 与 AND-OR 搜索（结构化执行器落地）
+  - 结构化执行器在 `agent/search/structured/` 子包（与 `controller/` 平行、互不 import）：`frontier.py`（`Frontier`/`FrontierNode`，可变调度器只读 workspace、确定性 tuple 排序、`_stalled_streak` 纯函数派生）、`solution_tracker.py`（`has_complete_solution`/`select_solution` 纯函数，与 assembler 前置条件对齐）、`reducer.py`（`apply` 纯函数，绝不 mutate；accepted→ACCEPTED+register_accepted_fact，rejected→追加 observation 保留 artifact provenance，stall 阈值→DORMANT，根策略连续失败→派生 REPAIR 子 branch）、`run_state.py`（`_StructuredRunState` + `build_structured_result`，平行 `results.py`、复用 `summarize_run`）、`controller.py`（`StructuredController`，与 `ProofController` 同构造签名）
+  - `StructuredController.run` 跑 plan1.md §12 的 structured 循环：`frontier.pop → 确定性选 IMPLEMENT/REPAIR_IMPLEMENTATION`（`DEFAULT_ALLOWED_MUTATIONS` 包装，复用现有 `ActionGenerator` 产出 proof body，不引入新模型协议）`→ render+check（复用 AttemptWorkspace/adapter.check）→ safety（仅 accepted）→ reducer.apply → frontier.update → has_complete_solution → assemble 终检`
+  - 复用共享预算/metrics/trace 出口：每个 attempt=1 model_call+1 check，assemble 额外 reserve 1 check；`metadata["workspace"]` 透传序列化 workspace；minimal 路径零成本（factory lazy import，minimal 不 import structured 包）
+  - `factory.build_controller` 解锁 `STRUCTURED` 返回 `StructuredController`；`StructuredModeUnavailableError` 类保留（向后兼容 import + CLI 防御性 except + 未知 mode 兜底）；mode-mismatch 检查对两分支都跑
+  - 第一版只驱动单 root obligation（OR 搜索 + 分支状态机），不接 retriever/context_summarizer、不 decompose、不自动恢复 DORMANT——这些是 Phase 7
 
 ## 三、工作纪律（控制 review-fix 与 token）
 
