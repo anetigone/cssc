@@ -33,7 +33,6 @@ from ...proof_system.workspace import (
     LeanArtifact,
     ProofBranch,
     SearchAction,
-    SearchActionKind,
 )
 from ...proof_system.workspace.observation import (
     Observation,
@@ -142,7 +141,7 @@ def _record_failure(
         updated_branch = replace(updated_branch, status=BranchStatus.DORMANT)
 
     new_branches = _replace_branch(workspace.branches, updated_branch)
-    if _should_spawn_repair_child(updated_branch, action):
+    if _should_spawn_repair_child(updated_branch, action, new_branches):
         new_branches = (*new_branches, _make_repair_child(updated_branch, new_branches))
 
     return workspace.successor(branches=new_branches)
@@ -169,20 +168,33 @@ def _safety_observation(result: StructuredActionResult) -> Observation:
     )
 
 
-def _should_spawn_repair_child(branch: ProofBranch, action: SearchAction) -> bool:
-    """Spawn a REPAIR child when an IMPLEMENT branch stalls twice.
+def _should_spawn_repair_child(
+    branch: ProofBranch,
+    action: SearchAction,
+    branches: tuple[ProofBranch, ...],
+) -> bool:
+    """Spawn a REPAIR child when a root strategy branch stalls repeatedly.
 
-    Only the first IMPLEMENT on a branch forks: subsequent failures ride the
-    existing repair chain rather than spawning siblings, keeping the branch
-    tree bounded. A REPAIR action itself never forks (it already is the
-    fallback). The stall check uses the same deterministic helper as the
-    frontier, so both agree.
+    Forking is bounded: only a branch that is itself a root strategy attempt
+    (no ``parent_branch_id``) and has not already spawned a repair child may
+    fork. This keeps the branch tree shallow — a stalled repair child retires
+    to DORMANT via the stall threshold rather than spawning nested siblings —
+    while still giving the search one fresh realization attempt per stalled
+    strategy. The action kind (IMPLEMENT vs REPAIR_IMPLEMENTATION) is
+    irrelevant: what matters is that the realization keeps failing on the same
+    goals.
     """
-    if action.kind != SearchActionKind.IMPLEMENT:
+    del action  # fork rule is stall-driven, not action-kind-driven
+    if branch.parent_branch_id is not None:
         return False
     if branch.status == BranchStatus.ACCEPTED:
         return False
-    return _stalled_streak(branch) >= REPAIR_THRESHOLD
+    if _stalled_streak(branch) < REPAIR_THRESHOLD:
+        return False
+    prefix = f"{branch.branch_id}.r"
+    if any(sibling.branch_id.startswith(prefix) for sibling in branches):
+        return False
+    return True
 
 
 def _make_repair_child(

@@ -13,3 +13,7 @@ import in :func:`agent.search.factory.build_controller`, which fires only when
 """
 
 from __future__ import annotations
+
+from .controller import StructuredController
+
+__all__ = ["StructuredController"]
