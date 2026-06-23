@@ -63,11 +63,20 @@ from ..metrics import attempt_metric
 from ..safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
 from ...agents.context import ContextSummarizer
 from ...runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
+from .branch_ops import (
+    action_rationale,
+    block_branch,
+    branch_by_id,
+    edit_with_structured_metadata,
+    expand_candidate_branches,
+    root_branch_id,
+)
+from .finalize import assemble_and_finalize
 from .frontier import Frontier
 from .projection import build_context_projection
 from .reducer import StructuredActionResult, apply
 from .run_state import _StructuredRunState, build_structured_result
-from .solution_tracker import has_complete_solution, select_solution
+from .solution_tracker import has_complete_solution
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +133,7 @@ class StructuredController:
             and self.budget.can_call_model()
         ):
             node = frontier.pop()
-            branch = _branch_by_id(workspace, node.branch_id)
+            branch = branch_by_id(workspace, node.branch_id)
             if branch is None or branch.status != BranchStatus.ACTIVE:
                 continue
 
@@ -141,13 +150,13 @@ class StructuredController:
             self.budget.reserve_model_call()
             candidates = self._generate(task, branch, workspace, state)
             if not candidates:
-                workspace = _block_branch(workspace, branch.branch_id)
+                workspace = block_branch(workspace, branch.branch_id)
                 frontier.update(workspace, branch.branch_id, accepted=False)
                 if not frontier.has_work():
                     state.stop_reason = "no_actions"
                 continue
 
-            workspace, candidate_branches = _expand_candidate_branches(
+            workspace, candidate_branches = expand_candidate_branches(
                 workspace,
                 branch,
                 len(candidates[: self.config.max_candidates_per_model_call]),
@@ -160,7 +169,7 @@ class StructuredController:
                     state.stop_reason = "budget:checks"
                     break
                 action = self._pick_action(candidate_branch)
-                edit = _edit_with_structured_metadata(
+                edit = edit_with_structured_metadata(
                     candidate.to_edit(parent_node_id=branch.branch_id),
                     action,
                     candidate_branch,
@@ -215,7 +224,17 @@ class StructuredController:
                     stop_for_tool = True
                     break
                 if has_complete_solution(workspace):
-                    return self._assemble_and_finalize(task, workspace, state)
+                    return assemble_and_finalize(
+                        task,
+                        workspace,
+                        state,
+                        budget=self.budget,
+                        adapter=self.adapter,
+                        assembler=self.assembler,
+                        check_workspace=self.check_workspace,
+                        safety_reviewer=self.safety_reviewer,
+                        execution_mode=ExecutionMode.STRUCTURED,
+                    )
 
             frontier.update(
                 workspace,
@@ -244,7 +263,7 @@ class StructuredController:
     def _initial_workspace(self, task: ProofTask) -> ProofWorkspace:
         workspace = initialize_from_task(task)
         root_branch = ProofBranch(
-            branch_id=_root_branch_id(task),
+            branch_id=root_branch_id(task),
             obligation_id=task.task_id,
             obligation_version=1,
             status=BranchStatus.ACTIVE,
@@ -264,7 +283,7 @@ class StructuredController:
             kind=kind,
             target_branch_id=branch.branch_id,
             allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[kind],
-            rationale=_action_rationale(kind, branch),
+            rationale=action_rationale(kind, branch),
         )
 
     def _generate(
@@ -399,139 +418,3 @@ class StructuredController:
                 }
             )
         return verdict
-
-    def _assemble_and_finalize(
-        self,
-        task: ProofTask,
-        workspace: ProofWorkspace,
-        state: _StructuredRunState,
-    ) -> ControllerResult:
-        if not self.budget.can_check():
-            state.stop_reason = "budget:checks"
-            return build_structured_result(
-                state,
-                task,
-                workspace,
-                accepted=False,
-                stop_reason=state.stop_reason,
-                execution_mode=ExecutionMode.STRUCTURED,
-                budget=self.budget,
-                safety_reviewer=self.safety_reviewer,
-            )
-        budget_slice = self.budget.reserve_check()
-        solution_branches = select_solution(workspace)
-        artifacts = {
-            branch.obligation_id: branch.lean_artifact
-            for branch in solution_branches
-            if branch.lean_artifact is not None
-        }
-        assembly = self.assembler.assemble(
-            workspace,
-            artifacts,
-            adapter=self.adapter,
-            task=task,
-            check_workspace=self.check_workspace,
-            budget_slice=budget_slice,
-            safety_reviewer=self.safety_reviewer,
-        )
-        logger.info(
-            "Structured assembly: task_id=%s accepted=%s errors=%d",
-            task.task_id,
-            assembly.accepted,
-            len(assembly.errors),
-        )
-        if assembly.accepted:
-            workspace = workspace.successor(status=WorkspaceStatus.ACCEPTED)
-            return build_structured_result(
-                state,
-                task,
-                workspace,
-                accepted=True,
-                stop_reason="accepted",
-                execution_mode=ExecutionMode.STRUCTURED,
-                budget=self.budget,
-                safety_reviewer=self.safety_reviewer,
-                assembly_outcome=assembly,
-            )
-        state.stop_reason = "assembly_failed"
-        return build_structured_result(
-            state,
-            task,
-            workspace,
-            accepted=False,
-            stop_reason=state.stop_reason,
-            execution_mode=ExecutionMode.STRUCTURED,
-            budget=self.budget,
-            safety_reviewer=self.safety_reviewer,
-            assembly_outcome=assembly,
-        )
-
-
-def _root_branch_id(task: ProofTask) -> str:
-    return f"{task.task_id}:root"
-
-
-def _branch_by_id(workspace: ProofWorkspace, branch_id: str) -> ProofBranch | None:
-    for branch in workspace.branches:
-        if branch.branch_id == branch_id:
-            return branch
-    return None
-
-
-def _action_rationale(kind: SearchActionKind, branch: ProofBranch) -> str:
-    if kind == SearchActionKind.IMPLEMENT:
-        return f"initial implementation for branch {branch.branch_id}"
-    return f"repair implementation for branch {branch.branch_id}"
-
-
-def _block_branch(workspace: ProofWorkspace, branch_id: str) -> ProofWorkspace:
-    branches = tuple(
-        replace(branch, status=BranchStatus.BLOCKED)
-        if branch.branch_id == branch_id
-        else branch
-        for branch in workspace.branches
-    )
-    return workspace.successor(branches=branches)
-
-
-def _expand_candidate_branches(
-    workspace: ProofWorkspace,
-    branch: ProofBranch,
-    count: int,
-    batch_index: int,
-) -> tuple[ProofWorkspace, tuple[ProofBranch, ...]]:
-    """Materialize one branch per candidate without overwriting alternatives."""
-    if count <= 1:
-        return workspace, (branch,)
-    alternatives = [branch]
-    existing_ids = {item.branch_id for item in workspace.branches}
-    for candidate_index in range(1, count):
-        candidate_id = f"{branch.branch_id}.c{batch_index}.{candidate_index}"
-        suffix = 0
-        while candidate_id in existing_ids:
-            suffix += 1
-            candidate_id = (
-                f"{branch.branch_id}.c{batch_index}.{candidate_index}.{suffix}"
-            )
-        existing_ids.add(candidate_id)
-        alternatives.append(
-            replace(
-                branch,
-                branch_id=candidate_id,
-                parent_branch_id=branch.branch_id,
-                lean_artifact=None,
-                last_action=None,
-                status=BranchStatus.ACTIVE,
-            )
-        )
-    return (
-        workspace.successor(branches=(*workspace.branches, *alternatives[1:])),
-        tuple(alternatives),
-    )
-
-
-def _edit_with_structured_metadata(edit: Any, action: SearchAction, branch: ProofBranch) -> Any:
-    metadata = dict(edit.metadata)
-    metadata["structured_action_kind"] = action.kind.value
-    metadata["structured_branch_id"] = branch.branch_id
-    return replace(edit, metadata=metadata)
