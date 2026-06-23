@@ -255,6 +255,20 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
                     "```",
                 ]
             )
+    # The structured workspace context projection is the authoritative view of
+    # the current branch: obligation + version, dependency closure, the
+    # argument-step ↔ goal alignment, deduplicated observations, competing
+    # failure hypotheses, and sibling strategies. It only flows in structured
+    # mode (minimal never sets the key); render it via Mapping/Sequence
+    # duck-typing so this shared renderer never imports the structured package.
+    # The previous proof body is rendered by the ``previous_attempt`` block
+    # above when present, so the projection re-surfaces it only on a fresh
+    # branch with no recorded attempt.
+    _append_structured_projection(
+        parts,
+        request.metadata.get("structured_projection"),
+        render_artifact=not has_previous_attempt,
+    )
     retrieved = request.metadata.get("retrieved_results") or ()
     if isinstance(retrieved, Sequence) and retrieved:
         # ``None`` means "no summary produced": keep every retrieved snippet.
@@ -283,6 +297,145 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
         for item in feedback_slice:
             parts.append(_feedback_line(item))
     return "\n".join(parts)
+
+
+def _append_structured_projection(
+    parts: list[str], projection: Any, *, render_artifact: bool
+) -> None:
+    """Render the structured workspace context projection.
+
+    Pure over the plain-dict projection produced by
+    :func:`agent.search.structured.projection.build_context_projection`. Each
+    section is guarded so empty sections add nothing; absent/minimal runs pass
+    ``None`` and the whole block is skipped. ``render_artifact`` defers the
+    previous proof body to the ``previous_attempt`` block when one exists.
+    """
+    if not isinstance(projection, Mapping):
+        return
+
+    current = projection.get("current_obligation")
+    if isinstance(current, Mapping):
+        obligation_id = current.get("obligation_id")
+        version = current.get("version")
+        if isinstance(obligation_id, str) and isinstance(version, int):
+            parts.append(f"Current obligation: {obligation_id} v{version}")
+
+    dependencies = projection.get("dependency_facts")
+    if isinstance(dependencies, Sequence) and dependencies:
+        verified = []
+        open_ids = []
+        for dep in dependencies:
+            if not isinstance(dep, Mapping):
+                continue
+            if dep.get("has_accepted_fact"):
+                statement = dep.get("statement")
+                if isinstance(statement, str) and statement.strip():
+                    verified.append(statement.strip())
+            else:
+                dep_id = dep.get("obligation_id")
+                if isinstance(dep_id, str):
+                    open_ids.append(dep_id)
+        if verified:
+            parts.append(
+                "Dependency facts (verified conclusions this proof may rely on):"
+            )
+            for statement in verified:
+                parts.append(f"- {statement}")
+        if open_ids:
+            parts.append(
+                "Open dependencies without accepted proofs: "
+                + ", ".join(open_ids)
+            )
+
+    argument_steps = projection.get("argument_steps")
+    if isinstance(argument_steps, Sequence) and argument_steps:
+        parts.append("Argument steps and Lean alignment:")
+        for step in argument_steps:
+            if not isinstance(step, Mapping):
+                continue
+            claim = step.get("claim")
+            if not isinstance(claim, str) or not claim.strip():
+                continue
+            relation = step.get("alignment_relation")
+            relation_label = relation if isinstance(relation, str) else "unaligned"
+            line = f"- {claim.strip()} [{relation_label}]"
+            declaration = step.get("aligned_declaration")
+            if isinstance(declaration, str) and declaration.strip():
+                line += f" → {declaration.strip()}"
+            parts.append(line)
+
+    if render_artifact:
+        proof_body = projection.get("lean_artifact_proof_body")
+        if isinstance(proof_body, str) and proof_body.strip():
+            parts.extend(
+                ["Previous proof body to revise:", "```lean", proof_body, "```"]
+            )
+
+    observations = projection.get("observations")
+    if isinstance(observations, Sequence) and observations:
+        parts.append("Observations (deduplicated):")
+        for obs in observations:
+            if not isinstance(obs, Mapping):
+                continue
+            message = obs.get("message")
+            if not isinstance(message, str) or not message.strip():
+                continue
+            source = obs.get("source")
+            category = obs.get("category")
+            prefix_parts = []
+            if isinstance(source, str) and source:
+                prefix_parts.append(source)
+            if isinstance(category, str) and category:
+                prefix_parts.append(category)
+            prefix = f"[{':'.join(prefix_parts)}] " if prefix_parts else ""
+            parts.append(f"- {prefix}{message.strip()}")
+
+    hypotheses = projection.get("failure_hypotheses")
+    if isinstance(hypotheses, Sequence) and hypotheses:
+        parts.append("Competing failure hypotheses:")
+        for hyp in hypotheses:
+            if not isinstance(hyp, Mapping):
+                continue
+            kind = hyp.get("kind")
+            confidence = hyp.get("confidence")
+            affected = hyp.get("affected_step_ids")
+            affected_label = (
+                ", ".join(str(s) for s in affected)
+                if isinstance(affected, Sequence) and affected
+                else "—"
+            )
+            kind_label = kind if isinstance(kind, str) and kind else "unknown"
+            conf_label = (
+                f"{float(confidence):.2f}"
+                if isinstance(confidence, (int, float))
+                else "?"
+            )
+            parts.append(
+                f"- [{kind_label} conf={conf_label}] affects {affected_label}"
+            )
+
+    siblings = projection.get("sibling_branches")
+    if isinstance(siblings, Sequence) and siblings:
+        parts.append("Other strategies on this obligation:")
+        for sibling in siblings:
+            if not isinstance(sibling, Mapping):
+                continue
+            sibling_id = sibling.get("branch_id")
+            if not isinstance(sibling_id, str) or not sibling_id.strip():
+                continue
+            status = sibling.get("status")
+            status_label = status if isinstance(status, str) and status else "?"
+            count = sibling.get("observation_count")
+            count_label = (
+                str(int(count)) if isinstance(count, int) else "0"
+            )
+            artifact_label = (
+                "artifact" if sibling.get("has_artifact") else "no artifact"
+            )
+            parts.append(
+                f"- {sibling_id.strip()}: {status_label} "
+                f"({count_label} observations, {artifact_label})"
+            )
 
 
 def _has_memory_context(proof_memory: Any) -> bool:

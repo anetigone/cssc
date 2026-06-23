@@ -64,6 +64,7 @@ from ..safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
 from ...agents.context import ContextSummarizer
 from ...runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
 from .frontier import Frontier
+from .projection import build_context_projection
 from .reducer import StructuredActionResult, apply
 from .run_state import _StructuredRunState, build_structured_result
 from .solution_tracker import has_complete_solution, select_solution
@@ -288,27 +289,29 @@ class StructuredController:
         workspace: ProofWorkspace,
         state: _StructuredRunState,
     ) -> dict[str, Any]:
-        obligation = workspace.obligation_graph.by_id(branch.obligation_id)
+        # The projection is the single source of truth for structured context:
+        # ``branch_obligation`` / ``verified_facts`` / ``previous_attempt`` are
+        # derived from it so the summarizer, the prompt renderer, and the
+        # richer ``structured_projection`` block all read identical evidence.
+        projection = build_context_projection(workspace, branch.branch_id)
+        current = projection.current_obligation
+
+        # ``previous_attempt`` is what the ContextSummarizer consumes and what
+        # the legacy prompt renderer revises; derive it from the deduped
+        # projection observations so the summarizer can only compress evidence
+        # the projection already carries — never a parallel set of facts.
         previous_attempt = None
-        if branch.observations:
+        if projection.observations:
             previous_attempt = {
                 "branch_id": branch.branch_id,
-                # The reducer retains the failed realization as the branch's
-                # LeanArtifact (provenance). Surfacing its proof body lets the
-                # prompt actually revise the previous attempt instead of
-                # generating blind.
-                "proof_text": (
-                    branch.lean_artifact.proof_body
-                    if branch.lean_artifact is not None
-                    else None
-                ),
+                "proof_text": projection.lean_artifact_proof_body,
                 "observations": [
                     {
                         "category": obs.category,
                         "message": obs.message,
                         "goal_fingerprint": obs.goal_fingerprint,
                     }
-                    for obs in branch.observations
+                    for obs in projection.observations
                 ],
             }
         summarized_context = summarize_context(
@@ -324,11 +327,11 @@ class StructuredController:
             "branch_id": branch.branch_id,
             "branch_obligation": (
                 {
-                    "obligation_id": obligation.obligation_id,
-                    "lean_statement": obligation.lean_statement,
-                    "statement_nl": obligation.statement_nl,
+                    "obligation_id": current.obligation_id,
+                    "lean_statement": current.lean_statement,
+                    "statement_nl": current.statement_nl,
                 }
-                if obligation is not None
+                if current is not None
                 else None
             ),
             "previous_attempt": previous_attempt,
@@ -337,8 +340,9 @@ class StructuredController:
                     "obligation_id": fact.obligation_id,
                     "statement": fact.statement,
                 }
-                for fact in workspace.accepted_facts
+                for fact in projection.accepted_facts
             ),
+            "structured_projection": projection.to_dict(),
             "retrieved_results": state.current_retrieved,
             "retrieved_history": tuple(state.retrieved_history),
             "summarized_context": summarized_context,

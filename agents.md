@@ -168,6 +168,13 @@ agent/
 - `controller.py` 两处 `_assemble_and_finalize` 调用传 `assembly_outcome=assembly`（成功 / 失败两路径）；未进入 assembly 的终态（budget 耗尽、no_actions、tool_unavailable）保持 `assembly_outcome=None`，`ResultSummary.assembly.executed=False`。
 - `tests/test_structured_e2e.py` 四测：单根接受契约、两 helper+root 纯数据结构层（不跑 controller 多义务循环，那是 Phase 7.4）、capability 缺失→blocked 现状冻结、assembly 失败 errors 透传回归。
 
+## Phase 7.1 workspace context projection
+
+- 新增纯函数投影模块 `agent/search/structured/projection.py`：`build_context_projection(workspace, branch_id)` 派生 frozen `StructuredContextProjection`（+ 各 `*_from_dict`，含 `context_projection_from_dict` 往返），字段覆盖 root、当前 obligation+版本、dependency closure（带 stale-fact version 守卫的 `DependencyFact`）、全部 accepted facts、argument steps（带 alignment_relation + aligned_declaration）、去重后 observation（`(goal_fingerprint, message)` 去重 + 尾部 `MAX_PROJECTED_OBSERVATIONS=12` cap）、failure hypotheses、同义务 sibling branches（`MAX_SIBLING_BRANCHES=8` cap）。零新依赖、不进 structured 包 `__all__`；minimal 路径不 import。
+- projection 跨 structured→prompt 边界为 plain dict：`StructuredController._generation_metadata` 调 `build_context_projection`，把 `metadata["structured_projection"]=projection.to_dict()` 塞进 request，并从同一 projection 派生既有 `branch_obligation`/`verified_facts`/`previous_attempt`（形状不变，旧测试/既有渲染不破）——projection 成为单一数据源。`previous_attempt.observations` 用**去重后**的 projection observations，保证 ContextSummarizer 看到的证据 = prompt 渲染的证据，summarizer 只能压缩不能产生平行事实集。
+- `ChatActionGenerator`（`agent/agents/proof.py:_append_structured_projection`）以 `Mapping`/`Sequence` 鸭子类型渲染 projection：当前 obligation 版本、dependency facts（verified 结论 + open 依赖 id）、argument steps 带 `[alignment_relation]`（含 `→ declaration`）、（仅 previous_attempt 缺失时的）proof body、去重 observations、failure hypotheses、sibling 状态。proof.py **不** import structured 包；minimal 永不设该键 → 渲染块整体跳过，零成本。
+- 验收：prompt 确实出现当前 obligation、依赖事实、goal↔argument-step 对齐关系（`test_model_adapter.test_structured_projection_renders_in_prompt` 扩展断言）。
+
 ## `ChatDriver` 抽象
 
 `ChatDriver` 是各 agent 共享的 chat-completion 驱动，职责单一：
@@ -278,6 +285,7 @@ python -m pytest tests/ -q
 - `tests/test_reducer.py`：apply 不可变转移、accepted/failure/safety 三态、DORMANT 与 REPAIR 子分支派生、原 workspace 不被 mutate。
 - `tests/test_structured_controller.py`：StructuredController 主循环、metadata["workspace"] 透传、metrics.execution_mode、预算耗尽、REPAIR 派生、safety 拒绝、assemble 预算独立 reserve、tool_unavailable 短路、config mode 校验。
 - `tests/test_structured_e2e.py`：Phase 7.0 端到端契约——单根接受契约、两 helper+root 纯数据结构层（decompose/序列化往返/assembler 前置）、capability 缺失→blocked 现状冻结、assembly 失败 errors 透传回归。
+- `tests/test_structured_projection.py`：Phase 7.1 workspace context projection——单根无依赖、依赖闭包传递+fact 匹配、stale-fact version 守卫、argument step alignment、observation 去重+cap、sibling branches（含 cap）、failure hypotheses、branch_id 缺失尽力投影、to_dict/from_dict 往返。
 
 ## 注意事项
 

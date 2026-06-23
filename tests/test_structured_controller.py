@@ -159,6 +159,25 @@ class StructuredControllerTests(unittest.TestCase):
         # Assembly consumed one extra check on top of the single attempt.
         self.assertEqual(result.metrics.budget_checks_used, 2)
 
+    def test_generation_metadata_carries_context_projection(self) -> None:
+        generator = QueueGenerator([["trivial"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, generator)
+            controller.run(_task())
+
+        # The controller derives the structured context projection in
+        # _generation_metadata and serializes it for the shared prompt renderer.
+        self.assertTrue(generator.requests)
+        projection = generator.requests[0].metadata["structured_projection"]
+        self.assertEqual(projection["branch_id"], "sample:root")
+        self.assertIsNotNone(projection["current_obligation"])
+        self.assertEqual(projection["current_obligation"]["obligation_id"], "sample")
+        # branch_obligation / verified_facts are derived from the same projection.
+        self.assertEqual(
+            generator.requests[0].metadata["branch_obligation"]["obligation_id"],
+            "sample",
+        )
+
     def test_budget_exhaustion_returns_unaccepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = self._controller(
