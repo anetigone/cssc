@@ -23,8 +23,10 @@ from ..budget import BudgetManager
 from ..controller.types import AttemptRecord, ControllerResult
 from ..execution import ExecutionMode
 from ..metrics import new_sample_id, summarize_run
+from .summary import build_result_summary
 
 if TYPE_CHECKING:
+    from ...proof_system.assembler import AssemblyResult
     from ...proof_system.base import ProofTask
     from ...proof_system.workspace import ProofWorkspace
     from ..safety import SafetyReviewer
@@ -61,6 +63,7 @@ def build_structured_result(
     execution_mode: ExecutionMode,
     budget: BudgetManager,
     safety_reviewer: SafetyReviewer,
+    assembly_outcome: AssemblyResult | None = None,
 ) -> ControllerResult:
     """Construct the :class:`ControllerResult` for one structured run.
 
@@ -68,6 +71,15 @@ def build_structured_result(
     same metrics roll-up, plus the serialized workspace under
     ``metadata["workspace"]`` so :func:`trace_store.workspace_payload` surfaces
     it in the run summary.
+
+    ``assembly_outcome`` carries the final-assembly result when the run reached
+    :meth:`StructuredController._assemble_and_finalize`. It is surfaced two
+    ways: the raw ``AssemblyResult.to_dict`` (with its ``errors``) under
+    ``metadata["assembly"]`` — which previously was dropped on assembly failure
+    — and the derived machine-assertable view under
+    ``metadata["result_summary"]``. When the run never reached assembly
+    (budget exhaustion, ``no_actions``, ``tool_unavailable``), only the
+    ``result_summary`` is written and ``assembly.executed`` is ``False``.
     """
     snapshot = budget.snapshot()
     metrics = summarize_run(
@@ -88,7 +100,12 @@ def build_structured_result(
         "workspace": workspace.to_dict(),
         "safety_rejections": tuple(state.safety_rejections),
         "safety_reviewer": type(safety_reviewer).__name__,
+        "result_summary": build_result_summary(
+            workspace, assembly_result=assembly_outcome
+        ).to_dict(),
     }
+    if assembly_outcome is not None:
+        metadata["assembly"] = assembly_outcome.to_dict()
     return ControllerResult(
         task=task,
         accepted=accepted,

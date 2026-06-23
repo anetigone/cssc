@@ -476,3 +476,8 @@ def _emit_payload(args: Namespace, payload: dict[str, Any], agent_root: Path) ->
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
+
+
+if __name__ == "__main__":
+    # Allow ``python -m agent.cli.app`` as well as ``python -m agent.cli``.
+    raise SystemExit(main())

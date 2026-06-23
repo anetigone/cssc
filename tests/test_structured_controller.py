@@ -255,7 +255,7 @@ class StructuredControllerTests(unittest.TestCase):
                 if source.count("theorem sample") != 1:
                     return CheckResult(
                         accepted=False,
-                        category=DiagnosticCategory.ELABORATION_ERROR,
+                        category=DiagnosticCategory.CHECKER_ERROR,
                         raw_output="nested theorem",
                         candidate_file=candidate_file,
                     )
