@@ -160,6 +160,14 @@ agent/
 - `factory.build_controller` 解锁 `STRUCTURED` 返回 `StructuredController`（lazy import，minimal import 图不拉 structured 包）；mode-mismatch 检查提公对两分支都跑；`StructuredModeUnavailableError` 类保留（向后兼容 import + CLI 防御性 except + 未知 mode 兜底）。
 - 第一版只驱动单 root obligation（OR 搜索 + 分支状态机 + 终检 assembly）；retriever/context_summarizer 已接入但仍是 minimal 风格摘要（不是 plan1.md §10 的 workspace 投影），不 decompose、不自动恢复 DORMANT——structured 上下文投影、DECOMPOSE、能力审计是 Phase 7。
 
+## Phase 7.0 端到端契约冻结
+
+- 新增纯函数结果契约聚合层 `agent/search/structured/summary.py`：`build_result_summary(workspace, *, assembly_result=None, selected_branch_ids=())` 从 workspace + 可选 `AssemblyResult` 派生 frozen `ResultSummary`（+ 各 `*_from_dict`），含 accepted/open/blocked obligations、selected branches + preserved alternatives、assembly outcome（executed/accepted/errors）、workspace validation report，以及 `blocked_branch_obligation_ids`——显式冻结当前「branch BLOCKED 但 obligation 仍 OPEN」的不一致现状（Phase 7.3 能力审计才同步把 obligation 置 BLOCKED）。
+- 零新依赖、不进 structured 包 `__all__`；minimal 路径不 import，不承担成本。
+- `build_structured_result`（`run_state.py`）加可选参数 `assembly_outcome`：非 None 时透传 `metadata["assembly"]`（含 errors，修复原 assembly 失败时 `AssemblyResult.errors` 被丢弃、只留 `stop_reason="assembly_failed"` 的问题）并填充 `metadata["result_summary"]`；minimal 的 `build_final_result` 不动，两个 key 均为 structured 独有。
+- `controller.py` 两处 `_assemble_and_finalize` 调用传 `assembly_outcome=assembly`（成功 / 失败两路径）；未进入 assembly 的终态（budget 耗尽、no_actions、tool_unavailable）保持 `assembly_outcome=None`，`ResultSummary.assembly.executed=False`。
+- `tests/test_structured_e2e.py` 四测：单根接受契约、两 helper+root 纯数据结构层（不跑 controller 多义务循环，那是 Phase 7.4）、capability 缺失→blocked 现状冻结、assembly 失败 errors 透传回归。
+
 ## `ChatDriver` 抽象
 
 `ChatDriver` 是各 agent 共享的 chat-completion 驱动，职责单一：
@@ -269,6 +277,7 @@ python -m pytest tests/ -q
 - `tests/test_solution_tracker.py`：has_complete_solution / select_solution 的 version 相容、artifact 必需、stale 版本拒绝、多 accepted 取最小 branch_id。
 - `tests/test_reducer.py`：apply 不可变转移、accepted/failure/safety 三态、DORMANT 与 REPAIR 子分支派生、原 workspace 不被 mutate。
 - `tests/test_structured_controller.py`：StructuredController 主循环、metadata["workspace"] 透传、metrics.execution_mode、预算耗尽、REPAIR 派生、safety 拒绝、assemble 预算独立 reserve、tool_unavailable 短路、config mode 校验。
+- `tests/test_structured_e2e.py`：Phase 7.0 端到端契约——单根接受契约、两 helper+root 纯数据结构层（decompose/序列化往返/assembler 前置）、capability 缺失→blocked 现状冻结、assembly 失败 errors 透传回归。
 
 ## 注意事项
 

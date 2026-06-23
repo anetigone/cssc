@@ -447,6 +447,7 @@ class StructuredController:
                 execution_mode=ExecutionMode.STRUCTURED,
                 budget=self.budget,
                 safety_reviewer=self.safety_reviewer,
+                assembly_outcome=assembly,
             )
         state.stop_reason = "assembly_failed"
         return build_structured_result(
@@ -458,6 +459,7 @@ class StructuredController:
             execution_mode=ExecutionMode.STRUCTURED,
             budget=self.budget,
             safety_reviewer=self.safety_reviewer,
+            assembly_outcome=assembly,
         )
 
 
