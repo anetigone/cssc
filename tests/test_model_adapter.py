@@ -14,6 +14,7 @@ from agent.agents import (
     FunctionTool,
     ModelAdapterError,
 )
+from agent.agents.context import ChatContextSummarizer, SummarizationRequest
 from agent.agents.openai import UrllibChatTransport, chat_completions_url
 from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 
@@ -566,6 +567,38 @@ class ChatActionGeneratorTests(unittest.TestCase):
         prompt = transport.calls[0][2]["messages"][1]["content"]
         self.assertNotIn("Retrieved Lean snippets:", prompt)
         self.assertNotIn("Nat.add_comm", prompt)
+
+    def test_context_summarizer_renders_projected_observations(self) -> None:
+        summarizer = ChatContextSummarizer(ChatConfig(api_key="key", model="model"))
+
+        prompt = summarizer._build_user_prompt(
+            SummarizationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=2,
+                previous_attempt={
+                    "proof_text": "exact badLemma",
+                    "observations": [
+                        {
+                            "category": "unsolved_goals",
+                            "message": "unknown identifier badLemma",
+                            "goal_fingerprint": "fp-projected",
+                        }
+                    ],
+                },
+                feedback_history=(
+                    ParsedFeedback(
+                        category=DiagnosticCategory.UNKNOWN,
+                        message="raw fallback feedback",
+                    ),
+                ),
+            )
+        )
+
+        self.assertIn("Projected checker observations:", prompt)
+        self.assertIn(
+            "- unsolved_goals: goal=fp-projected: unknown identifier badLemma",
+            prompt,
+        )
 
     def test_no_summary_keeps_all_retrieved_snippets(self) -> None:
         from agent.retrieval import RetrievalResult

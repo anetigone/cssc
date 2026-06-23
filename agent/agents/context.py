@@ -134,6 +134,7 @@ class ChatContextSummarizer:
             proof_text = previous.get("proof_text")
             raw_output = previous.get("raw_output")
             category = previous.get("category")
+            observations = previous.get("observations")
             if isinstance(proof_text, str) and proof_text.strip():
                 parts.extend(
                     ["Previous proof body:", "```lean", proof_text.strip(), "```"]
@@ -149,6 +150,23 @@ class ChatContextSummarizer:
                         "```",
                     ]
                 )
+            if isinstance(observations, Sequence) and observations:
+                parts.append("Projected checker observations:")
+                for observation in observations[:12]:
+                    if not isinstance(observation, Mapping):
+                        continue
+                    line_parts: list[str] = []
+                    obs_category = observation.get("category")
+                    if isinstance(obs_category, str) and obs_category:
+                        line_parts.append(obs_category)
+                    fingerprint = observation.get("goal_fingerprint")
+                    if isinstance(fingerprint, str) and fingerprint:
+                        line_parts.append(f"goal={fingerprint}")
+                    message = observation.get("message")
+                    if isinstance(message, str) and message.strip():
+                        line_parts.append(message.strip())
+                    if line_parts:
+                        parts.append("- " + ": ".join(line_parts))
 
         if request.feedback_history:
             parts.append("Prior checker feedback:")

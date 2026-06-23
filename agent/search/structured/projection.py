@@ -421,12 +421,7 @@ def build_context_projection(
         failure_hypotheses = _failure_hypotheses(branch)
         sibling_branches = _sibling_branches(workspace, branch)
 
-    accepted_facts = tuple(
-        AcceptedFactSlot(
-            obligation_id=fact.obligation_id, statement=fact.statement
-        )
-        for fact in workspace.accepted_facts
-    )
+    accepted_facts = _accepted_facts(workspace)
 
     return StructuredContextProjection(
         workspace_id=workspace.workspace_id,
@@ -499,6 +494,23 @@ def _dependency_facts(
                     matched.statement if matched is not None else dep.lean_statement
                 ),
                 has_accepted_fact=matched is not None,
+            )
+        )
+    return tuple(slots)
+
+
+def _accepted_facts(workspace: ProofWorkspace) -> tuple[AcceptedFactSlot, ...]:
+    """Return only facts pinned to the current active obligation version."""
+    slots: list[AcceptedFactSlot] = []
+    graph = workspace.obligation_graph
+    for fact in workspace.accepted_facts:
+        obligation = graph.by_id(fact.obligation_id)
+        if obligation is None or obligation.version != fact.obligation_version:
+            continue
+        slots.append(
+            AcceptedFactSlot(
+                obligation_id=fact.obligation_id,
+                statement=fact.statement,
             )
         )
     return tuple(slots)

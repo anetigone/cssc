@@ -176,7 +176,7 @@ class DependencyClosureTest(unittest.TestCase):
         self.assertEqual(
             by_id["helper1"].statement, "lemma helper1 : True := rfl"
         )
-        # accepted_facts slots mirror workspace.accepted_facts verbatim.
+        # accepted_facts slots mirror reusable, version-current facts.
         self.assertEqual(len(projection.accepted_facts), 1)
         self.assertEqual(projection.accepted_facts[0].obligation_id, "helper1")
 
@@ -205,6 +205,9 @@ class DependencyClosureTest(unittest.TestCase):
         self.assertEqual(len(projection.dependency_facts), 1)
         self.assertFalse(projection.dependency_facts[0].has_accepted_fact)
         self.assertEqual(projection.dependency_facts[0].obligation_version, 2)
+        # The same stale fact must not leak through the global reusable-facts
+        # view rendered by the legacy prompt block.
+        self.assertEqual(projection.accepted_facts, ())
 
 
 class ArgumentAlignmentTest(unittest.TestCase):
