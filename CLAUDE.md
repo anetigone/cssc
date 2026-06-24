@@ -54,6 +54,10 @@
   - 复用共享预算/metrics/trace 出口：每个 attempt=1 model_call+1 check，assemble 额外 reserve 1 check；`metadata["workspace"]` 透传序列化 workspace；minimal 路径零成本（factory lazy import，minimal 不 import structured 包）
   - `factory.build_controller` 解锁 `STRUCTURED` 返回 `StructuredController`；`StructuredModeUnavailableError` 类保留（向后兼容 import + CLI 防御性 except + 未知 mode 兜底）；mode-mismatch 检查对两分支都跑
   - 第一版只驱动单 root obligation（OR 搜索 + 分支状态机），retriever/context_summarizer 已接入但仍是 minimal 风格摘要（不是 plan1 §10 的 workspace 投影），不 decompose、不自动恢复 DORMANT——structured 上下文投影、DECOMPOSE、能力审计是 Phase 7
+- **Phase 7.0/7.1/7.2** ✅ 已完成：端到端契约冻结、workspace context projection、typed structured action proposal
+  - 7.0：纯函数结果契约聚合层 `agent/search/structured/summary.py`（`build_result_summary` → frozen `ResultSummary`，含 accepted/open/blocked obligations、selected branches、assembly outcome、workspace validation report、`blocked_branch_obligation_ids`）；`build_structured_result` 加 `assembly_outcome` 透传 `metadata["assembly"]`（含 errors）+ `metadata["result_summary"]`；`tests/test_structured_e2e.py` 冻结契约。
+  - 7.1：纯函数投影 `agent/search/structured/projection.py`（`build_context_projection` → frozen `StructuredContextProjection`，projection 成为 prompt/summarizer 单一数据源）；`ChatActionGenerator._append_structured_projection` 渲染；minimal 永不设该键零成本。
+  - 7.2：typed `StructuredActionProposal`（`agent/search/structured/proposal.py`，`SearchAction` + `ActionPayload` union：`ImplementPayload`/`DecomposePayload`/`CapabilityTestPayload`）+ `StructuredActionGenerator` Protocol；`adapt_legacy_generator` 把旧 `ActionGenerator` 包成 IMPLEMENT 提案（baseline 可比性不变），controller 用 `_finalize_kind` 复刻旧 `_pick_action` 语义。**第一轮只开放 IMPLEMENT/REPAIR（执行）、DECOMPOSE/RUN_CAPABILITY_TEST（仅类型+序列化+校验，不执行→归 7.3/7.4）**；minimal 不 import。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 

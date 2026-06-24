@@ -51,6 +51,11 @@ class _StructuredRunState:
     current_retrieved: tuple = ()
     retrieved_history: list = field(default_factory=list)
     retrieved_this_iteration: bool = False
+    # Phase 7.2: proposals the generator emitted but the controller did not
+    # execute (DECOMPOSE / RUN_CAPABILITY_TEST — executors land in 7.3 / 7.4).
+    # The legacy adapter only emits IMPLEMENT/REPAIR, so this stays empty on the
+    # baseline path; it records what a native structured generator tried.
+    skipped_proposals: list[dict[str, Any]] = field(default_factory=list)
 
 
 def build_structured_result(
@@ -100,6 +105,7 @@ def build_structured_result(
         "workspace": workspace.to_dict(),
         "safety_rejections": tuple(state.safety_rejections),
         "safety_reviewer": type(safety_reviewer).__name__,
+        "skipped_proposals": tuple(state.skipped_proposals),
         "result_summary": build_result_summary(
             workspace, assembly_result=assembly_outcome
         ).to_dict(),

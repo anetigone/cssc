@@ -35,6 +35,7 @@ from typing import Any
 
 from ...proof_system.assembler import ArtifactAssembler
 from ...proof_system.base import (
+    CandidateEdit,
     DiagnosticCategory,
     ProofSystemAdapter,
     ProofTask,
@@ -49,7 +50,7 @@ from ...proof_system.workspace import (
     WorkspaceStatus,
     initialize_from_task,
 )
-from ..action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from ..action import ActionGenerationRequest, ActionGenerator
 from ..budget import BudgetConfig, BudgetManager
 from ..controller.types import (
     AttemptRecord,
@@ -74,6 +75,12 @@ from .branch_ops import (
 from .finalize import assemble_and_finalize
 from .frontier import Frontier
 from .projection import build_context_projection
+from .proposal import (
+    LEGACY_ACTION_KEY,
+    LEGACY_KIND_DEFERRED,
+    StructuredActionProposal,
+    adapt_legacy_generator,
+)
 from .reducer import StructuredActionResult, apply
 from .run_state import _StructuredRunState, build_structured_result
 from .solution_tracker import has_complete_solution
@@ -85,10 +92,19 @@ class StructuredController:
     """Coordinate the structured AND-OR search over one task.
 
     Single Proof Agent, structured state: the controller pops frontier nodes,
-    asks the action generator for a proof body, checks it, folds the outcome
-    into the immutable workspace via the reducer, and runs a final whole-source
-    assembly once a complete solution exists. It never makes mathematical
-    decisions and never switches execution modes mid-run.
+    asks the action generator for a typed proposal, checks it, folds the
+    outcome into the immutable workspace via the reducer, and runs a final
+    whole-source assembly once a complete solution exists. It never makes
+    mathematical decisions and never switches execution modes mid-run.
+
+    The action generator is a :class:`StructuredActionGenerator` (typed
+    proposals). A legacy :class:`ActionGenerator` (returns proof-body
+    candidates) is accepted and adapted at construction via
+    :func:`adapt_legacy_generator`, so baseline comparability is preserved.
+    Phase 7.2 only *executes* IMPLEMENT / REPAIR_IMPLEMENTATION proposals;
+    DECOMPOSE / RUN_CAPABILITY_TEST are valid, serialized proposal types but
+    are recorded into ``state.skipped_proposals`` and not yet driven (those
+    executors are Phase 7.3 / 7.4).
     """
 
     def __init__(
@@ -105,7 +121,11 @@ class StructuredController:
         safety_reviewer: SafetyReviewer | None = None,
     ) -> None:
         self.adapter = adapter
-        self.action_generator = action_generator
+        # Normalize the generator to the typed protocol. Native structured
+        # generators declare ``_is_structured_generator``; a legacy
+        # ActionGenerator is wrapped so every proof-body candidate becomes an
+        # IMPLEMENT proposal. ``adapt_legacy_generator`` is idempotent.
+        self.action_generator = adapt_legacy_generator(action_generator)
         self.workspace = workspace
         self.check_workspace = check_workspace
         self.retriever = retriever
@@ -148,8 +168,8 @@ class StructuredController:
             if state.current_retrieved:
                 state.retrieved_history.extend(state.current_retrieved)
             self.budget.reserve_model_call()
-            candidates = self._generate(task, branch, workspace, state)
-            if not candidates:
+            proposals = self._generate(task, branch, workspace, state)
+            if not proposals:
                 workspace = block_branch(workspace, branch.branch_id)
                 frontier.update(workspace, branch.branch_id, accepted=False)
                 if not frontier.has_work():
@@ -159,18 +179,44 @@ class StructuredController:
             workspace, candidate_branches = expand_candidate_branches(
                 workspace,
                 branch,
-                len(candidates[: self.config.max_candidates_per_model_call]),
+                len(proposals[: self.config.max_candidates_per_model_call]),
                 state.attempt_index,
             )
             stop_for_tool = False
             attempted_branch_ids: list[str] = []
-            for candidate, candidate_branch in zip(candidates, candidate_branches):
+            for proposal, candidate_branch in zip(proposals, candidate_branches):
                 if not self.budget.can_check():
                     state.stop_reason = "budget:checks"
                     break
-                action = self._pick_action(candidate_branch)
+                proposal = self._finalize_kind(proposal, candidate_branch)
+                ok, errors = proposal.validate()
+                if not ok:
+                    logger.warning(
+                        "Structured proposal invalid, skipping: %s", errors
+                    )
+                    continue
+                action = proposal.action
+                if action.kind not in (
+                    SearchActionKind.IMPLEMENT,
+                    SearchActionKind.REPAIR_IMPLEMENTATION,
+                ):
+                    # Phase 7.2 boundary: DECOMPOSE / RUN_CAPABILITY_TEST are
+                    # valid, serialized proposal types but their executors are
+                    # Phase 7.3 / 7.4. Record what the generator emitted for
+                    # the trace, then skip. The legacy adapter only ever emits
+                    # IMPLEMENT/REPAIR, so this branch is inert on the baseline.
+                    state.skipped_proposals.append(
+                        {
+                            "attempt_index": state.attempt_index,
+                            "kind": action.kind.value,
+                            "rationale": action.rationale,
+                        }
+                    )
+                    continue
+                proof_text = proposal.payload.proof_text  # type: ignore[union-attr]
+                source = getattr(proposal.payload, "source", "") or proof_text  # type: ignore[union-attr]
                 edit = edit_with_structured_metadata(
-                    candidate.to_edit(parent_node_id=branch.branch_id),
+                    self._proposal_edit(proposal, proof_text, branch),
                     action,
                     candidate_branch,
                 )
@@ -202,10 +248,10 @@ class StructuredController:
                         branch_id=candidate_branch.branch_id,
                         check_result=check_result,
                         safety_verdict=safety_verdict,
-                        proof_text=candidate.proof_text,
+                        proof_text=proof_text,
                         # LeanArtifact.source is an obligation snippet; the
                         # assembler renders it into the task exactly once.
-                        source=candidate.proof_text,
+                        source=source,
                         attempt_index=record.attempt_index,
                     ),
                 )
@@ -273,17 +319,58 @@ class StructuredController:
             status=WorkspaceStatus.SEARCHING,
         )
 
-    def _pick_action(self, branch: ProofBranch) -> SearchAction:
+    def _finalize_kind(
+        self, proposal: StructuredActionProposal, branch: ProofBranch
+    ) -> StructuredActionProposal:
+        """Set IMPLEMENT vs REPAIR_IMPLEMENTATION on deferred (legacy) proposals.
+
+        A legacy :class:`ActionGenerator` cannot see branch state at
+        ``generate`` time, so the adapter emits an ``IMPLEMENT`` placeholder
+        flagged with :data:`~.proposal.LEGACY_KIND_DEFERRED`. Once the candidate
+        branch is materialized we know ``branch.last_action``, which is the
+        exact rule the old ``_pick_action`` used. Native structured proposals
+        already carry a finalized action and pass through unchanged.
+        """
+        if not proposal.metadata.get(LEGACY_KIND_DEFERRED):
+            return proposal
         kind = (
             SearchActionKind.IMPLEMENT
             if branch.last_action is None
             else SearchActionKind.REPAIR_IMPLEMENTATION
         )
-        return SearchAction(
-            kind=kind,
-            target_branch_id=branch.branch_id,
-            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[kind],
-            rationale=action_rationale(kind, branch),
+        return replace(
+            proposal,
+            action=SearchAction(
+                kind=kind,
+                target_branch_id=branch.branch_id,
+                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[kind],
+                rationale=action_rationale(kind, branch),
+            ),
+        )
+
+    def _proposal_edit(
+        self,
+        proposal: StructuredActionProposal,
+        proof_text: str,
+        branch: ProofBranch,
+    ) -> CandidateEdit:
+        """Build the :class:`CandidateEdit` an IMPLEMENT proposal renders.
+
+        Replaces the old ``candidate.to_edit`` path: the proof body comes from
+        the proposal payload, and ``action`` carries the legacy candidate's
+        action string (``"static"`` for :class:`StaticActionGenerator`,
+        ``"model_complete"`` for the chat generator) via
+        :data:`~.proposal.LEGACY_ACTION_KEY`, defaulting to ``"model_complete"``.
+        ``score`` is forwarded into metadata like :meth:`ActionCandidate.to_edit`.
+        """
+        metadata = dict(proposal.metadata)
+        if proposal.score is not None:
+            metadata["score"] = proposal.score
+        return CandidateEdit(
+            text=proof_text,
+            action=proposal.metadata.get(LEGACY_ACTION_KEY, "model_complete"),
+            parent_node_id=branch.branch_id,
+            metadata=metadata,
         )
 
     def _generate(
@@ -292,7 +379,7 @@ class StructuredController:
         branch: ProofBranch,
         workspace: ProofWorkspace,
         state: _StructuredRunState,
-    ) -> tuple[ActionCandidate, ...]:
+    ) -> tuple[StructuredActionProposal, ...]:
         request = ActionGenerationRequest(
             task=task,
             attempt_index=state.attempt_index,

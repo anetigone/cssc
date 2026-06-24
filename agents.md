@@ -55,6 +55,7 @@ agent/
 │   │   ├── solution_tracker.py # has_complete_solution / select_solution
 │   │   ├── reducer.py   # apply 纯函数：不可变 workspace 转移
 │   │   ├── run_state.py # _StructuredRunState + build_structured_result
+│   │   ├── proposal.py  # Phase 7.2 StructuredActionProposal / payload union / legacy adapter
 │   │   └── controller.py# StructuredController（与 ProofController 同签名）
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
 │   ├── factory.py       # 按执行模式构造 controller 的唯一选择点
@@ -175,6 +176,16 @@ agent/
 - `ChatActionGenerator`（`agent/agents/proof.py:_append_structured_projection`）以 `Mapping`/`Sequence` 鸭子类型渲染 projection：当前 obligation 版本、dependency facts（verified 结论 + open 依赖 id）、argument steps 带 `[alignment_relation]`（含 `→ declaration`）、（仅 previous_attempt 缺失时的）proof body、去重 observations、failure hypotheses、sibling 状态。proof.py **不** import structured 包；minimal 永不设该键 → 渲染块整体跳过，零成本。
 - 验收：prompt 确实出现当前 obligation、依赖事实、goal↔argument-step 对齐关系（`test_model_adapter.test_structured_projection_renders_in_prompt` 扩展断言）。
 
+## Phase 7.2 typed structured action proposal
+
+- 新增 `agent/search/structured/proposal.py`：typed `StructuredActionProposal`（携带自描述 `SearchAction` + `ActionPayload` union）+ `StructuredActionGenerator` Protocol + `SUPPORTED_PROPOSAL_KINDS`。payload 全部 frozen + `to_dict`/`*_from_dict`：`ImplementPayload`（覆盖 IMPLEMENT + REPAIR，kind 区别在 `SearchAction` 上）、`DecomposePayload`（+ `DecomposeChildSpec`）、`CapabilityTestPayload`。
+- `validate()` 强制 kind/payload 一致并委托 `SearchAction.validate`；第一轮只开放 IMPLEMENT / REPAIR_IMPLEMENTATION / DECOMPOSE / RUN_CAPABILITY_TEST 四种 kind（其余 8 种后续 phase 开放）。零新依赖、不进 structured 包 `__all__`；minimal 路径不 import。
+- `adapt_legacy_generator` 把旧 `ActionGenerator`（返回 `ActionCandidate`）逐个包成 IMPLEMENT 提案（`ImplementPayload`），idempotent；adapter 不持有 branch 状态，kind 设为 IMPLEMENT 占位并打 `LEGACY_KIND_DEFERRED` 标记，由 controller 在候选分支物化后按 `branch.last_action` 终定（`_finalize_kind`），完全复刻旧 `_pick_action` 语义。baseline 可比性不变。
+- `StructuredController`：构造时 `adapt_legacy_generator` 归一化（检测 `_is_structured_generator` 标记避免重复包装，native generator 旁路）；删除 `_pick_action`，新增 `_finalize_kind`（deferred 提案终定 IMPLEMENT/REPAIR + rationale/作用域，native 提案直通）与 `_proposal_edit`（从 `ImplementPayload` 重建 `CandidateEdit`，`action` 取 `legacy_action`，默认 `model_complete`）。run 循环对非 implement kind 提案记录到 `state.skipped_proposals` 后 `continue`——这是 7.2 边界：DECOMPOSE / RUN_CAPABILITY_TEST 类型就位、可序列化、可校验，但不执行（执行器分别归 Phase 7.3 / 7.4）。legacy adapter 只产 implement，baseline 路径行为零变化。
+- `_StructuredRunState` 加 `skipped_proposals` 字段，经 `build_structured_result` 透传到 `metadata["skipped_proposals"]`，让 trace 看见 native generator 发出但未执行的提案。
+- 不变项：`action.py`（`ActionCandidate`/`ActionGenerator`/`StaticActionGenerator`）、`cli/generators.py`、`factory.py`、`workspace/action.py`、`reducer.py`/`frontier.py`/`branch_ops.py`（只读）/`finalize.py`/`projection.py`；minimal `ProofController` 不 import `proposal.py`，零成本。
+- 测试：新增 `tests/test_structured_proposal.py`（payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、adapter 正确性 + idempotent + native 旁路）；`tests/test_structured_controller.py` 三条兼容性用例不变，新增 legacy→implement/repair kind 终定 + native `StructuredActionGenerator` 旁路（`skipped_proposals` 为空）两测。
+
 ## `ChatDriver` 抽象
 
 `ChatDriver` 是各 agent 共享的 chat-completion 驱动，职责单一：
@@ -286,6 +297,7 @@ python -m pytest tests/ -q
 - `tests/test_structured_controller.py`：StructuredController 主循环、metadata["workspace"] 透传、metrics.execution_mode、预算耗尽、REPAIR 派生、safety 拒绝、assemble 预算独立 reserve、tool_unavailable 短路、config mode 校验。
 - `tests/test_structured_e2e.py`：Phase 7.0 端到端契约——单根接受契约、两 helper+root 纯数据结构层（decompose/序列化往返/assembler 前置）、capability 缺失→blocked 现状冻结、assembly 失败 errors 透传回归。
 - `tests/test_structured_projection.py`：Phase 7.1 workspace context projection——单根无依赖、依赖闭包传递+fact 匹配、stale-fact version 守卫、argument step alignment、observation 去重+cap、sibling branches（含 cap）、failure hypotheses、branch_id 缺失尽力投影、to_dict/from_dict 往返。
+- `tests/test_structured_proposal.py`：Phase 7.2 typed structured action proposal——payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、legacy adapter 正确性/idempotent/native 旁路。
 
 ## 注意事项
 

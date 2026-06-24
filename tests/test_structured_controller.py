@@ -325,6 +325,74 @@ class StructuredControllerTests(unittest.TestCase):
                     config=ControllerConfig(execution_mode=ExecutionMode.MINIMAL),
                 )
 
+    def test_legacy_generator_finalizes_kind(self) -> None:
+        # A legacy ActionGenerator (ActionCandidate) is adapted; the controller
+        # finalizes IMPLEMENT on the first attempt of a branch and
+        # REPAIR_IMPLEMENTATION on the second (reproducing _pick_action).
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["fail"], ["trivial"]]),
+                budget=BudgetConfig(max_checks=8, max_model_calls=8),
+            )
+            result = controller.run(_task())
+
+        kinds = [att.edit.metadata["structured_action_kind"] for att in result.attempts]
+        self.assertEqual(kinds, ["implement", "repair_implementation"])
+
+    def test_native_structured_generator_is_not_re_wrapped(self) -> None:
+        # A native StructuredActionGenerator carries finalized IMPLEMENT
+        # proposals; _finalize_kind must be a no-op (no LEGACY_KIND_DEFERRED),
+        # and the controller must accept it without re-wrapping.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeImplementGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self.requests: list[ActionGenerationRequest] = []
+
+            def generate(self, request: ActionGenerationRequest):
+                self.requests.append(request)
+                action = SearchAction(
+                    kind=SearchActionKind.IMPLEMENT,
+                    target_branch_id="sample:root",
+                    allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                        SearchActionKind.IMPLEMENT
+                    ],
+                    rationale="native implement",
+                )
+                return (
+                    StructuredActionProposal(
+                        action=action,
+                        payload=ImplementPayload(proof_text="trivial"),
+                    ),
+                )
+
+        native = NativeImplementGenerator()
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, native)  # type: ignore[arg-type]
+            # Constructor adapted the generator — but a native generator
+            # declares _is_structured_generator, so it is used as-is.
+            self.assertIs(controller.action_generator, native)
+            result = controller.run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(
+            result.attempts[0].edit.metadata["structured_action_kind"], "implement"
+        )
+        # The skipped-proposals log stays empty: only IMPLEMENT was emitted.
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
 
 if __name__ == "__main__":
     unittest.main()
