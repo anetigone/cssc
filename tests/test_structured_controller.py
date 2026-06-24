@@ -393,6 +393,99 @@ class StructuredControllerTests(unittest.TestCase):
         # The skipped-proposals log stays empty: only IMPLEMENT was emitted.
         self.assertEqual(result.metadata["skipped_proposals"], ())
 
+    def test_native_multi_candidate_actions_are_retargeted_to_materialized_branches(self) -> None:
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeMultiImplementGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                def proposal(proof_text: str) -> StructuredActionProposal:
+                    return StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="native implement",
+                        ),
+                        payload=ImplementPayload(proof_text=proof_text),
+                    )
+
+                return (proposal("fail"), proposal("trivial"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeMultiImplementGenerator(),  # type: ignore[arg-type]
+                max_candidates=2,
+                budget=BudgetConfig(max_checks=3, max_model_calls=1),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        for branch in result.metadata["workspace"]["branches"]:
+            last_action = branch.get("last_action")
+            if last_action is not None:
+                self.assertEqual(last_action["target_branch_id"], branch["branch_id"])
+
+    def test_non_executable_native_proposal_is_skipped_without_creating_branches(self) -> None:
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            DecomposeChildSpec,
+            DecomposePayload,
+            StructuredActionProposal,
+        )
+
+        class NativeDecomposeGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.DECOMPOSE,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.DECOMPOSE
+                            ],
+                            rationale="split first",
+                        ),
+                        payload=DecomposePayload(
+                            children=(
+                                DecomposeChildSpec(
+                                    child_id="helper",
+                                    statement="helper statement",
+                                ),
+                            )
+                        ),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeDecomposeGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=2),
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(len(result.metadata["workspace"]["branches"]), 1)
+        self.assertEqual(len(result.metadata["skipped_proposals"]), 2)
+        self.assertEqual(result.metadata["skipped_proposals"][0]["kind"], "decompose")
+
 
 if __name__ == "__main__":
     unittest.main()

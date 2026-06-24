@@ -176,19 +176,9 @@ class StructuredController:
                     state.stop_reason = "no_actions"
                 continue
 
-            workspace, candidate_branches = expand_candidate_branches(
-                workspace,
-                branch,
-                len(proposals[: self.config.max_candidates_per_model_call]),
-                state.attempt_index,
-            )
-            stop_for_tool = False
-            attempted_branch_ids: list[str] = []
-            for proposal, candidate_branch in zip(proposals, candidate_branches):
-                if not self.budget.can_check():
-                    state.stop_reason = "budget:checks"
-                    break
-                proposal = self._finalize_kind(proposal, candidate_branch)
+            executable_proposals: list[StructuredActionProposal] = []
+            for proposal in proposals[: self.config.max_candidates_per_model_call]:
+                proposal = self._finalize_kind(proposal, branch)
                 ok, errors = proposal.validate()
                 if not ok:
                     logger.warning(
@@ -203,8 +193,7 @@ class StructuredController:
                     # Phase 7.2 boundary: DECOMPOSE / RUN_CAPABILITY_TEST are
                     # valid, serialized proposal types but their executors are
                     # Phase 7.3 / 7.4. Record what the generator emitted for
-                    # the trace, then skip. The legacy adapter only ever emits
-                    # IMPLEMENT/REPAIR, so this branch is inert on the baseline.
+                    # the trace, then skip without changing the workspace.
                     state.skipped_proposals.append(
                         {
                             "attempt_index": state.attempt_index,
@@ -213,6 +202,22 @@ class StructuredController:
                         }
                     )
                     continue
+                executable_proposals.append(proposal)
+
+            workspace, candidate_branches = expand_candidate_branches(
+                workspace,
+                branch,
+                len(executable_proposals),
+                state.attempt_index,
+            )
+            stop_for_tool = False
+            attempted_branch_ids: list[str] = []
+            for proposal, candidate_branch in zip(executable_proposals, candidate_branches):
+                if not self.budget.can_check():
+                    state.stop_reason = "budget:checks"
+                    break
+                proposal = self._finalize_kind(proposal, candidate_branch)
+                action = proposal.action
                 proof_text = proposal.payload.proof_text  # type: ignore[union-attr]
                 source = getattr(proposal.payload, "source", "") or proof_text  # type: ignore[union-attr]
                 edit = edit_with_structured_metadata(
@@ -329,22 +334,28 @@ class StructuredController:
         flagged with :data:`~.proposal.LEGACY_KIND_DEFERRED`. Once the candidate
         branch is materialized we know ``branch.last_action``, which is the
         exact rule the old ``_pick_action`` used. Native structured proposals
-        already carry a finalized action and pass through unchanged.
+        already carry a finalized kind/scope/rationale; they are still retargeted
+        to the materialized branch so branch-local provenance stays valid.
         """
-        if not proposal.metadata.get(LEGACY_KIND_DEFERRED):
-            return proposal
-        kind = (
-            SearchActionKind.IMPLEMENT
-            if branch.last_action is None
-            else SearchActionKind.REPAIR_IMPLEMENTATION
-        )
+        if proposal.metadata.get(LEGACY_KIND_DEFERRED):
+            kind = (
+                SearchActionKind.IMPLEMENT
+                if branch.last_action is None
+                else SearchActionKind.REPAIR_IMPLEMENTATION
+            )
+            allowed_mutations = DEFAULT_ALLOWED_MUTATIONS[kind]
+            rationale = action_rationale(kind, branch)
+        else:
+            kind = proposal.action.kind
+            allowed_mutations = proposal.action.allowed_mutations
+            rationale = proposal.action.rationale
         return replace(
             proposal,
             action=SearchAction(
                 kind=kind,
                 target_branch_id=branch.branch_id,
-                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[kind],
-                rationale=action_rationale(kind, branch),
+                allowed_mutations=allowed_mutations,
+                rationale=rationale,
             ),
         )
 
