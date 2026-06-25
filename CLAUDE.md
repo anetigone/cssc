@@ -62,6 +62,10 @@
   - controller `_run_capability_audits` 真正执行 `RUN_CAPABILITY_TEST`：在 IMPLEMENT 候选展开前把 `CapabilityTestPayload.signature` 包进 `CandidateEdit`（`action="capability_test"`）复用 `_check`（render+adapter.check），每次 audit=1 check、不另计 model_call；audit 不跑 safety（`safety_verdict=accepted=False` 占位，capability 接受 ≠ 命题成立）。DECOMPOSE 仍 skip（归 7.4）。
   - reducer 第三转移分支 `_apply_capability_audit`：从 check category 派生 `CAPABILITY_AUDIT` Observation；缺失判据 `_capability_missing` 只认 `UNKNOWN_IDENTIFIER`/`INVALID_REFERENCE`/`TOOL_UNAVAILABLE`（其他失败保守不阻塞——audit 只能阻塞路线、不能判命题错），缺失则 branch 置 BLOCKED **且** `_block_obligation` 把 obligation 同步置 `ObligationStatus.BLOCKED`（复刻 `register_accepted_fact` 手法），可用则保持 ACTIVE、不注册 fact。
   - 闭合 7.0 冻结的不一致：`ResultSummary.blocked_branch_obligation_ids` 排除 obligation 已 BLOCKED 的条目，capability 缺失路径归零、`blocked_obligations` 填充；`no_actions` 路径（`block_branch` 只翻 branch）保持原样（缺候选 ≠ 机械能力缺失，是另一种 gap）。frontier 不动，BLOCKED branch 经 `status != ACTIVE` 自动掉队。minimal 不 import structured 包，零成本。
+- **Phase 7.4/7.5/7.6** ✅ 已完成：DECOMPOSE 执行器+依赖感知 frontier+多义务 assembly、helper 复用语义清理、argument/representation 执行+竞争性失败假设层。完整说明看 [agents.md](agents.md) 对应段，要点：
+  - 7.4：`reducer.apply_decompose` 执行 DECOMPOSE（结构性转移，no check）；frontier readiness gate（依赖满足才可调度）；artifact kind（root PROOF_BODY 填 hole、helper DECLARATION 独立声明）+ `_inject_helpers`；`VerifiedFact.declaration_id/artifact_source`；safety 改子串匹配。
+  - 7.5：projection `AcceptedFactSlot/DependencyFact.declaration_id` 按名引用 helper；`no_ready_work` + active BLOCKED obligation 升级 `stop_reason="blocked"`。
+  - 7.6：`proposal.py` 加 `ProposeArgumentPayload`/`RefineArgumentPayload`/`ChangeRepresentationPayload`（+ `ArgumentStepSpec`/`AlignmentSpec`），解锁三种 kind；`reducer` 三个纯结构入口 `apply_argument`/`apply_change_representation`/`apply_failure_hypotheses`（pre-commit 校验候选 branch，失败 no-op）；controller 分流 + `_run_argument`/`_run_change_representation` + `_fold_failure_hypotheses`（generator 在 `FAILURE_HYPOTHESES_KEY` 携带，不新增模型调用）+ `_select_test_action`（低成本优先）。minimal 不 import structured 包，零成本。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 

@@ -17,19 +17,32 @@ from agent.search.structured.proposal import (
     LEGACY_ACTION_KEY,
     LEGACY_KIND_DEFERRED,
     PAYLOAD_KIND_CAPABILITY_TEST,
+    PAYLOAD_KIND_CHANGE_REPRESENTATION,
     PAYLOAD_KIND_DECOMPOSE,
     PAYLOAD_KIND_IMPLEMENT,
+    PAYLOAD_KIND_PROPOSE_ARGUMENT,
+    PAYLOAD_KIND_REFINE_ARGUMENT,
     SUPPORTED_PROPOSAL_KINDS,
+    AlignmentSpec,
+    ArgumentStepSpec,
     CapabilityTestPayload,
+    ChangeRepresentationPayload,
     DecomposeChildSpec,
     DecomposePayload,
     ImplementPayload,
+    ProposeArgumentPayload,
+    RefineArgumentPayload,
     StructuredActionProposal,
     _LegacyActionGeneratorAdapter,
     adapt_legacy_generator,
+    alignment_spec_from_dict,
+    argument_step_spec_from_dict,
     capability_test_payload_from_dict,
+    change_representation_payload_from_dict,
     decompose_child_spec_from_dict,
     decompose_payload_from_dict,
+    propose_argument_payload_from_dict,
+    refine_argument_payload_from_dict,
     structured_action_proposal_from_dict,
 )
 
@@ -84,6 +97,74 @@ class PayloadSerializationTest(unittest.TestCase):
         self.assertEqual(restored, payload)
         self.assertEqual(payload.to_dict()["kind"], PAYLOAD_KIND_CAPABILITY_TEST)
 
+    def test_argument_step_spec_round_trip(self) -> None:
+        spec = ArgumentStepSpec(
+            step_id="s1",
+            claim="inductive step",
+            justification="by IH",
+            depends_on=("s0",),
+            introduced_fact_ids=("f1",),
+            confidence=0.8,
+        )
+        restored = argument_step_spec_from_dict(spec.to_dict())
+        self.assertEqual(restored, spec)
+
+    def test_alignment_spec_round_trip(self) -> None:
+        spec = AlignmentSpec(
+            argument_step_id="s1",
+            relation="implements",
+            lean_declaration_id="foo",
+            goal_fingerprint="fp-a",
+        )
+        restored = alignment_spec_from_dict(spec.to_dict())
+        self.assertEqual(restored, spec)
+
+    def test_propose_argument_payload_round_trip(self) -> None:
+        payload = ProposeArgumentPayload(
+            steps=(
+                ArgumentStepSpec(step_id="s1", claim="claim 1"),
+                ArgumentStepSpec(step_id="s2", claim="claim 2", depends_on=("s1",)),
+            ),
+            alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+                AlignmentSpec(
+                    argument_step_id="s2",
+                    relation="implements",
+                    lean_declaration_id="bar",
+                ),
+            ),
+            rationale="lay out the induction",
+        )
+        restored = propose_argument_payload_from_dict(payload.to_dict())
+        self.assertEqual(restored, payload)
+        self.assertEqual(payload.to_dict()["kind"], PAYLOAD_KIND_PROPOSE_ARGUMENT)
+
+    def test_refine_argument_payload_round_trip(self) -> None:
+        payload = RefineArgumentPayload(
+            steps=(ArgumentStepSpec(step_id="s1", claim="revised claim"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="implements", goal_fingerprint="fp"),
+            ),
+            rationale="tighten the claim",
+        )
+        restored = refine_argument_payload_from_dict(payload.to_dict())
+        self.assertEqual(restored, payload)
+        self.assertEqual(payload.to_dict()["kind"], PAYLOAD_KIND_REFINE_ARGUMENT)
+
+    def test_change_representation_payload_round_trip(self) -> None:
+        payload = ChangeRepresentationPayload(
+            argument=(ArgumentStepSpec(step_id="r1", claim="by cases"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="r1", relation="unaligned"),
+            ),
+            rationale="switch to case analysis",
+        )
+        restored = change_representation_payload_from_dict(payload.to_dict())
+        self.assertEqual(restored, payload)
+        self.assertEqual(
+            payload.to_dict()["kind"], PAYLOAD_KIND_CHANGE_REPRESENTATION
+        )
+
 
 class ProposalSerializationTest(unittest.TestCase):
     def test_implement_proposal_round_trip(self) -> None:
@@ -124,6 +205,48 @@ class ProposalSerializationTest(unittest.TestCase):
         proposal = StructuredActionProposal(
             action=action,
             payload=CapabilityTestPayload(requirement="omega", signature="omega"),
+        )
+        restored = structured_action_proposal_from_dict(proposal.to_dict())
+        self.assertEqual(restored, proposal)
+
+    def test_propose_argument_proposal_round_trip(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.PROPOSE_ARGUMENT,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.PROPOSE_ARGUMENT
+            ],
+            rationale="add an inductive step",
+        )
+        proposal = StructuredActionProposal(
+            action=action,
+            payload=ProposeArgumentPayload(
+                steps=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+                alignments=(
+                    AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+                ),
+            ),
+        )
+        restored = structured_action_proposal_from_dict(proposal.to_dict())
+        self.assertEqual(restored, proposal)
+
+    def test_change_representation_proposal_round_trip(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.CHANGE_REPRESENTATION,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.CHANGE_REPRESENTATION
+            ],
+            rationale="switch to case analysis",
+        )
+        proposal = StructuredActionProposal(
+            action=action,
+            payload=ChangeRepresentationPayload(
+                argument=(ArgumentStepSpec(step_id="r1", claim="by cases"),),
+                alignments=(
+                    AlignmentSpec(argument_step_id="r1", relation="unaligned"),
+                ),
+            ),
         )
         restored = structured_action_proposal_from_dict(proposal.to_dict())
         self.assertEqual(restored, proposal)
@@ -187,6 +310,88 @@ class ProposalValidateTest(unittest.TestCase):
             payload=CapabilityTestPayload(requirement="omega", signature="omega"),
         ).validate()
         self.assertTrue(ok)
+
+    def test_propose_argument_kind_payload_agreement(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.PROPOSE_ARGUMENT,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.PROPOSE_ARGUMENT
+            ],
+            rationale="add a step",
+        )
+        ok, _ = StructuredActionProposal(
+            action=action,
+            payload=ProposeArgumentPayload(
+                steps=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+                alignments=(
+                    AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+                ),
+            ),
+        ).validate()
+        self.assertTrue(ok)
+
+    def test_refine_argument_kind_payload_agreement(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.REFINE_ARGUMENT,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.REFINE_ARGUMENT
+            ],
+            rationale="refine a step",
+        )
+        ok, _ = StructuredActionProposal(
+            action=action,
+            payload=RefineArgumentPayload(
+                steps=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+                alignments=(
+                    AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+                ),
+            ),
+        ).validate()
+        self.assertTrue(ok)
+
+    def test_change_representation_kind_payload_agreement(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.CHANGE_REPRESENTATION,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.CHANGE_REPRESENTATION
+            ],
+            rationale="switch",
+        )
+        ok, _ = StructuredActionProposal(
+            action=action,
+            payload=ChangeRepresentationPayload(
+                argument=(ArgumentStepSpec(step_id="r1", claim="claim"),),
+                alignments=(
+                    AlignmentSpec(argument_step_id="r1", relation="unaligned"),
+                ),
+            ),
+        ).validate()
+        self.assertTrue(ok)
+
+    def test_propose_argument_payload_with_decompose_kind_is_invalid(self) -> None:
+        # Cross-kind pairing: a DECOMPOSE action with an argument payload fails.
+        action = SearchAction(
+            kind=SearchActionKind.DECOMPOSE,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.DECOMPOSE],
+            rationale="split",
+        )
+        ok, errors = StructuredActionProposal(
+            action=action,
+            payload=ProposeArgumentPayload(
+                steps=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+                alignments=(
+                    AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+                ),
+            ),
+        ).validate()
+        self.assertFalse(ok)
+        self.assertTrue(
+            any("DecomposePayload" in err for err in errors), msg=errors
+        )
 
     def test_unsupported_kind_is_invalid(self) -> None:
         # FORMALIZE is a real SearchActionKind but not in SUPPORTED_PROPOSAL_KINDS.

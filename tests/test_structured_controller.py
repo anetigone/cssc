@@ -884,6 +884,341 @@ class StructuredControllerTests(unittest.TestCase):
         ])
         self.assertEqual(result.metrics.budget_checks_used, 3)
 
+    def test_native_propose_argument_executes_and_validates(self) -> None:
+        # Phase 7.6: a native generator emitting a PROPOSE_ARGUMENT proposal is
+        # executed (not skipped). The branch carries the new argument step +
+        # alignment, the workspace validates, and the edit is recorded under
+        # argument_records rather than skipped_proposals.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            AlignmentSpec,
+            ArgumentStepSpec,
+            ImplementPayload,
+            ProposeArgumentPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeArgumentGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self._fired = False
+
+            def generate(self, request: ActionGenerationRequest):
+                if self._fired:
+                    # Then accept with a proof body so the run terminates.
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="accept",
+                            ),
+                            payload=ImplementPayload(proof_text="trivial"),
+                        ),
+                    )
+                self._fired = True
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.PROPOSE_ARGUMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.PROPOSE_ARGUMENT
+                            ],
+                            rationale="add an inductive step",
+                        ),
+                        payload=ProposeArgumentPayload(
+                            steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+                            alignments=(
+                                AlignmentSpec(
+                                    argument_step_id="s1", relation="unaligned"
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeArgumentGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=3),
+            ).run(_task())
+
+        workspace = result.metadata["workspace"]
+        # workspace validate is implicit in serialization; assert the step landed
+        root_branch = next(
+            b for b in workspace["branches"] if b["branch_id"] == "sample:root"
+        )
+        step_ids = [s["step_id"] for s in root_branch["argument"]["steps"]]
+        self.assertIn("s1", step_ids)
+        self.assertEqual(root_branch["alignment"][0]["relation"], "unaligned")
+        self.assertEqual(len(result.metadata["argument_records"]), 1)
+        self.assertEqual(
+            result.metadata["argument_records"][0]["kind"], "propose_argument"
+        )
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
+    def test_native_change_representation_forks_branch(self) -> None:
+        # Phase 7.6: CHANGE_REPRESENTATION forks a <parent>.rep0 branch carrying
+        # the payload's argument layer and supersedes the parent.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            AlignmentSpec,
+            ArgumentStepSpec,
+            ChangeRepresentationPayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeRepresentationGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self._fired = False
+
+            def generate(self, request: ActionGenerationRequest):
+                if self._fired:
+                    # A failing IMPLEMENT on the forked child keeps it ACTIVE so
+                    # the fork structure is observable (no accept masking it).
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                        ),
+                    )
+                self._fired = True
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.CHANGE_REPRESENTATION,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.CHANGE_REPRESENTATION
+                            ],
+                            rationale="switch to cases",
+                        ),
+                        payload=ChangeRepresentationPayload(
+                            argument=(
+                                ArgumentStepSpec(step_id="r1", claim="by cases"),
+                            ),
+                            alignments=(
+                                AlignmentSpec(
+                                    argument_step_id="r1", relation="unaligned"
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeRepresentationGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=3),
+            ).run(_task())
+
+        branches = result.metadata["workspace"]["branches"]
+        parent = next(b for b in branches if b["branch_id"] == "sample:root")
+        self.assertEqual(parent["status"], "superseded")
+        child = next(
+            b for b in branches if b["branch_id"] == "sample:root.rep0"
+        )
+        self.assertEqual(child["status"], "active")
+        self.assertEqual(
+            [s["step_id"] for s in child["argument"]["steps"]], ["r1"]
+        )
+        self.assertEqual(len(result.metadata["representation_records"]), 1)
+
+    def test_implement_failure_records_competing_hypotheses(self) -> None:
+        # Phase 7.6: after a failing IMPLEMENT the generator emits competing
+        # FailureHypotheses (carried on a proposal's metadata). The controller
+        # folds them onto the branch after the failure's observations are
+        # present, so they appear in the workspace and projection.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace import (
+            FailureHypothesis,
+            FailureKind,
+        )
+        from agent.search.structured.proposal import (
+            FAILURE_HYPOTHESES_KEY,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class FailingThenHypothesisGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self._phase = 0
+
+            def generate(self, request: ActionGenerationRequest):
+                self._phase += 1
+                if self._phase == 1:
+                    # Failing implementation (non-trivial, non-stuck -> summary
+                    # observation at attempt:0).
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail first",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                        ),
+                    )
+                # Second call: read the projected observation id and attach a
+                # hypothesis citing it. Branch has no argument steps yet, so
+                # affected_step_ids is empty (allowed).
+                projection = request.metadata["structured_projection"]
+                obs_id = projection["observations"][0]["observation_id"]
+                hypothesis = FailureHypothesis(
+                    hypothesis_id="h1",
+                    kind=FailureKind.ARGUMENT_GAP,
+                    confidence=0.6,
+                    evidence_ids=(obs_id,),
+                )
+                metadata = {FAILURE_HYPOTHESES_KEY: [hypothesis]}
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="retry",
+                        ),
+                        payload=ImplementPayload(proof_text="trivial"),
+                        metadata=metadata,
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                FailingThenHypothesisGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=4, max_model_calls=4),
+            ).run(_task())
+
+        root_branch = next(
+            b
+            for b in result.metadata["workspace"]["branches"]
+            if b["branch_id"] == "sample:root"
+        )
+        hyp_ids = [h["hypothesis_id"] for h in root_branch["failure_hypotheses"]]
+        self.assertIn("h1", hyp_ids)
+
+    def test_select_test_action_promotes_lowest_cost(self) -> None:
+        # Phase 7.6: _select_test_action ranks structural probes (capability
+        # audit) cheaper than a full IMPLEMENT, even when the IMPLEMENT comes
+        # from a higher-confidence hypothesis.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace import (
+            FailureHypothesis,
+            FailureKind,
+            Observation,
+            ObservationSource,
+            ProofBranch,
+        )
+        from agent.search.structured.controller import StructuredController  # noqa: F401
+
+        obs = Observation(
+            observation_id="attempt:0:summary",
+            source=ObservationSource.CHECKER,
+            category="unsolved_goals",
+            message="unsolved",
+            raw_evidence_ref="attempt:0",
+        )
+        branch = ProofBranch(
+            branch_id="sample:root",
+            obligation_id="sample",
+            obligation_version=1,
+            observations=(obs,),
+            failure_hypotheses=(
+                # High-confidence hypothesis proposing an IMPLEMENT (expensive).
+                FailureHypothesis(
+                    hypothesis_id="h1",
+                    kind=FailureKind.IMPLEMENTATION_DEFECT,
+                    confidence=0.9,
+                    evidence_ids=("attempt:0:summary",),
+                    proposed_tests=(
+                        SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="reimplement",
+                        ),
+                    ),
+                ),
+                # Low-confidence hypothesis proposing a capability probe (cheap).
+                FailureHypothesis(
+                    hypothesis_id="h2",
+                    kind=FailureKind.CAPABILITY_MISSING,
+                    confidence=0.3,
+                    evidence_ids=("attempt:0:summary",),
+                    proposed_tests=(
+                        SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        controller = StructuredController.__new__(StructuredController)
+        selected = controller._select_test_action(branch)
+        assert selected is not None
+        self.assertEqual(selected.kind, SearchActionKind.RUN_CAPABILITY_TEST)
+
+        # With only the expensive hypothesis, the IMPLEMENT test is selected.
+        branch_expensive = ProofBranch(
+            branch_id="sample:root",
+            obligation_id="sample",
+            obligation_version=1,
+            observations=(obs,),
+            failure_hypotheses=branch.failure_hypotheses[:1],
+        )
+        selected2 = controller._select_test_action(branch_expensive)
+        assert selected2 is not None
+        self.assertEqual(selected2.kind, SearchActionKind.IMPLEMENT)
+
 
 if __name__ == "__main__":
     unittest.main()

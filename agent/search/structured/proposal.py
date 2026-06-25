@@ -44,16 +44,25 @@ from ..action import ActionCandidate, ActionGenerationRequest, ActionGenerator
 PAYLOAD_KIND_IMPLEMENT = "implement"
 PAYLOAD_KIND_DECOMPOSE = "decompose"
 PAYLOAD_KIND_CAPABILITY_TEST = "run_capability_test"
+PAYLOAD_KIND_PROPOSE_ARGUMENT = "propose_argument"
+PAYLOAD_KIND_REFINE_ARGUMENT = "refine_argument"
+PAYLOAD_KIND_CHANGE_REPRESENTATION = "change_representation"
 
-#: The action kinds Phase 7.2 supports. Anything outside this set is rejected
-#: at :meth:`StructuredActionProposal.validate` so the controller never sees an
-#: unhandled kind.
+#: The action kinds the typed proposal protocol supports. Anything outside this
+#: set is rejected at :meth:`StructuredActionProposal.validate` so the
+#: controller never sees an unhandled kind. IMPLEMENT / REPAIR_IMPLEMENTATION /
+#: DECOMPOSE / RUN_CAPABILITY_TEST opened in 7.2-7.4; PROPOSE_ARGUMENT /
+#: REFINE_ARGUMENT / CHANGE_REPRESENTATION (argument + representation layer)
+#: open in 7.6.
 SUPPORTED_PROPOSAL_KINDS: frozenset[SearchActionKind] = frozenset(
     {
         SearchActionKind.IMPLEMENT,
         SearchActionKind.REPAIR_IMPLEMENTATION,
         SearchActionKind.DECOMPOSE,
         SearchActionKind.RUN_CAPABILITY_TEST,
+        SearchActionKind.PROPOSE_ARGUMENT,
+        SearchActionKind.REFINE_ARGUMENT,
+        SearchActionKind.CHANGE_REPRESENTATION,
     }
 )
 
@@ -176,7 +185,225 @@ def capability_test_payload_from_dict(data: dict[str, Any]) -> CapabilityTestPay
     )
 
 
-ActionPayload = Union[ImplementPayload, DecomposePayload, CapabilityTestPayload]
+@dataclass(frozen=True)
+class ArgumentStepSpec:
+    """A serializable description of one :class:`ArgumentStep`.
+
+    Mirrors :class:`~agent.proof_system.workspace.argument.ArgumentStep` field
+    for field, but as a payload value rather than a workspace dataclass. The
+    reducer (:func:`apply_argument`) turns each spec into a real
+    :class:`ArgumentStep` when folding it into a branch. Carried as data in the
+    payload so the proposal layer stays decoupled from the argument module.
+    """
+
+    step_id: str
+    claim: str
+    justification: str = ""
+    depends_on: tuple[str, ...] = ()
+    introduced_fact_ids: tuple[str, ...] = ()
+    confidence: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "step_id": self.step_id,
+            "claim": self.claim,
+            "justification": self.justification,
+            "depends_on": list(self.depends_on),
+            "introduced_fact_ids": list(self.introduced_fact_ids),
+            "confidence": self.confidence,
+        }
+
+
+def argument_step_spec_from_dict(data: dict[str, Any]) -> ArgumentStepSpec:
+    return ArgumentStepSpec(
+        step_id=data["step_id"],
+        claim=data["claim"],
+        justification=data.get("justification", ""),
+        depends_on=tuple(data.get("depends_on", ())),
+        introduced_fact_ids=tuple(data.get("introduced_fact_ids", ())),
+        confidence=data.get("confidence"),
+    )
+
+
+#: Alignment relation values carried as plain strings in payloads. They mirror
+#: :class:`~agent.proof_system.workspace.alignment.AlignmentRelation` so a
+#: payload round-trips without importing the enum; the reducer maps the string
+#: to the enum when building the real :class:`AlignmentLink`.
+ALIGNMENT_RELATION_VALUES: frozenset[str] = frozenset(
+    {"implements", "partial", "unaligned"}
+)
+
+
+@dataclass(frozen=True)
+class AlignmentSpec:
+    """A serializable description of one :class:`AlignmentLink`.
+
+    ``relation`` is a plain string (one of :data:`ALIGNMENT_RELATION_VALUES`).
+    The Lean target fields are optional: a non-``unaligned`` relation must
+    supply at least one target (``lean_declaration_id`` / ``goal_fingerprint``
+    / ``source_span``), otherwise the reducer's pre-commit branch validation
+    would reject it. An ``unaligned`` relation must leave all three ``None``.
+    The reducer enforces these rules when building the :class:`AlignmentLink`;
+    payload validation reports the mismatch up front.
+    """
+
+    argument_step_id: str
+    relation: str = "unaligned"
+    lean_declaration_id: str | None = None
+    goal_fingerprint: str | None = None
+    source_span: tuple[int, int] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "argument_step_id": self.argument_step_id,
+            "relation": self.relation,
+            "lean_declaration_id": self.lean_declaration_id,
+            "goal_fingerprint": self.goal_fingerprint,
+            "source_span": list(self.source_span) if self.source_span else None,
+        }
+
+
+def alignment_spec_from_dict(data: dict[str, Any]) -> AlignmentSpec:
+    span = data.get("source_span")
+    return AlignmentSpec(
+        argument_step_id=data["argument_step_id"],
+        relation=data.get("relation", "unaligned"),
+        lean_declaration_id=data.get("lean_declaration_id"),
+        goal_fingerprint=data.get("goal_fingerprint"),
+        source_span=tuple(span) if span else None,
+    )
+
+
+@dataclass(frozen=True)
+class ProposeArgumentPayload:
+    """Append new argument steps (and their alignments) to the branch.
+
+    ``PROPOSE_ARGUMENT`` grows the argument graph: every ``steps[i].step_id``
+    must have a matching entry in ``alignments`` (same ``argument_step_id``),
+    because :meth:`ProofBranch.validate` requires every argument step to carry
+    an alignment link. The reducer adds step + alignment in a single immutable
+    transition and pre-commit validates the resulting branch — a malformed
+    payload (missing alignment, an ``unaligned`` relation that carries a Lean
+    target, etc.) is a no-op rather than corrupting the workspace. Carries no
+    proof body and runs no Lean check; it is a pure structural move.
+    """
+
+    steps: tuple[ArgumentStepSpec, ...]
+    alignments: tuple[AlignmentSpec, ...]
+    rationale: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": PAYLOAD_KIND_PROPOSE_ARGUMENT,
+            "steps": [step.to_dict() for step in self.steps],
+            "alignments": [alignment.to_dict() for alignment in self.alignments],
+            "rationale": self.rationale,
+        }
+
+
+def propose_argument_payload_from_dict(
+    data: dict[str, Any],
+) -> ProposeArgumentPayload:
+    return ProposeArgumentPayload(
+        steps=tuple(
+            argument_step_spec_from_dict(item) for item in data.get("steps", ())
+        ),
+        alignments=tuple(
+            alignment_spec_from_dict(item) for item in data.get("alignments", ())
+        ),
+        rationale=data.get("rationale", ""),
+    )
+
+
+@dataclass(frozen=True)
+class RefineArgumentPayload:
+    """Replace existing argument steps (and their alignments) in place.
+
+    ``REFINE_ARGUMENT`` revises already-recorded steps: each
+    ``steps[i].step_id`` must already exist on the branch (the reducer looks it
+    up and substitutes). The argument topology is otherwise preserved, so the
+    step id set after a refine is unchanged — only claims, justifications, and
+    alignments change. A refine that names an unknown step is a no-op (the
+    reducer drops it). Like ``PROPOSE_ARGUMENT`` this is structural and costs
+    no Lean check.
+    """
+
+    steps: tuple[ArgumentStepSpec, ...]
+    alignments: tuple[AlignmentSpec, ...]
+    rationale: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": PAYLOAD_KIND_REFINE_ARGUMENT,
+            "steps": [step.to_dict() for step in self.steps],
+            "alignments": [alignment.to_dict() for alignment in self.alignments],
+            "rationale": self.rationale,
+        }
+
+
+def refine_argument_payload_from_dict(
+    data: dict[str, Any],
+) -> RefineArgumentPayload:
+    return RefineArgumentPayload(
+        steps=tuple(
+            argument_step_spec_from_dict(item) for item in data.get("steps", ())
+        ),
+        alignments=tuple(
+            alignment_spec_from_dict(item) for item in data.get("alignments", ())
+        ),
+        rationale=data.get("rationale", ""),
+    )
+
+
+@dataclass(frozen=True)
+class ChangeRepresentationPayload:
+    """Fork a new representation branch with a replaced argument layer.
+
+    ``CHANGE_REPRESENTATION`` is a strategy switch: rather than editing the
+    current branch's argument it forks a new branch (``<parent>.rep<n>``) that
+    carries the *full* replacement argument + alignment layers, inherits the
+    parent's observations as evidence, and starts without a Lean artifact (the
+    new representation gets a fresh realization). The parent is retired to
+    ``SUPERSEDED`` in the same transition so two incompatible argument layers
+    never coexist as ACTIVE on one obligation. The reducer pre-commit validates
+    the child and no-ops on a malformed payload. Structural — no Lean check.
+    """
+
+    argument: tuple[ArgumentStepSpec, ...]
+    alignments: tuple[AlignmentSpec, ...]
+    rationale: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": PAYLOAD_KIND_CHANGE_REPRESENTATION,
+            "argument": [step.to_dict() for step in self.argument],
+            "alignments": [alignment.to_dict() for alignment in self.alignments],
+            "rationale": self.rationale,
+        }
+
+
+def change_representation_payload_from_dict(
+    data: dict[str, Any],
+) -> ChangeRepresentationPayload:
+    return ChangeRepresentationPayload(
+        argument=tuple(
+            argument_step_spec_from_dict(item) for item in data.get("argument", ())
+        ),
+        alignments=tuple(
+            alignment_spec_from_dict(item) for item in data.get("alignments", ())
+        ),
+        rationale=data.get("rationale", ""),
+    )
+
+
+ActionPayload = Union[
+    ImplementPayload,
+    DecomposePayload,
+    CapabilityTestPayload,
+    ProposeArgumentPayload,
+    RefineArgumentPayload,
+    ChangeRepresentationPayload,
+]
 
 
 @dataclass(frozen=True)
@@ -215,7 +442,7 @@ class StructuredActionProposal:
         kind = self.action.kind
         if kind not in SUPPORTED_PROPOSAL_KINDS:
             errors.append(
-                f"unsupported proposal kind in Phase 7.2: {kind.value!r}"
+                f"unsupported proposal kind: {kind.value!r}"
             )
 
         if kind in (
@@ -236,6 +463,24 @@ class StructuredActionProposal:
                 errors.append(
                     "action kind 'run_capability_test' requires "
                     "CapabilityTestPayload"
+                )
+        elif kind is SearchActionKind.PROPOSE_ARGUMENT:
+            if not isinstance(self.payload, ProposeArgumentPayload):
+                errors.append(
+                    "action kind 'propose_argument' requires "
+                    "ProposeArgumentPayload"
+                )
+        elif kind is SearchActionKind.REFINE_ARGUMENT:
+            if not isinstance(self.payload, RefineArgumentPayload):
+                errors.append(
+                    "action kind 'refine_argument' requires "
+                    "RefineArgumentPayload"
+                )
+        elif kind is SearchActionKind.CHANGE_REPRESENTATION:
+            if not isinstance(self.payload, ChangeRepresentationPayload):
+                errors.append(
+                    "action kind 'change_representation' requires "
+                    "ChangeRepresentationPayload"
                 )
 
         return (not errors, tuple(errors))
@@ -264,6 +509,12 @@ def structured_action_proposal_from_dict(
         payload = decompose_payload_from_dict(payload_data)
     elif payload_kind == PAYLOAD_KIND_CAPABILITY_TEST:
         payload = capability_test_payload_from_dict(payload_data)
+    elif payload_kind == PAYLOAD_KIND_PROPOSE_ARGUMENT:
+        payload = propose_argument_payload_from_dict(payload_data)
+    elif payload_kind == PAYLOAD_KIND_REFINE_ARGUMENT:
+        payload = refine_argument_payload_from_dict(payload_data)
+    elif payload_kind == PAYLOAD_KIND_CHANGE_REPRESENTATION:
+        payload = change_representation_payload_from_dict(payload_data)
     else:
         raise ValueError(f"unknown payload kind {payload_kind!r}")
     return StructuredActionProposal(
@@ -302,6 +553,16 @@ LEGACY_KIND_DEFERRED = "_legacy_kind_deferred"
 #: ``action`` string, so the controller can rebuild a :class:`CandidateEdit`
 #: with the same ``action`` the legacy generator chose.
 LEGACY_ACTION_KEY = "legacy_action"
+
+#: Metadata key under which a native structured generator may attach competing
+#: :class:`~agent.proof_system.workspace.FailureHypothesis` records to a
+#: proposal. Phase 7.6's competing-hypothesis layer keeps multiple blame
+#: candidates alive; the generator emits them as data on the proposal rather
+#: than as separate model calls, and the controller folds them through the
+#: reducer after the failure's observations are already on the branch. The
+#: reducer drops any hypothesis whose evidence/step/test references do not
+#: resolve against the branch.
+FAILURE_HYPOTHESES_KEY = "failure_hypotheses"
 
 
 class _LegacyActionGeneratorAdapter:

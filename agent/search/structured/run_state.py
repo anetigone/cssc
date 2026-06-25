@@ -62,6 +62,13 @@ class _StructuredRunState:
     # the search tree's decompositions are visible. Empty on the baseline path
     # (only a native generator emits DECOMPOSE).
     decompose_records: list[dict[str, Any]] = field(default_factory=list)
+    # Phase 7.6: argument-layer edits (PROPOSE_ARGUMENT / REFINE_ARGUMENT) the
+    # controller *executed*. Like decompose these are structural (no check, no
+    # model call of their own), recorded for trace visibility.
+    argument_records: list[dict[str, Any]] = field(default_factory=list)
+    # Phase 7.6: CHANGE_REPRESENTATION forks the controller *executed* — one
+    # record per representation branch spawned.
+    representation_records: list[dict[str, Any]] = field(default_factory=list)
 
 
 def build_structured_result(
@@ -113,6 +120,8 @@ def build_structured_result(
         "safety_reviewer": type(safety_reviewer).__name__,
         "skipped_proposals": tuple(state.skipped_proposals),
         "decompose_records": tuple(state.decompose_records),
+        "argument_records": tuple(state.argument_records),
+        "representation_records": tuple(state.representation_records),
         "result_summary": build_result_summary(
             workspace, assembly_result=assembly_outcome
         ).to_dict(),

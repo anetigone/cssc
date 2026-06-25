@@ -11,8 +11,11 @@ from agent.proof_system.base import (
     ProofTask,
 )
 from agent.proof_system.workspace import (
+    ArgumentStep,
     BranchStatus,
     DEFAULT_ALLOWED_MUTATIONS,
+    FailureHypothesis,
+    FailureKind,
     ObligationStatus,
     ProofBranch,
     SearchAction,
@@ -24,9 +27,16 @@ from agent.search.structured.reducer import (
     REPAIR_THRESHOLD,
     StructuredActionResult,
     apply,
+    apply_argument,
+    apply_change_representation,
     apply_decompose,
+    apply_failure_hypotheses,
 )
-from agent.search.structured.proposal import DecomposeChildSpec
+from agent.search.structured.proposal import (
+    AlignmentSpec,
+    ArgumentStepSpec,
+    DecomposeChildSpec,
+)
 
 IMPLEMENT_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.IMPLEMENT]
 
@@ -636,6 +646,354 @@ class ReducerArtifactContractTests(unittest.TestCase):
         self.assertEqual(root_branch.lean_artifact.kind.value, "proof_body")
         root_fact = workspace.accepted_facts[0]
         self.assertEqual(root_fact.statement, "trivial")
+
+
+PROPOSE_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.PROPOSE_ARGUMENT]
+REFINE_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.REFINE_ARGUMENT]
+CHANGE_REP_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[
+    SearchActionKind.CHANGE_REPRESENTATION
+]
+
+
+def _propose_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.PROPOSE_ARGUMENT,
+        target_branch_id=branch_id,
+        allowed_mutations=PROPOSE_MUTATIONS,
+        rationale="propose a step",
+    )
+
+
+def _refine_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.REFINE_ARGUMENT,
+        target_branch_id=branch_id,
+        allowed_mutations=REFINE_MUTATIONS,
+        rationale="refine a step",
+    )
+
+
+def _change_rep_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.CHANGE_REPRESENTATION,
+        target_branch_id=branch_id,
+        allowed_mutations=CHANGE_REP_MUTATIONS,
+        rationale="switch representation",
+    )
+
+
+class ReducerArgumentTests(unittest.TestCase):
+    def test_propose_appends_step_and_alignment_in_one_transition(self) -> None:
+        # PROPOSE_ARGUMENT lands the step and its alignment in the SAME
+        # successor, keeping workspace.validate() green (every step must have
+        # an alignment).
+        workspace = _seed_workspace()
+        action = _propose_action()
+        workspace = apply_argument(
+            workspace,
+            action,
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual([s.step_id for s in branch.argument.steps], ["s1"])
+        self.assertEqual(branch.alignment[0].argument_step_id, "s1")
+        self.assertEqual(branch.alignment[0].relation.value, "unaligned")
+        self.assertEqual(branch.last_action, action)
+
+    def test_propose_is_pure_structure_no_artifact_or_observation(self) -> None:
+        workspace = _seed_workspace()
+        workspace = apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertIsNone(branch.lean_artifact)
+        self.assertEqual(branch.observations, ())
+
+    def test_propose_with_implements_alignment_carries_declaration(self) -> None:
+        workspace = _seed_workspace()
+        workspace = apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(
+                    argument_step_id="s1",
+                    relation="implements",
+                    lean_declaration_id="foo",
+                ),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.alignment[0].relation.value, "implements")
+        self.assertEqual(branch.alignment[0].lean_declaration_id, "foo")
+
+    def test_propose_missing_alignment_is_noop(self) -> None:
+        # The reducer refuses a PROPOSE whose step has no alignment rather
+        # than emitting a branch that fails the every-step-has-alignment rule.
+        workspace_before = _seed_workspace()
+        workspace = apply_argument(
+            workspace_before,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(),  # no alignment for s1 -> rejected
+        )
+        self.assertEqual(workspace, workspace_before)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.argument.steps, ())
+
+    def test_refine_replaces_existing_step_claim(self) -> None:
+        workspace = _seed_workspace()
+        # Seed two steps via PROPOSE.
+        workspace = apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(
+                ArgumentStepSpec(step_id="s1", claim="claim 1"),
+                ArgumentStepSpec(step_id="s2", claim="claim 2"),
+            ),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+                AlignmentSpec(argument_step_id="s2", relation="unaligned"),
+            ),
+        )
+        # REFINE only s1's claim; s2 must be untouched.
+        workspace = apply_argument(
+            workspace,
+            _refine_action(),
+            branch_id="root-branch",
+            refined_steps=(ArgumentStepSpec(step_id="s1", claim="revised claim"),),
+            refined_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        steps = {s.step_id: s for s in branch.argument.steps}
+        self.assertEqual(steps["s1"].claim, "revised claim")
+        self.assertEqual(steps["s2"].claim, "claim 2")
+
+    def test_refine_unknown_step_id_is_noop(self) -> None:
+        workspace_before = _seed_workspace()
+        workspace = apply_argument(
+            workspace_before,
+            _refine_action(),
+            branch_id="root-branch",
+            refined_steps=(ArgumentStepSpec(step_id="ghost", claim="x"),),
+            refined_alignments=(
+                AlignmentSpec(argument_step_id="ghost", relation="unaligned"),
+            ),
+        )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_argument_actions_do_not_mutate_input(self) -> None:
+        workspace = _seed_workspace()
+        original_branches = workspace.branches
+        apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        self.assertEqual(workspace.branches, original_branches)
+
+
+class ReducerChangeRepresentationTests(unittest.TestCase):
+    def test_forks_child_and_supersedes_parent(self) -> None:
+        workspace = _seed_workspace()
+        # Give the parent some observations so we can assert inheritance.
+        workspace = apply(
+            workspace,
+            _implement_action(),
+            _result(
+                check_result=_rejected_check(),
+                safety_verdict=SafetyVerdict(accepted=False),
+            ),
+        )
+        parent = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertGreater(len(parent.observations), 0)
+
+        workspace = apply_change_representation(
+            workspace,
+            _change_rep_action(),
+            branch_id="root-branch",
+            argument_steps=(ArgumentStepSpec(step_id="r1", claim="new claim"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="r1", relation="unaligned"),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        parent_after = next(
+            b for b in workspace.branches if b.branch_id == "root-branch"
+        )
+        self.assertEqual(parent_after.status, BranchStatus.SUPERSEDED)
+        child = next(
+            b for b in workspace.branches if b.branch_id == "root-branch.rep0"
+        )
+        self.assertEqual(child.status, BranchStatus.ACTIVE)
+        self.assertEqual(child.parent_branch_id, "root-branch")
+        self.assertEqual([s.step_id for s in child.argument.steps], ["r1"])
+        self.assertEqual(child.alignment[0].argument_step_id, "r1")
+        self.assertIsNone(child.lean_artifact)
+        # Child inherits the parent's evidence.
+        self.assertEqual(child.observations, parent.observations)
+
+    def test_branch_id_is_deterministic(self) -> None:
+        workspace = _seed_workspace()
+        workspace = apply_change_representation(
+            workspace,
+            _change_rep_action(),
+            branch_id="root-branch",
+            argument_steps=(ArgumentStepSpec(step_id="r1", claim="claim"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="r1", relation="unaligned"),
+            ),
+        )
+        ids = {b.branch_id for b in workspace.branches}
+        self.assertIn("root-branch.rep0", ids)
+        # Fork again from the (now child) branch's representation tree: target
+        # the child, which yields .rep1 off the root counting.
+        workspace = apply_change_representation(
+            workspace,
+            _change_rep_action(),
+            branch_id="root-branch.rep0",
+            argument_steps=(ArgumentStepSpec(step_id="r2", claim="claim 2"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="r2", relation="unaligned"),
+            ),
+        )
+        ids = {b.branch_id for b in workspace.branches}
+        self.assertIn("root-branch.rep0.rep0", ids)
+
+    def test_missing_alignment_is_noop(self) -> None:
+        workspace_before = _seed_workspace()
+        workspace = apply_change_representation(
+            workspace_before,
+            _change_rep_action(),
+            branch_id="root-branch",
+            argument_steps=(ArgumentStepSpec(step_id="r1", claim="claim"),),
+            alignments=(),  # no alignment -> child invalid -> no-op
+        )
+        self.assertEqual(workspace, workspace_before)
+
+
+class ReducerFailureHypothesisTests(unittest.TestCase):
+    def _branch_with_evidence(self):
+        workspace = _seed_workspace()
+        workspace = apply(
+            workspace,
+            _implement_action(),
+            _result(
+                check_result=_rejected_check(),
+                safety_verdict=SafetyVerdict(accepted=False),
+            ),
+        )
+        return workspace
+
+    def test_appends_validated_hypotheses(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.7,
+            evidence_ids=(evidence,),
+        )
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual([h.hypothesis_id for h in branch.failure_hypotheses], ["h1"])
+
+    def test_drops_hypothesis_with_missing_evidence(self) -> None:
+        workspace = self._branch_with_evidence()
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.5,
+            evidence_ids=("nonexistent-obs",),
+        )
+        workspace_before = workspace
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_drops_hypothesis_with_wrong_branch_test(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        bad_test = SearchAction(
+            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+            target_branch_id="some-other-branch",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.RUN_CAPABILITY_TEST
+            ],
+            rationale="probe",
+        )
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.CAPABILITY_MISSING,
+            confidence=0.5,
+            evidence_ids=(evidence,),
+            proposed_tests=(bad_test,),
+        )
+        workspace_before = workspace
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_drops_duplicate_hypothesis_id(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="dup",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.5,
+            evidence_ids=(evidence,),
+        )
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp, hyp)
+        )
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(len(branch.failure_hypotheses), 1)
+
+    def test_does_not_mutate_input(self) -> None:
+        workspace = self._branch_with_evidence()
+        original_branches = workspace.branches
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.7,
+            evidence_ids=(evidence,),
+        )
+        apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertEqual(workspace.branches, original_branches)
 
 
 if __name__ == "__main__":

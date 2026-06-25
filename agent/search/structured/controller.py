@@ -77,14 +77,25 @@ from .finalize import assemble_and_finalize
 from .frontier import Frontier
 from .projection import build_context_projection
 from .proposal import (
+    FAILURE_HYPOTHESES_KEY,
     LEGACY_ACTION_KEY,
     LEGACY_KIND_DEFERRED,
     CapabilityTestPayload,
+    ChangeRepresentationPayload,
     DecomposePayload,
+    ProposeArgumentPayload,
+    RefineArgumentPayload,
     StructuredActionProposal,
     adapt_legacy_generator,
 )
-from .reducer import StructuredActionResult, apply, apply_decompose
+from .reducer import (
+    StructuredActionResult,
+    apply,
+    apply_argument,
+    apply_change_representation,
+    apply_decompose,
+    apply_failure_hypotheses,
+)
 from .run_state import _StructuredRunState, build_structured_result
 from .solution_tracker import has_complete_solution
 
@@ -179,9 +190,22 @@ class StructuredController:
                     state.stop_reason = "no_actions"
                 continue
 
+            # Phase 7.6: a native generator may attach competing failure
+            # hypotheses to its proposals (under FAILURE_HYPOTHESES_KEY). Fold
+            # them onto the branch now — after any prior failure's observations
+            # are already on it, so the reducer's evidence-resolution check
+            # passes. Hypotheses are model data riding the already-budgeted
+            # generation, not a separate model call. No-op when nothing is
+            # attached (the legacy adapter path always takes this branch).
+            workspace = self._fold_failure_hypotheses(
+                branch, list(proposals), workspace
+            )
+
             executable_proposals: list[StructuredActionProposal] = []
             capability_proposals: list[StructuredActionProposal] = []
             decompose_proposals: list[StructuredActionProposal] = []
+            argument_proposals: list[StructuredActionProposal] = []
+            representation_proposals: list[StructuredActionProposal] = []
             for proposal in proposals:
                 proposal = self._finalize_kind(proposal, branch)
                 ok, errors = proposal.validate()
@@ -204,6 +228,22 @@ class StructuredController:
                     # IMPLEMENT candidate on this branch, and unlike an
                     # implementation it consumes no check and no model call.
                     decompose_proposals.append(proposal)
+                    continue
+                if action.kind in (
+                    SearchActionKind.PROPOSE_ARGUMENT,
+                    SearchActionKind.REFINE_ARGUMENT,
+                ):
+                    # Phase 7.6: argument-layer edits are structural (no check,
+                    # no safety). They run before IMPLEMENT so the branch's
+                    # argument/alignment is current before any realization is
+                    # spent against it.
+                    argument_proposals.append(proposal)
+                    continue
+                if action.kind is SearchActionKind.CHANGE_REPRESENTATION:
+                    # Phase 7.6: a representation switch forks a new branch and
+                    # supersedes this one, so it must run before IMPLEMENT and
+                    # the controller must not then spend candidates here.
+                    representation_proposals.append(proposal)
                     continue
                 if action.kind not in (
                     SearchActionKind.IMPLEMENT,
@@ -242,6 +282,33 @@ class StructuredController:
                 # iteration pops a child branch (now ready) instead.
                 workspace, _ = self._run_decompose(
                     task, branch, decompose_proposals, workspace, state
+                )
+                frontier.update(workspace, branch.branch_id, accepted=False)
+                if not frontier.has_work():
+                    if not state.stop_reason:
+                        state.stop_reason = "no_actions"
+                continue
+
+            if argument_proposals:
+                # Phase 7.6: edit the branch's argument/alignment layer in
+                # place. The branch stays ACTIVE but its argument graph
+                # changed, so refresh the frontier and continue rather than
+                # spending IMPLEMENT candidates on a stale view this iteration.
+                workspace, _ = self._run_argument(
+                    task, branch, argument_proposals, workspace, state
+                )
+                frontier.update(workspace, branch.branch_id, accepted=False)
+                if not frontier.has_work():
+                    if not state.stop_reason:
+                        state.stop_reason = "no_actions"
+                continue
+
+            if representation_proposals:
+                # Phase 7.6: a representation switch forks a new branch and
+                # supersedes this one — the controller must not spend IMPLEMENT
+                # candidates on the now-superseded branch. Refresh and continue.
+                workspace, _ = self._run_change_representation(
+                    task, branch, representation_proposals, workspace, state
                 )
                 frontier.update(workspace, branch.branch_id, accepted=False)
                 if not frontier.has_work():
@@ -791,3 +858,199 @@ class StructuredController:
                 len(payload.children),
             )
         return workspace, True
+
+    def _run_argument(
+        self,
+        task: ProofTask,
+        branch: ProofBranch,
+        proposals: list[StructuredActionProposal],
+        workspace: ProofWorkspace,
+        state: _StructuredRunState,
+    ) -> tuple[ProofWorkspace, bool]:
+        """Execute each ``PROPOSE_ARGUMENT`` / ``REFINE_ARGUMENT`` proposal.
+
+        Argument edits are structural — no check, no model call of their own
+        (the step text comes from the generator's payload). Each proposal is
+        retargeted to the current branch, validated, and folded through
+        :func:`apply_argument`, which appends (PROPOSE) or substitutes in place
+        (REFINE) the step + alignment and pre-commit validates the resulting
+        branch. A malformed payload is a no-op rather than corrupting the
+        workspace.
+
+        Returns the successor workspace and ``True`` (the controller refreshes
+        the frontier after an argument edit either way; the branch stays
+        ACTIVE so a later iteration re-pops it).
+        """
+        for proposal in proposals:
+            proposal = self._finalize_kind(proposal, branch)
+            ok, errors = proposal.validate()
+            if not ok:
+                logger.warning(
+                    "Argument proposal invalid, skipping: %s", errors
+                )
+                continue
+            action = proposal.action
+            if action.kind is SearchActionKind.PROPOSE_ARGUMENT:
+                payload = proposal.payload
+                assert isinstance(payload, ProposeArgumentPayload)
+                workspace = apply_argument(
+                    workspace,
+                    action,
+                    branch_id=branch.branch_id,
+                    new_steps=payload.steps,
+                    new_alignments=payload.alignments,
+                )
+            else:  # REFINE_ARGUMENT
+                payload = proposal.payload
+                assert isinstance(payload, RefineArgumentPayload)
+                workspace = apply_argument(
+                    workspace,
+                    action,
+                    branch_id=branch.branch_id,
+                    refined_steps=payload.steps,
+                    refined_alignments=payload.alignments,
+                )
+            state.argument_records.append(
+                {
+                    "attempt_index": state.attempt_index,
+                    "branch_id": branch.branch_id,
+                    "kind": action.kind.value,
+                    "steps": [step.to_dict() for step in payload.steps],
+                }
+            )
+            logger.info(
+                "Argument edit executed: task_id=%s kind=%s steps=%d",
+                task.task_id,
+                action.kind.value,
+                len(payload.steps),
+            )
+        return workspace, True
+
+    def _run_change_representation(
+        self,
+        task: ProofTask,
+        branch: ProofBranch,
+        proposals: list[StructuredActionProposal],
+        workspace: ProofWorkspace,
+        state: _StructuredRunState,
+    ) -> tuple[ProofWorkspace, bool]:
+        """Execute each ``CHANGE_REPRESENTATION`` proposal by forking a branch.
+
+        Structural — no check, no model call. Each proposal is retargeted,
+        validated, and folded through :func:`apply_change_representation`,
+        which supersedes the current branch and seeds a ``<parent>.rep<n>``
+        child carrying the payload's replacement argument/alignment layer. Only
+        the first fork per branch takes effect on a given ACTIVE branch: once
+        the branch is superseded, later proposals in this batch target dead
+        state and are recorded as skipped.
+
+        Returns the successor workspace and ``True`` — a forked branch is
+        superseded, so the controller must not spend IMPLEMENT candidates on it
+        afterwards.
+        """
+        for proposal in proposals:
+            proposal = self._finalize_kind(proposal, branch)
+            ok, errors = proposal.validate()
+            if not ok:
+                logger.warning(
+                    "Representation proposal invalid, skipping: %s", errors
+                )
+                continue
+            current = branch_by_id(workspace, branch.branch_id)
+            if current is None or current.status != BranchStatus.ACTIVE:
+                # The branch was already superseded by an earlier fork in this
+                # same batch; record the rest as skipped rather than targeting
+                # dead state (mirrors _run_decompose).
+                state.skipped_proposals.append(
+                    {
+                        "attempt_index": state.attempt_index,
+                        "kind": proposal.action.kind.value,
+                        "rationale": proposal.action.rationale,
+                    }
+                )
+                continue
+            payload = proposal.payload
+            assert isinstance(payload, ChangeRepresentationPayload)
+            workspace = apply_change_representation(
+                workspace,
+                proposal.action,
+                branch_id=branch.branch_id,
+                argument_steps=payload.argument,
+                alignments=payload.alignments,
+            )
+            state.representation_records.append(
+                {
+                    "attempt_index": state.attempt_index,
+                    "parent_branch_id": branch.branch_id,
+                    "step_count": len(payload.argument),
+                }
+            )
+            logger.info(
+                "Representation change executed: task_id=%s parent=%s",
+                task.task_id,
+                branch.branch_id,
+            )
+        return workspace, True
+
+    def _select_test_action(
+        self, branch: ProofBranch
+    ) -> SearchAction | None:
+        """Pick the lowest-cost ``proposed_test`` among the branch's hypotheses.
+
+        Phase 7.6's competing-hypothesis layer keeps every hypothesis's
+        ``proposed_tests`` on the branch; the controller promotes the single
+        cheapest executable one rather than committing to one blame verdict.
+        Cost is ordered by action kind first (structural probes like
+        ``RUN_CAPABILITY_TEST`` / ``DECOMPOSE`` are cheaper than an
+        ``IMPLEMENT`` that costs a model call + a check), then by the parent
+        hypothesis's confidence (most likely first). Returns ``None`` when no
+        hypothesis carries a test.
+        """
+        kind_rank = {
+            SearchActionKind.RUN_CAPABILITY_TEST: 0,
+            SearchActionKind.DECOMPOSE: 1,
+            SearchActionKind.PROPOSE_ARGUMENT: 2,
+            SearchActionKind.REFINE_ARGUMENT: 2,
+            SearchActionKind.CHANGE_REPRESENTATION: 2,
+            SearchActionKind.IMPLEMENT: 3,
+            SearchActionKind.REPAIR_IMPLEMENTATION: 3,
+        }
+        candidates: list[tuple[int, float, SearchAction]] = []
+        for hypothesis in branch.failure_hypotheses:
+            for test in hypothesis.proposed_tests:
+                if test.target_branch_id != branch.branch_id:
+                    continue
+                rank = kind_rank.get(test.kind, 4)
+                candidates.append((rank, -hypothesis.confidence, test))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return candidates[0][2]
+
+    def _fold_failure_hypotheses(
+        self,
+        branch: ProofBranch,
+        proposals: list[StructuredActionProposal],
+        workspace: ProofWorkspace,
+    ) -> ProofWorkspace:
+        """Fold model-generated failure hypotheses from this batch onto a branch.
+
+        Native generators may attach competing :class:`FailureHypothesis`
+        records (the Phase 5 ``proposed_tests`` carriers) to a proposal's
+        metadata under :data:`FAILURE_HYPOTHESES_KEY`; the controller attaches
+        them after the failure's observations are already on the branch so the
+        reducer's ``evidence_ids ⊆ observation_ids`` check can resolve. Invalid
+        hypotheses are dropped by :func:`apply_failure_hypotheses`. No new
+        model call: the hypotheses ride along the already-budgeted generation.
+        """
+        hypotheses: list = []
+        for proposal in proposals:
+            for hypothesis in proposal.metadata.get(
+                FAILURE_HYPOTHESES_KEY, ()
+            ):
+                hypotheses.append(hypothesis)
+        if not hypotheses:
+            return workspace
+        return apply_failure_hypotheses(
+            workspace, branch_id=branch.branch_id, hypotheses=hypotheses
+        )

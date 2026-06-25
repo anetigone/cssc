@@ -36,6 +36,24 @@ the proof body (baseline), a helper artifact is a standalone ``DECLARATION``
 whose fact statement is the helper's Lean declaration (so a parent prompt can
 reuse the helper by name).
 
+Phase 7.6 adds three more structural transitions for the argument /
+representation layer (:func:`apply_argument`,
+:func:`apply_change_representation`, :func:`apply_failure_hypotheses`). A
+``PROPOSE_ARGUMENT`` / ``REFINE_ARGUMENT`` action edits the branch's argument
+graph and its alignments in place — a step and its alignment land in the *same*
+successor, because :meth:`ProofBranch.validate` requires every argument step to
+carry an alignment link. A ``CHANGE_REPRESENTATION`` action forks a new
+representation branch (``<parent>.rep<n>``) carrying a full replacement
+argument + alignment layer, inherits the parent's observations as evidence, and
+retires the parent to ``SUPERSEDED``. None of these touch the Lean checker or
+safety review: an argument step is a mathematical claim, not an executable
+proof. :func:`apply_failure_hypotheses` folds *competing* model-generated
+failure hypotheses onto a branch, dropping any whose evidence / step / test
+references do not resolve against the branch (a hypothesis is a model product;
+the reducer only validates and attaches, never synthesizes). Every structural
+transition pre-commit validates the resulting branch and no-ops on a malformed
+payload so the workspace can never become invalid.
+
 On repeated stall (same goal fingerprints across attempts) the branch is
 retired to DORMANT; if a branch implementing for the first time keeps failing
 on the same goals, a REPAIR_IMPLEMENTATION child branch is spawned so the
@@ -50,8 +68,13 @@ from typing import TYPE_CHECKING, Sequence
 
 from ...proof_system.base import CheckResult, DiagnosticCategory
 from ...proof_system.workspace import (
+    AlignmentLink,
+    AlignmentRelation,
+    ArgumentGraph,
+    ArgumentStep,
     ArtifactKind,
     BranchStatus,
+    FailureHypothesis,
     LeanArtifact,
     ObligationStatus,
     ProofBranch,
@@ -66,7 +89,11 @@ from ...proof_system.workspace.observation import (
 )
 from ..safety import SafetyVerdict
 from .frontier import STALL_THRESHOLD, _stalled_streak
-from .proposal import DecomposeChildSpec
+from .proposal import (
+    AlignmentSpec,
+    ArgumentStepSpec,
+    DecomposeChildSpec,
+)
 
 if TYPE_CHECKING:
     from ...proof_system.workspace import ProofWorkspace
@@ -254,6 +281,213 @@ def apply_decompose(
     return workspace.successor(branches=new_branches)
 
 
+def apply_argument(
+    workspace: ProofWorkspace,
+    action: SearchAction,
+    *,
+    branch_id: str,
+    new_steps: Sequence[ArgumentStepSpec] = (),
+    new_alignments: Sequence[AlignmentSpec] = (),
+    refined_steps: Sequence[ArgumentStepSpec] = (),
+    refined_alignments: Sequence[AlignmentSpec] = (),
+) -> ProofWorkspace:
+    """Fold a ``PROPOSE_ARGUMENT`` / ``REFINE_ARGUMENT`` action in place.
+
+    A separate entry point from :func:`apply` because editing the argument
+    layer is a *structural* move: no :class:`CheckResult`, no safety verdict,
+    no artifact. ``PROPOSE_ARGUMENT`` appends ``new_steps`` (with their
+    ``new_alignments``) to the branch; ``REFINE_ARGUMENT`` substitutes each
+    ``refined_steps[i]`` into the existing graph by ``step_id`` and replaces
+    the matching ``refined_alignments`` by ``argument_step_id``.
+
+    Every step landing on the branch must carry an alignment link — that is a
+    hard :meth:`ProofBranch.validate` rule — so PROPOSE pairs each new step
+    with its alignment in this one transition. To guarantee the workspace can
+    never become invalid, the reducer builds the candidate branch, validates
+    it, and only commits on a clean report; a malformed payload (missing
+    alignment, an ``unaligned`` relation that supplies a Lean target, a REFINE
+    that introduces a dependency cycle) is a no-op. REFINE of an unknown
+    ``step_id`` is likewise a no-op rather than an error.
+    """
+    if action.kind not in (
+        SearchActionKind.PROPOSE_ARGUMENT,
+        SearchActionKind.REFINE_ARGUMENT,
+    ):
+        return workspace
+    branch = _find_branch(workspace, branch_id)
+    if branch is None or branch.status != BranchStatus.ACTIVE:
+        return workspace
+
+    if action.kind is SearchActionKind.PROPOSE_ARGUMENT:
+        if not _alignments_cover(new_steps, new_alignments):
+            return workspace
+        combined_steps = (
+            *branch.argument.steps,
+            *(_to_argument_step(spec) for spec in new_steps),
+        )
+        align_replacements = {}
+        combined_alignments = (
+            *branch.alignment,
+            *(_to_alignment_link(spec) for spec in new_alignments),
+        )
+    else:  # REFINE_ARGUMENT
+        existing_step_ids = {s.step_id for s in branch.argument.steps}
+        existing_align_ids = {
+            link.argument_step_id for link in branch.alignment
+        }
+        # A REFINE that names no existing step and no existing alignment has
+        # nothing to replace — treat it as a no-op rather than producing a
+        # successor that only advances ``last_action`` / the version counter.
+        hits_steps = any(
+            spec.step_id in existing_step_ids for spec in refined_steps
+        )
+        hits_alignments = any(
+            spec.argument_step_id in existing_align_ids
+            for spec in refined_alignments
+        )
+        if not hits_steps and not hits_alignments:
+            return workspace
+        replace_steps = {
+            spec.step_id: _to_argument_step(spec) for spec in refined_steps
+        }
+        combined_steps = tuple(
+            replace_steps.get(step.step_id, step)
+            for step in branch.argument.steps
+        )
+        align_replacements = {
+            spec.argument_step_id: _to_alignment_link(spec)
+            for spec in refined_alignments
+        }
+        combined_alignments = tuple(
+            align_replacements.get(link.argument_step_id, link)
+            for link in branch.alignment
+        )
+
+    candidate = replace(
+        branch,
+        argument=ArgumentGraph(steps=combined_steps),
+        alignment=combined_alignments,
+        last_action=action,
+    )
+    if not candidate.validate().ok:
+        return workspace
+    return workspace.successor(
+        branches=_replace_branch(workspace.branches, candidate)
+    )
+
+
+def apply_change_representation(
+    workspace: ProofWorkspace,
+    action: SearchAction,
+    *,
+    branch_id: str,
+    argument_steps: Sequence[ArgumentStepSpec],
+    alignments: Sequence[AlignmentSpec],
+) -> ProofWorkspace:
+    """Fold a ``CHANGE_REPRESENTATION`` action by forking a new branch.
+
+    Structural — no check, no safety, no artifact. The new representation is a
+    *full replacement* of the argument + alignment layers, so rather than edit
+    the current branch the reducer forks ``<parent>.rep<n>`` carrying the
+    payload's argument, inherits the parent's observations (so the child sees
+    the evidence that motivated the strategy switch) and starts without a Lean
+    artifact (a fresh realization comes from a later IMPLEMENT). The parent is
+    retired to ``SUPERSEDED`` in the same successor so two incompatible
+    argument layers never coexist as ACTIVE on one obligation. The child is
+    pre-commit validated; a malformed payload is a no-op.
+    """
+    if action.kind is not SearchActionKind.CHANGE_REPRESENTATION:
+        return workspace
+    parent = _find_branch(workspace, branch_id)
+    if parent is None or parent.status != BranchStatus.ACTIVE:
+        return workspace
+
+    new_argument = ArgumentGraph(
+        steps=tuple(_to_argument_step(spec) for spec in argument_steps)
+    )
+    new_alignment = tuple(_to_alignment_link(spec) for spec in alignments)
+    child = ProofBranch(
+        branch_id=_next_representation_branch_id(
+            parent.branch_id, workspace.branches
+        ),
+        obligation_id=parent.obligation_id,
+        obligation_version=parent.obligation_version,
+        parent_branch_id=parent.branch_id,
+        argument=new_argument,
+        alignment=new_alignment,
+        observations=parent.observations,
+        lean_artifact=None,
+        status=BranchStatus.ACTIVE,
+    )
+    if not child.validate().ok:
+        return workspace
+
+    retired_parent = replace(parent, status=BranchStatus.SUPERSEDED)
+    new_branches = (*_replace_branch(workspace.branches, retired_parent), child)
+    return workspace.successor(branches=new_branches)
+
+
+def apply_failure_hypotheses(
+    workspace: ProofWorkspace,
+    *,
+    branch_id: str,
+    hypotheses: Sequence[FailureHypothesis],
+) -> ProofWorkspace:
+    """Append competing failure hypotheses to a branch, dropping invalid ones.
+
+    A hypothesis is a model product (see ``hypothesis.py``): it competes with
+    siblings rather than escalating up a blame hierarchy. The reducer never
+    synthesizes hypotheses — it only validates the ones a generator produced
+    against the branch's actual state and attaches the ones that resolve:
+
+    * ``evidence_ids`` must all reference the branch's existing observations;
+    * ``affected_step_ids`` must all reference the branch's argument steps;
+    * each ``proposed_tests`` entry must target *this* branch;
+    * ``hypothesis_id`` must not collide with an existing one.
+
+    Any hypothesis failing a check is dropped silently rather than corrupting
+    the workspace. If nothing survives, no successor is produced (the workspace
+    is returned unchanged so the version counter does not advance on an empty
+    edit). Hypotheses must be attached *after* the observations they cite are
+    already on the branch — the controller enforces that ordering.
+    """
+    branch = _find_branch(workspace, branch_id)
+    if branch is None:
+        return workspace
+
+    observation_ids = {obs.observation_id for obs in branch.observations}
+    step_ids = {step.step_id for step in branch.argument.steps}
+    existing_ids = {hyp.hypothesis_id for hyp in branch.failure_hypotheses}
+
+    accepted: list[FailureHypothesis] = []
+    for hypothesis in hypotheses:
+        if hypothesis.hypothesis_id in existing_ids:
+            continue
+        if not set(hypothesis.evidence_ids) <= observation_ids:
+            continue
+        if hypothesis.affected_step_ids and not set(
+            hypothesis.affected_step_ids
+        ) <= step_ids:
+            continue
+        if any(
+            test.target_branch_id != branch_id
+            for test in hypothesis.proposed_tests
+        ):
+            continue
+        existing_ids.add(hypothesis.hypothesis_id)
+        accepted.append(hypothesis)
+
+    if not accepted:
+        return workspace
+    updated = replace(
+        branch,
+        failure_hypotheses=(*branch.failure_hypotheses, *accepted),
+    )
+    return workspace.successor(
+        branches=_replace_branch(workspace.branches, updated)
+    )
+
+
 def _next_parent_branch_id(
     parent_branch_id: str, branches: tuple[ProofBranch, ...]
 ) -> str:
@@ -261,6 +495,73 @@ def _next_parent_branch_id(
     prefix = f"{parent_branch_id}.p"
     count = sum(1 for b in branches if b.branch_id.startswith(prefix))
     return f"{prefix}{count}"
+
+
+def _next_representation_branch_id(
+    parent_branch_id: str, branches: tuple[ProofBranch, ...]
+) -> str:
+    """Deterministic fresh branch_id for a representation child branch.
+
+    Mirrors the ``.r<n>`` (repair) and ``.p<n>`` (post-decompose parent)
+    conventions: count existing ``.rep<n>`` siblings so forks are
+    deterministic. ``.rep`` is distinct from ``.r`` (repair) and ``.c``
+    (candidate expansion), so the id space never collides.
+    """
+    prefix = f"{parent_branch_id}.rep"
+    count = sum(1 for b in branches if b.branch_id.startswith(prefix))
+    return f"{prefix}{count}"
+
+
+def _to_argument_step(spec: ArgumentStepSpec) -> ArgumentStep:
+    """Build a workspace :class:`ArgumentStep` from a payload spec."""
+    return ArgumentStep(
+        step_id=spec.step_id,
+        claim=spec.claim,
+        justification=spec.justification,
+        depends_on=tuple(spec.depends_on),
+        introduced_fact_ids=tuple(spec.introduced_fact_ids),
+        confidence=spec.confidence,
+    )
+
+
+def _to_alignment_link(spec: AlignmentSpec) -> AlignmentLink:
+    """Build a workspace :class:`AlignmentLink` from a payload spec.
+
+    Enforces the two ``ProofBranch.validate`` alignment rules up front:
+    ``unaligned`` relations carry no Lean target (the three target fields are
+    forced to ``None``), and ``implements`` / ``partial`` relations carry at
+    least one target. A spec violating the second rule still builds a link, but
+    the reducer's pre-commit branch validation will reject it (no-op); forcing
+    ``unaligned`` targets to ``None`` here keeps the common ``unaligned`` case
+    from ever reaching that guard.
+    """
+    relation = AlignmentRelation(spec.relation)
+    if relation is AlignmentRelation.UNALIGNED:
+        return AlignmentLink(argument_step_id=spec.argument_step_id, relation=relation)
+    return AlignmentLink(
+        argument_step_id=spec.argument_step_id,
+        lean_declaration_id=spec.lean_declaration_id,
+        goal_fingerprint=spec.goal_fingerprint,
+        source_span=spec.source_span,
+        relation=relation,
+    )
+
+
+def _alignments_cover(
+    steps: Sequence[ArgumentStepSpec], alignments: Sequence[AlignmentSpec]
+) -> bool:
+    """True iff every ``steps[i].step_id`` has exactly one matching alignment.
+
+    The reducer refuses a PROPOSE whose steps lack full alignment coverage
+    rather than emitting a branch that fails the "every step has an alignment"
+    rule. Duplicate alignment entries for one step also fail coverage.
+    """
+    covered: set[str] = set()
+    for spec in alignments:
+        if spec.argument_step_id in covered:
+            return False
+        covered.add(spec.argument_step_id)
+    return {step.step_id for step in steps} == covered
 
 
 def _declaration_id(source: str) -> str | None:
