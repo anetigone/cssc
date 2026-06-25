@@ -4,7 +4,10 @@ import unittest
 
 from agent.proof_system.workspace import (
     BranchStatus,
+    ObligationGraph,
+    ObligationStatus,
     ProofBranch,
+    ProofObligation,
     initialize_from_task,
 )
 from agent.proof_system.workspace.observation import (
@@ -36,6 +39,7 @@ def _branch(
     branch_id: str,
     *,
     obligation_id: str = "sample",
+    obligation_version: int = 1,
     observations: tuple[Observation, ...] = (),
     status: BranchStatus = BranchStatus.ACTIVE,
     parent_branch_id: str | None = None,
@@ -43,7 +47,7 @@ def _branch(
     return ProofBranch(
         branch_id=branch_id,
         obligation_id=obligation_id,
-        obligation_version=1,
+        obligation_version=obligation_version,
         parent_branch_id=parent_branch_id,
         observations=observations,
         status=status,
@@ -56,6 +60,48 @@ def _workspace(branches: tuple[ProofBranch, ...]):
     task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}\n")
     workspace = initialize_from_task(task)
     return workspace.successor(branches=branches)
+
+
+def _multi_obligation_workspace(
+    *,
+    helper_status: ObligationStatus,
+    branches: tuple[ProofBranch, ...],
+):
+    """A workspace whose root depends on a helper, with the helper's status set.
+
+    The root obligation (``sample``) v2 depends on ``sample.helper`` v1; the
+    helper's status is parameterised so readiness tests can flip it OPEN /
+    ACCEPTED / BLOCKED without going through the reducer.
+    """
+    from agent.proof_system.base import ProofTask
+
+    task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}\n")
+    workspace = initialize_from_task(task)
+    root_v1 = workspace.obligation_graph.by_id("sample")
+    assert root_v1 is not None
+    helper = ProofObligation(
+        obligation_id="sample.helper",
+        version=1,
+        title="helper",
+        lean_statement="lemma helper : True := by trivial",
+        status=helper_status,
+    )
+    root_v2 = ProofObligation(
+        obligation_id="sample",
+        version=2,
+        title="sample",
+        lean_statement=root_v1.lean_statement,
+        dependency_ids=("sample.helper",),
+        status=ObligationStatus.OPEN,
+    )
+    graph = ObligationGraph(
+        obligations=(root_v1, root_v2, helper),
+        root_obligation_id="sample",
+    )
+    return workspace.successor(
+        obligation_graph=graph,
+        branches=branches,
+    )
 
 
 class FrontierSeedAndPopTests(unittest.TestCase):
@@ -303,6 +349,62 @@ class FrontierUpdateTests(unittest.TestCase):
             stalled_streak=0,
         )
         self.assertEqual(node.obligation_id, "root")
+
+
+class FrontierReadinessGateTests(unittest.TestCase):
+    """Phase 7.4: an obligation is not ready until its dependencies accept."""
+
+    def _branches(self):
+        root = _branch("root", obligation_version=2)
+        helper = _branch("helper", obligation_id="sample.helper")
+        return root, helper
+
+    def test_parent_not_ready_while_helper_open(self) -> None:
+        root, helper = self._branches()
+        workspace = _multi_obligation_workspace(
+            helper_status=ObligationStatus.OPEN, branches=(root, helper)
+        )
+        frontier = Frontier()
+        frontier.seed(workspace)
+        # Only the helper is ready (no deps); the parent is gated out.
+        ready = []
+        while frontier.has_work():
+            ready.append(frontier.pop().branch_id)
+        self.assertEqual(ready, ["helper"])
+
+    def test_parent_becomes_ready_when_helper_accepted(self) -> None:
+        root, helper = self._branches()
+        workspace = _multi_obligation_workspace(
+            helper_status=ObligationStatus.ACCEPTED, branches=(root, helper)
+        )
+        frontier = Frontier()
+        frontier.seed(workspace)
+        ready = []
+        while frontier.has_work():
+            ready.append(frontier.pop().branch_id)
+        # The helper is ACCEPTED so its branch has no remaining work; only the
+        # parent is ready now (its dependency closed).
+        self.assertEqual(ready, ["root"])
+
+    def test_parent_never_ready_when_helper_blocked_terminates(self) -> None:
+        root, helper = self._branches()
+        workspace = _multi_obligation_workspace(
+            helper_status=ObligationStatus.BLOCKED, branches=(root, helper)
+        )
+        frontier = Frontier()
+        frontier.seed(workspace)
+        # No ready branch at all: the helper is terminal-blocked, the parent's
+        # dependency can never close. The frontier has no work and the loop
+        # terminates (no infinite re-queue of the not-ready parent).
+        self.assertFalse(frontier.has_work())
+
+    def test_single_root_baseline_is_always_ready(self) -> None:
+        # Baseline: a single root with no dependencies is ready, unchanged from
+        # pre-7.4 behaviour.
+        frontier = Frontier()
+        frontier.seed(_workspace((_branch("root"),)))
+        self.assertTrue(frontier.has_work())
+        self.assertEqual(frontier.pop().branch_id, "root")
 
 
 if __name__ == "__main__":

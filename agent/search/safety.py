@@ -109,9 +109,18 @@ class StatementSafetyReviewer:
         """Detect a rewritten statement header.
 
         The task template is split at the editable hole. Everything before the
-        hole — imports, declaration keyword, theorem/lemma signature — must be
-        preserved verbatim in the rendered candidate. Any drift there means the
-        model changed what it was supposed to prove.
+        hole — imports, declaration keyword, theorem/lemma signature — is the
+        fixed prefix that must appear verbatim in the rendered candidate. The
+        root statement must not be rewritten.
+
+        The prefix need not be the *first* thing in the file: a structured
+        assembly (Phase 7.4) may prepend helper declarations (standalone
+        ``lemma``/``def``) before the root, so the check verifies the prefix is
+        present verbatim anywhere in the candidate rather than only at offset 0.
+        Cheating text injected elsewhere is still caught by the separate
+        shortcut / axiom scans, which run over the whole candidate. For the
+        single-statement minimal path the prefix is at offset 0, so behaviour
+        is unchanged.
         """
         hole_index = task.source_template.find(task.hole_marker)
         if hole_index < 0:
@@ -122,7 +131,7 @@ class StatementSafetyReviewer:
         prefix = prefix.rstrip()
         if not prefix:
             return None
-        if not candidate_source.rstrip().startswith(prefix):
+        if prefix not in candidate_source.rstrip():
             return "statement_not_preserved"
         return None
 

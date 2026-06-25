@@ -437,7 +437,13 @@ class StructuredControllerTests(unittest.TestCase):
             if last_action is not None:
                 self.assertEqual(last_action["target_branch_id"], branch["branch_id"])
 
-    def test_non_executable_native_proposal_is_skipped_without_creating_branches(self) -> None:
+    def test_native_decompose_executes_and_structures_the_workspace(self) -> None:
+        # Phase 7.4: a native StructuredActionGenerator emitting a DECOMPOSE
+        # proposal is executed (not skipped). The root obligation is split into
+        # a helper, the old root branch is superseded, and new branches are
+        # seeded for the helper and the new parent version. The decompose is
+        # recorded under ``decompose_records`` and never reaches
+        # ``skipped_proposals``.
         from agent.proof_system.workspace.action import (
             DEFAULT_ALLOWED_MUTATIONS,
             SearchAction,
@@ -452,7 +458,13 @@ class StructuredControllerTests(unittest.TestCase):
         class NativeDecomposeGenerator:
             _is_structured_generator = True
 
+            def __init__(self) -> None:
+                self._fired = False
+
             def generate(self, request: ActionGenerationRequest):
+                if self._fired:
+                    return ()
+                self._fired = True
                 return (
                     StructuredActionProposal(
                         action=SearchAction(
@@ -482,9 +494,107 @@ class StructuredControllerTests(unittest.TestCase):
             ).run(_task())
 
         self.assertFalse(result.accepted)
-        self.assertEqual(len(result.metadata["workspace"]["branches"]), 1)
-        self.assertEqual(len(result.metadata["skipped_proposals"]), 2)
-        self.assertEqual(result.metadata["skipped_proposals"][0]["kind"], "decompose")
+        branches = result.metadata["workspace"]["branches"]
+        # Old root branch (superseded) + new parent branch + one helper branch.
+        self.assertGreater(len(branches), 1)
+        branch_ids = [b["branch_id"] for b in branches]
+        self.assertTrue(
+            any(b["status"] == "superseded" and b["branch_id"] == "sample:root" for b in branches)
+        )
+        self.assertTrue(any("helper" in bid for bid in branch_ids))
+        # The decompose was executed, not skipped.
+        self.assertEqual(len(result.metadata["decompose_records"]), 1)
+        self.assertEqual(
+            result.metadata["decompose_records"][0]["children"][0]["child_id"],
+            "helper",
+        )
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
+    def test_multi_obligation_decompose_then_helpers_then_root_assembles(self) -> None:
+        # Phase 7.4 end-to-end: a native generator decomposes the root into a
+        # helper, the helper is implemented and accepted, the new parent version
+        # (now ready, its dependency closed) is implemented and accepted, and the
+        # final whole-source assembly passes. This is the AND-OR search closing.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            DecomposeChildSpec,
+            DecomposePayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        helper_statement = "lemma helper : True := by\n  {{proof}}\n"
+
+        class MultiObligationGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                branch_id = request.metadata.get("branch_id", "")
+                if branch_id == "sample:root":
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.DECOMPOSE,
+                                target_branch_id=branch_id,
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.DECOMPOSE
+                                ],
+                                rationale="split into helper",
+                            ),
+                            payload=DecomposePayload(
+                                children=(
+                                    DecomposeChildSpec(
+                                        child_id="helper",
+                                        statement=helper_statement,
+                                    ),
+                                )
+                            ),
+                        ),
+                    )
+                # Helper branch and new parent branch: implement with trivial.
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id=branch_id,
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="implement",
+                        ),
+                        payload=ImplementPayload(proof_text="trivial"),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                MultiObligationGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=6, max_model_calls=6),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.stop_reason, "accepted")
+        summary = result.metadata["result_summary"]
+        # Root + helper both accepted; nothing left open or blocked.
+        accepted_ids = {o["obligation_id"] for o in summary["accepted_obligations"]}
+        self.assertIn("sample", accepted_ids)
+        self.assertIn("helper", accepted_ids)
+        self.assertEqual(summary["open_obligations"], [])
+        self.assertEqual(summary["blocked_obligations"], [])
+        self.assertTrue(summary["assembly"]["executed"])
+        self.assertTrue(summary["assembly"]["accepted"])
+        # The helper fact carries its rendered declaration for parent reuse.
+        helper_facts = [
+            f for f in result.metadata["workspace"]["accepted_facts"]
+            if f["obligation_id"] == "helper"
+        ]
+        self.assertEqual(len(helper_facts), 1)
+        self.assertIn("lemma helper", helper_facts[0]["statement"])
 
     def test_capability_audit_blocks_route_when_capability_missing(self) -> None:
         # Phase 7.3: a native generator proposes RUN_CAPABILITY_TEST. The audit

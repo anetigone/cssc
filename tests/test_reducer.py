@@ -24,7 +24,9 @@ from agent.search.structured.reducer import (
     REPAIR_THRESHOLD,
     StructuredActionResult,
     apply,
+    apply_decompose,
 )
+from agent.search.structured.proposal import DecomposeChildSpec
 
 IMPLEMENT_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.IMPLEMENT]
 
@@ -446,6 +448,194 @@ class ReducerCapabilityAuditTests(unittest.TestCase):
             workspace.obligation_graph.by_id("sample").status,
             snapshot_obligation_status,
         )
+
+
+def _decompose_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.DECOMPOSE,
+        target_branch_id=branch_id,
+        allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.DECOMPOSE],
+        rationale="decompose root into helpers",
+    )
+
+
+def _helpers() -> list[DecomposeChildSpec]:
+    return [
+        DecomposeChildSpec(
+            child_id="sample.helper1",
+            statement="lemma helper1 : True := by trivial",
+        ),
+        DecomposeChildSpec(
+            child_id="sample.helper2",
+            statement="lemma helper2 : True := by trivial",
+        ),
+    ]
+
+
+class ReducerDecomposeTests(unittest.TestCase):
+    def test_decompose_supersedes_parent_and_seeds_child_branches(self) -> None:
+        workspace = _seed_workspace()
+        original = workspace
+
+        workspace = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+
+        # The workspace validates immediately — the old parent-version branch
+        # must have been retired to SUPERSEDED in the same successor.
+        self.assertTrue(workspace.validate().ok)
+
+        # Old root branch retired; new parent-v2 branch + two child branches.
+        old_root = next(
+            b for b in workspace.branches if b.branch_id == "root-branch"
+        )
+        self.assertEqual(old_root.status, BranchStatus.SUPERSEDED)
+        new_parent_branches = [
+            b
+            for b in workspace.branches
+            if b.obligation_id == "sample" and b.status == BranchStatus.ACTIVE
+        ]
+        self.assertEqual(len(new_parent_branches), 1)
+        self.assertEqual(new_parent_branches[0].obligation_version, 2)
+        child_branches = sorted(
+            (b for b in workspace.branches if b.obligation_id.startswith("sample.helper")),
+            key=lambda b: b.branch_id,
+        )
+        self.assertEqual(len(child_branches), 2)
+        for child in child_branches:
+            self.assertEqual(child.status, BranchStatus.ACTIVE)
+            self.assertEqual(child.obligation_version, 1)
+
+        # The root obligation now depends on both helpers.
+        root = workspace.obligation_graph.by_id("sample")
+        assert root is not None
+        self.assertEqual(root.version, 2)
+        self.assertIn("sample.helper1", root.dependency_ids)
+        self.assertIn("sample.helper2", root.dependency_ids)
+
+        # Immutability.
+        self.assertIsNot(workspace, original)
+        self.assertGreater(workspace.version, original.version)
+
+    def test_decompose_no_op_on_empty_children(self) -> None:
+        workspace = _seed_workspace()
+        result = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=[],
+            parent_branch_id="root-branch",
+        )
+        self.assertIs(result, workspace)
+
+    def test_decompose_skips_stale_parent_version(self) -> None:
+        # Decompose once, then try to decompose the (now superseded) old branch
+        # again — it pins v1 while the current obligation is v2, so the second
+        # decompose is a no-op.
+        workspace = _seed_workspace()
+        workspace = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+        version_before = workspace.version
+        result = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+        self.assertEqual(result.version, version_before)
+
+
+class ReducerArtifactContractTests(unittest.TestCase):
+    """Phase 7.4: root vs helper artifact kind and fact statement."""
+
+    def _decomposed_workspace(self):
+        workspace = _seed_workspace()
+        return apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+
+    def _accept_branch(
+        self,
+        workspace,
+        branch_id,
+        *,
+        proof_text="trivial",
+        source=None,
+    ):
+        return apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement",
+            ),
+            StructuredActionResult(
+                branch_id=branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text=proof_text,
+                source=source if source is not None else proof_text,
+                attempt_index=0,
+            ),
+        )
+
+    def test_helper_fact_statement_is_the_rendered_declaration(self) -> None:
+        workspace = self._decomposed_workspace()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        # The controller renders a helper as its full declaration (statement
+        # template with the proof body in the hole); the reducer mirrors that
+        # rendered source as the fact statement so a parent proof can reuse the
+        # helper by name. Here we pass the rendered declaration directly.
+        rendered = "lemma helper1 : True := by trivial"
+        workspace = self._accept_branch(
+            workspace,
+            helper_branch.branch_id,
+            proof_text="trivial",
+            source=rendered,
+        )
+
+        helper_fact = next(
+            f for f in workspace.accepted_facts if f.obligation_id == "sample.helper1"
+        )
+        self.assertEqual(helper_fact.statement, rendered)
+        self.assertEqual(helper_fact.artifact_source, rendered)
+
+    def test_helper_artifact_kind_is_declaration(self) -> None:
+        workspace = self._decomposed_workspace()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        workspace = self._accept_branch(workspace, helper_branch.branch_id)
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        assert helper_branch.lean_artifact is not None
+        self.assertEqual(helper_branch.lean_artifact.kind.value, "declaration")
+
+    def test_root_artifact_kind_is_proof_body(self) -> None:
+        # Baseline: the single-root accept path still produces a PROOF_BODY
+        # artifact and a proof-body fact statement.
+        workspace = _seed_workspace()
+        workspace = self._accept_branch(workspace, "root-branch", proof_text="trivial")
+        root_branch = next(
+            b for b in workspace.branches if b.branch_id == "root-branch"
+        )
+        assert root_branch.lean_artifact is not None
+        self.assertEqual(root_branch.lean_artifact.kind.value, "proof_body")
+        root_fact = workspace.accepted_facts[0]
+        self.assertEqual(root_fact.statement, "trivial")
 
 
 if __name__ == "__main__":

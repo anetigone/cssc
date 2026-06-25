@@ -24,6 +24,18 @@ obligation go ``BLOCKED`` together. Any other outcome is recorded as evidence
 but does not block: a capability audit may only block a route, never declare a
 proposition wrong.
 
+Phase 7.4 adds the decomposition transition (:func:`apply_decompose`), a
+*structural* move with no checker outcome: it splits an obligation into helper
+children via :meth:`ProofWorkspace.decompose`, retires the old parent-version
+branches to ``SUPERSEDED`` in the same successor, and seeds one ACTIVE branch
+per child plus one for the new parent version. Because decomposition produces no
+proof, it consumes no check and registers no fact — facts arise only from a
+later accepted ``IMPLEMENT`` on a child. The artifact contract is also fixed
+here: a root artifact is a hole-filling ``PROOF_BODY`` whose fact statement is
+the proof body (baseline), a helper artifact is a standalone ``DECLARATION``
+whose fact statement is the helper's Lean declaration (so a parent prompt can
+reuse the helper by name).
+
 On repeated stall (same goal fingerprints across attempts) the branch is
 retired to DORMANT; if a branch implementing for the first time keeps failing
 on the same goals, a REPAIR_IMPLEMENTATION child branch is spawned so the
@@ -33,14 +45,16 @@ search can retry a different realization without overwriting the parent.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 from ...proof_system.base import CheckResult, DiagnosticCategory
 from ...proof_system.workspace import (
+    ArtifactKind,
     BranchStatus,
     LeanArtifact,
     ObligationStatus,
     ProofBranch,
+    ProofObligation,
     SearchAction,
     SearchActionKind,
 )
@@ -51,6 +65,7 @@ from ...proof_system.workspace.observation import (
 )
 from ..safety import SafetyVerdict
 from .frontier import STALL_THRESHOLD, _stalled_streak
+from .proposal import DecomposeChildSpec
 
 if TYPE_CHECKING:
     from ...proof_system.workspace import ProofWorkspace
@@ -97,17 +112,147 @@ def apply(
         # artifact keeps the implement path unchanged.
         return _apply_capability_audit(workspace, branch, action, result)
 
+    is_root = branch.obligation_id in workspace.root_obligation_ids
     artifact = LeanArtifact(
         source=result.source,
         obligation_id=branch.obligation_id,
         obligation_version=branch.obligation_version,
         proof_body=result.proof_text,
+        # A root obligation fills the task's proof hole (snippet); a helper
+        # (decomposed child) is a standalone declaration the assembler emits as
+        # its own top-level statement. The kind tells the assembler how to
+        # render and the fact layer what to reuse as the established conclusion.
+        kind=ArtifactKind.PROOF_BODY if is_root else ArtifactKind.DECLARATION,
     )
 
     if result.check_result.accepted and result.safety_verdict.accepted:
         return _accept(workspace, branch, action, artifact, result)
 
     return _record_failure(workspace, branch, action, artifact, result)
+
+
+def apply_decompose(
+    workspace: ProofWorkspace,
+    action: SearchAction,
+    *,
+    children: Sequence[DecomposeChildSpec],
+    parent_branch_id: str,
+) -> ProofWorkspace:
+    """Fold a ``DECOMPOSE`` action: split an obligation into helper children.
+
+    A separate entry point from :func:`apply` because decomposition is a
+    *structural* move, not the outcome of one executed proof: it carries no
+    :class:`CheckResult`, no safety verdict, no artifact, and it spawns several
+    new branches. Stuffing those into :class:`StructuredActionResult` would
+    force every IMPLEMENT to pass ``None`` children, so the reducer keeps two
+    doors.
+
+    Steps, all immutable (every change is a successor):
+
+    * resolve the parent branch and its current obligation; if the branch pins a
+      *stale* obligation version (already superseded by an earlier decompose),
+      return the workspace unchanged — re-decomposing a dead branch is a no-op;
+    * build a :class:`ProofObligation` per child (``child.dependency_ids``
+      narrowed to the sibling set so a child can only depend on co-declared
+      siblings, never on the parent or external ids);
+    * call :meth:`ProofWorkspace.decompose`, which inserts the children and
+      supersedes the parent obligation with a new version depending on them;
+    * retire every branch still pinning the *old* parent version to
+      ``SUPERSEDED`` in the same successor — otherwise
+      :meth:`ProofWorkspace.validate` flags "branch remains ACTIVE on a
+      superseded obligation";
+    * seed one ACTIVE branch for the new parent version and one per child.
+
+    No observation, no artifact, no fact: decomposition proves nothing. The
+    helpers become accepted facts only through a later accepted ``IMPLEMENT``,
+    at which point the dependency-aware frontier lets the parent become ready.
+    """
+    if action.kind is not SearchActionKind.DECOMPOSE:
+        # Defensive: only a DECOMPOSE action reaches here. A mismatched kind is
+        # a controller bug; refuse to mutate rather than corrupt the workspace.
+        return workspace
+    branch = _find_branch(workspace, parent_branch_id)
+    if branch is None:
+        return workspace
+    graph = workspace.obligation_graph
+    current = graph.by_id(branch.obligation_id)
+    if current is None or current.version != branch.obligation_version:
+        # The branch pins a superseded obligation version; re-decomposing it
+        # would target dead state. Drop the action.
+        return workspace
+    if not children:
+        return workspace
+
+    child_ids = [child.child_id for child in children]
+    child_obligations: list[ProofObligation] = []
+    for child in children:
+        narrowed_deps = tuple(
+            dep_id for dep_id in child.dependency_ids if dep_id in child_ids
+        )
+        child_obligations.append(
+            ProofObligation(
+                obligation_id=child.child_id,
+                version=1,
+                title=child.child_id,
+                lean_statement=child.statement,
+                dependency_ids=narrowed_deps,
+                status=ObligationStatus.OPEN,
+            )
+        )
+
+    parent_version_before = current.version
+    workspace = workspace.decompose(branch.obligation_id, child_obligations)
+
+    # Resolve the new parent version produced by decompose.
+    new_parent = workspace.obligation_graph.by_id(branch.obligation_id)
+    assert new_parent is not None and new_parent.version > parent_version_before
+
+    retired_branches = tuple(
+        replace(existing, status=BranchStatus.SUPERSEDED)
+        if (
+            existing.obligation_id == branch.obligation_id
+            and existing.obligation_version == parent_version_before
+        )
+        else existing
+        for existing in workspace.branches
+    )
+
+    parent_branch = replace(
+        branch,
+        # The new parent-version branch is a fresh strategy attempt on the
+        # superseded obligation's successor, so it gets a new branch_id (a
+        # branch_id must be unique within the workspace). ``.p<n>`` mirrors the
+        # repair-child ``.r<n>`` convention and counts prior post-decompose
+        # parent branches so the id is deterministic. It carries no last_action:
+        # the DECOMPOSE action targeted the now-superseded old branch, and this
+        # fresh branch has not yet had an IMPLEMENT run against it.
+        branch_id=_next_parent_branch_id(branch.branch_id, workspace.branches),
+        obligation_version=new_parent.version,
+        lean_artifact=None,
+        observations=(),
+        status=BranchStatus.ACTIVE,
+    )
+    child_branches = tuple(
+        ProofBranch(
+            branch_id=f"{branch.branch_id}.d.{child_id}",
+            obligation_id=child_id,
+            obligation_version=1,
+            parent_branch_id=branch.branch_id,
+            status=BranchStatus.ACTIVE,
+        )
+        for child_id in child_ids
+    )
+    new_branches = (*retired_branches, parent_branch, *child_branches)
+    return workspace.successor(branches=new_branches)
+
+
+def _next_parent_branch_id(
+    parent_branch_id: str, branches: tuple[ProofBranch, ...]
+) -> str:
+    """Deterministic fresh branch_id for a post-decompose parent branch."""
+    prefix = f"{parent_branch_id}.p"
+    count = sum(1 for b in branches if b.branch_id.startswith(prefix))
+    return f"{prefix}{count}"
 
 
 def _accept(
@@ -117,7 +262,15 @@ def _accept(
     artifact: LeanArtifact,
     result: StructuredActionResult,
 ) -> ProofWorkspace:
-    """Mark the branch ACCEPTED and register the obligation as a verified fact."""
+    """Mark the branch ACCEPTED and register the obligation as a verified fact.
+
+    The fact's ``statement`` is the artifact's rendered source — what a
+    dependent obligation reuses as the established conclusion. For a root the
+    source is the proof body (baseline behaviour); for a helper it is the
+    helper's full declaration (so the parent prompt can reuse it by name). The
+    artifact kind already encodes that distinction; the fact layer just mirrors
+    the rendered text.
+    """
     accepted_branch = replace(
         branch,
         lean_artifact=artifact,
@@ -128,10 +281,12 @@ def _accept(
     workspace = workspace.successor(branches=new_branches)
     return workspace.register_accepted_fact(
         branch.obligation_id,
-        statement=result.proof_text,
+        statement=artifact.source,
         source_attempt_index=result.attempt_index,
         check_result=result.check_result,
         safety_accepted=True,
+        declaration_id=artifact.declaration_id,
+        artifact_source=artifact.source,
     )
 
 

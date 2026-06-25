@@ -79,10 +79,11 @@ from .proposal import (
     LEGACY_ACTION_KEY,
     LEGACY_KIND_DEFERRED,
     CapabilityTestPayload,
+    DecomposePayload,
     StructuredActionProposal,
     adapt_legacy_generator,
 )
-from .reducer import StructuredActionResult, apply
+from .reducer import StructuredActionResult, apply, apply_decompose
 from .run_state import _StructuredRunState, build_structured_result
 from .solution_tracker import has_complete_solution
 
@@ -179,6 +180,7 @@ class StructuredController:
 
             executable_proposals: list[StructuredActionProposal] = []
             capability_proposals: list[StructuredActionProposal] = []
+            decompose_proposals: list[StructuredActionProposal] = []
             for proposal in proposals:
                 proposal = self._finalize_kind(proposal, branch)
                 ok, errors = proposal.validate()
@@ -195,14 +197,21 @@ class StructuredController:
                     # route before the model wastes an implementation on it.
                     capability_proposals.append(proposal)
                     continue
+                if action.kind is SearchActionKind.DECOMPOSE:
+                    # Phase 7.4: decomposition is a structural move (split the
+                    # obligation into helpers). It is executed before any
+                    # IMPLEMENT candidate on this branch, and unlike an
+                    # implementation it consumes no check and no model call.
+                    decompose_proposals.append(proposal)
+                    continue
                 if action.kind not in (
                     SearchActionKind.IMPLEMENT,
                     SearchActionKind.REPAIR_IMPLEMENTATION,
                 ):
-                    # Phase 7.2/7.4 boundary: DECOMPOSE is a valid, serialized
-                    # proposal type whose executor lands in 7.4. Record what the
-                    # generator emitted for the trace, then skip without
-                    # changing the workspace.
+                    # Boundary: any other valid, serialized proposal kind whose
+                    # executor has not landed yet. Record what the generator
+                    # emitted for the trace, then skip without changing the
+                    # workspace.
                     state.skipped_proposals.append(
                         {
                             "attempt_index": state.attempt_index,
@@ -224,6 +233,21 @@ class StructuredController:
                             state.stop_reason = "no_actions"
                     continue
 
+            if decompose_proposals:
+                # Phase 7.4: split the branch's obligation into helpers. The
+                # branch is retired (superseded) by the reducer, so the
+                # controller must not then spend IMPLEMENT candidates on it this
+                # iteration — refresh the frontier and continue. A later
+                # iteration pops a child branch (now ready) instead.
+                workspace, _ = self._run_decompose(
+                    task, branch, decompose_proposals, workspace, state
+                )
+                frontier.update(workspace, branch.branch_id, accepted=False)
+                if not frontier.has_work():
+                    if not state.stop_reason:
+                        state.stop_reason = "no_actions"
+                continue
+
             executable_proposals = executable_proposals[
                 : self.config.max_candidates_per_model_call
             ]
@@ -243,15 +267,24 @@ class StructuredController:
                 proposal = self._finalize_kind(proposal, candidate_branch)
                 action = proposal.action
                 proof_text = proposal.payload.proof_text  # type: ignore[union-attr]
-                source = getattr(proposal.payload, "source", "") or proof_text  # type: ignore[union-attr]
+                # Render against the right obligation. A root obligation fills
+                # the task's proof hole (and its artifact source is the proof
+                # body, the baseline). A helper obligation is a standalone
+                # declaration checked on its own: render its lean_statement with
+                # the proof body in its hole, so the helper is verified
+                # independently and its artifact source is the full declaration
+                # a parent proof reuses by name.
+                check_task, artifact_source = self._render_target(
+                    task, workspace, candidate_branch, proof_text
+                )
                 edit = edit_with_structured_metadata(
                     self._proposal_edit(proposal, proof_text, branch),
                     action,
                     candidate_branch,
                 )
-                check_result = self._check(task, edit, state)
+                check_result = self._check(check_task, edit, state)
                 attempted_branch_ids.append(candidate_branch.branch_id)
-                safety_verdict = self._review(task, edit, check_result, state)
+                safety_verdict = self._review(check_task, edit, check_result, state)
                 record = AttemptRecord(
                     attempt_index=state.attempt_index,
                     candidate_id=edit.action,
@@ -278,9 +311,10 @@ class StructuredController:
                         check_result=check_result,
                         safety_verdict=safety_verdict,
                         proof_text=proof_text,
-                        # LeanArtifact.source is an obligation snippet; the
-                        # assembler renders it into the task exactly once.
-                        source=source,
+                        # The artifact source is the rendered text the assembler
+                        # and the fact layer reuse: the proof body for a root,
+                        # the full declaration for a helper.
+                        source=artifact_source,
                         attempt_index=record.attempt_index,
                     ),
                 )
@@ -324,6 +358,12 @@ class StructuredController:
             reason = self.budget.exhausted_reason()
             if reason is not None:
                 state.stop_reason = f"budget:{reason}"
+        if state.stop_reason == "budget" and not frontier.has_work():
+            # The loop ended because no branch is ready (every ACTIVE branch's
+            # obligation has an un-accepted or blocked dependency), not because
+            # of budget. This is the multi-obligation terminal: helpers left
+            # open or blocked make their parent un-attackable.
+            state.stop_reason = "no_ready_work"
         return build_structured_result(
             state,
             task,
@@ -491,6 +531,36 @@ class StructuredController:
             "budget": self.budget.snapshot(),
         }
 
+    def _render_target(
+        self,
+        task: ProofTask,
+        workspace: ProofWorkspace,
+        branch: ProofBranch,
+        proof_text: str,
+    ) -> tuple[ProofTask, str]:
+        """Pick the task/source to render and check for ``branch``'s obligation.
+
+        A root obligation fills the task's proof hole; its artifact source is
+        the proof body (the baseline — the root statement already lives in the
+        task template). A helper (decomposed child) is a standalone declaration:
+        it is checked against its own ``lean_statement`` with the proof body in
+        its hole, and its artifact source is the resulting full declaration.
+        """
+        if branch.obligation_id in workspace.root_obligation_ids:
+            return task, proof_text
+        obligation = workspace.obligation_graph.by_id(branch.obligation_id)
+        if obligation is None or not obligation.lean_statement:
+            # No statement to render independently: fall back to the root path.
+            return task, proof_text
+        helper_task = ProofTask(
+            task_id=branch.obligation_id,
+            source_template=obligation.lean_statement,
+            hole_marker=task.hole_marker,
+            imports=task.imports,
+        )
+        rendered = obligation.lean_statement.replace(task.hole_marker, proof_text)
+        return helper_task, rendered
+
     def _check(
         self,
         task: ProofTask,
@@ -637,3 +707,72 @@ class StructuredController:
             if updated is None or updated.status != BranchStatus.ACTIVE:
                 return workspace, True
         return workspace, False
+
+    def _run_decompose(
+        self,
+        task: ProofTask,
+        branch: ProofBranch,
+        proposals: list[StructuredActionProposal],
+        workspace: ProofWorkspace,
+        state: _StructuredRunState,
+    ) -> tuple[ProofWorkspace, bool]:
+        """Execute each ``DECOMPOSE`` proposal as a structural obligation split.
+
+        Decomposition is not a proof: it consumes no check and no model call
+        (the children's statements come from the generator's payload, not from a
+        fresh generation). Each proposal is retargeted to the current branch,
+        validated, and folded through :func:`apply_decompose`, which supersedes
+        the branch's obligation version, retires the old parent-version branches,
+        and seeds one ACTIVE branch per child plus one for the new parent.
+
+        Returns the successor workspace and a flag meaning "stop this branch":
+        always ``True`` here, because a decomposed branch is superseded — the
+        controller must not spend IMPLEMENT candidates on it afterwards. Only the
+        first decompose per branch takes effect: once the branch is superseded
+        the remaining proposals target dead state and are recorded as skipped.
+        """
+        for proposal in proposals:
+            proposal = self._finalize_kind(proposal, branch)
+            ok, errors = proposal.validate()
+            if not ok:
+                logger.warning(
+                    "Decompose proposal invalid, skipping: %s", errors
+                )
+                continue
+            payload = proposal.payload
+            assert isinstance(payload, DecomposePayload)
+            current = branch_by_id(workspace, branch.branch_id)
+            if current is None or current.status != BranchStatus.ACTIVE:
+                # The branch was already superseded by an earlier decompose in
+                # this same batch; record the rest as skipped rather than
+                # targeting dead state.
+                state.skipped_proposals.append(
+                    {
+                        "attempt_index": state.attempt_index,
+                        "kind": proposal.action.kind.value,
+                        "rationale": proposal.action.rationale,
+                    }
+                )
+                continue
+            workspace = apply_decompose(
+                workspace,
+                proposal.action,
+                children=payload.children,
+                parent_branch_id=branch.branch_id,
+            )
+            state.decompose_records.append(
+                {
+                    "attempt_index": state.attempt_index,
+                    "branch_id": branch.branch_id,
+                    "obligation_id": branch.obligation_id,
+                    "strategy": payload.strategy,
+                    "children": [child.to_dict() for child in payload.children],
+                }
+            )
+            logger.info(
+                "Decompose executed: task_id=%s obligation=%s children=%d",
+                task.task_id,
+                branch.obligation_id,
+                len(payload.children),
+            )
+        return workspace, True

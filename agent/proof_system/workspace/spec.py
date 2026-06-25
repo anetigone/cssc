@@ -54,6 +54,15 @@ class VerifiedFact:
     Provenance is mandatory: an accepted fact always carries the obligation
     version and the attempt that produced it, so a later revision of the
     obligation cannot silently reuse a stale verification.
+
+    ``statement`` is what a dependent obligation's prompt reuses as the
+    established conclusion. For a root obligation it is the proof body (the
+    baseline behaviour); for a decomposed helper it is the helper's Lean
+    declaration — the thing a parent proof references by name. ``declaration_id``
+    names the Lean declaration a generator can call, and ``artifact_source``
+    carries the rendered declaration text so a downstream projection can show
+    the actual code without re-deriving it. Both default to ``None`` so existing
+    single-root constructions stay unchanged.
     """
 
     obligation_id: str
@@ -62,6 +71,8 @@ class VerifiedFact:
     source_attempt_index: int
     checker_category: str
     safety_accepted: bool
+    declaration_id: str | None = None
+    artifact_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +82,8 @@ class VerifiedFact:
             "source_attempt_index": self.source_attempt_index,
             "checker_category": self.checker_category,
             "safety_accepted": self.safety_accepted,
+            "declaration_id": self.declaration_id,
+            "artifact_source": self.artifact_source,
         }
 
 
@@ -82,4 +95,6 @@ def verified_fact_from_dict(data: dict[str, Any]) -> VerifiedFact:
         source_attempt_index=int(data["source_attempt_index"]),
         checker_category=data["checker_category"],
         safety_accepted=bool(data["safety_accepted"]),
+        declaration_id=data.get("declaration_id"),
+        artifact_source=data.get("artifact_source"),
     )

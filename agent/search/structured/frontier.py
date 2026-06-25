@@ -16,6 +16,16 @@ hitting the same goal fingerprint set with no progress is bumped down the
 order and, once it crosses :data:`STALL_THRESHOLD`, the reducer retires it to
 DORMANT (the frontier then drops it from the pending set on the next
 ``update``).
+
+Phase 7.4 adds a *readiness gate*: an obligation whose dependencies are not all
+``ACCEPTED`` is not yet solvable, so its branches are excluded from the pending
+set entirely — not merely deprioritized. Readiness is a gate, not a sort weight,
+because sorting never-ready branches to the back would still pop them and burn
+budget on obligations the search cannot yet close. When a helper accepts, the
+parent re-enters pending on the next ``update`` (which rebuilds from scratch);
+when a helper goes BLOCKED the parent never re-enters and ``has_work`` returns
+False, terminating the loop. The single-root baseline has no dependencies, so
+every root branch is always ready and behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -23,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ...proof_system.workspace import BranchStatus
+from ...proof_system.workspace import BranchStatus, ObligationStatus
 
 if TYPE_CHECKING:
     from ...proof_system.workspace import ProofBranch, ProofWorkspace
@@ -110,6 +120,42 @@ def _node_for(branch: ProofBranch, workspace: ProofWorkspace) -> FrontierNode:
     )
 
 
+#: Obligation statuses that still need proof work. ACCEPTED / BLOCKED /
+#: SUPERSEDED are terminal for scheduling: an accepted obligation has nothing
+#: left to prove, a blocked one cannot be pursued, and a superseded one has been
+#: replaced by a newer version whose own branch carries the work.
+_SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
+    {ObligationStatus.OPEN, ObligationStatus.IN_PROGRESS}
+)
+
+
+def _is_ready(branch: ProofBranch, workspace: ProofWorkspace) -> bool:
+    """True iff ``branch``'s obligation can be productively worked now.
+
+    Three conditions, all read-only over the workspace:
+
+    * the branch is ACTIVE (DORMANT / SUPERSEDED / BLOCKED / ACCEPTED retire it);
+    * the obligation it pins is still solvable (OPEN / IN_PROGRESS);
+    * every dependency of that obligation resolves (via ``by_id``) to an
+      ``ACCEPTED`` obligation — an un-proven helper means the parent is not yet
+      attackable.
+
+    A missing obligation (a branch pinning a stale id) is not ready. The single
+    root has no dependencies, so it is always ready when ACTIVE.
+    """
+    if branch.status != BranchStatus.ACTIVE:
+        return False
+    obligation = workspace.obligation_graph.by_id(branch.obligation_id)
+    if obligation is None or obligation.status not in _SOLVABLE_STATUSES:
+        return False
+    graph = workspace.obligation_graph
+    for dependency_id in obligation.dependency_ids:
+        dependency = graph.by_id(dependency_id)
+        if dependency is None or dependency.status != ObligationStatus.ACCEPTED:
+            return False
+    return True
+
+
 def _attempt_count(branch: ProofBranch) -> int:
     """Number of distinct attempts recorded against this branch.
 
@@ -191,12 +237,18 @@ class Frontier:
         self._popped_this_round: set[str] = set()
 
     def seed(self, workspace: ProofWorkspace) -> None:
-        """Load all ACTIVE branches of the workspace as pending nodes."""
+        """Load all *ready* branches of the workspace as pending nodes.
+
+        Ready = ACTIVE and whose obligation is solvable with all dependencies
+        ACCEPTED (see :func:`_is_ready`). Branches whose helpers are not yet
+        accepted are excluded; they re-enter on a later ``update`` once their
+        dependencies close.
+        """
         self._pending = []
         self._pending_ids = set()
         self._popped_this_round = set()
         for branch in workspace.branches:
-            if branch.status == BranchStatus.ACTIVE:
+            if _is_ready(branch, workspace):
                 node = _node_for(branch, workspace)
                 self._pending.append(node)
                 self._pending_ids.add(node.branch_id)
@@ -229,30 +281,33 @@ class Frontier:
     ) -> None:
         """Refresh the pending set after a reducer transition.
 
-        Rebuilds ``_pending`` from the workspace's current ACTIVE branches,
-        excluding any already popped this round. Retired branches are dropped
-        naturally (they are no longer ACTIVE). Resets the per-round popped set
-        so the just-tried branch can be retried next round if it stayed ACTIVE.
+        Rebuilds ``_pending`` from the workspace's current *ready* branches
+        (ACTIVE and obligation-solvable with all dependencies ACCEPTED),
+        excluding any already popped this round. Retired branches drop naturally
+        (no longer ACTIVE); not-yet-ready branches (a helper still open) are
+        excluded and re-enter once their dependencies close. Resets the per-round
+        popped set so the just-tried branch can be retried next round if it
+        stayed ready.
         """
         del branch_id, accepted  # status in the workspace is authoritative
         self._popped_this_round.update(attempted_branch_ids)
 
-        active = [
+        ready = [
             branch
             for branch in workspace.branches
-            if branch.status == BranchStatus.ACTIVE
+            if _is_ready(branch, workspace)
         ]
         # Preserve round-level fairness: branches already tried in this round
-        # stay out while another ACTIVE branch remains. Once every active
-        # branch has had a turn, begin a fresh round.
+        # stay out while another ready branch remains. Once every ready branch
+        # has had a turn, begin a fresh round.
         eligible = [
             branch
-            for branch in active
+            for branch in ready
             if branch.branch_id not in self._popped_this_round
         ]
-        if not eligible and active:
+        if not eligible and ready:
             self._popped_this_round.clear()
-            eligible = active
+            eligible = ready
 
         fresh = [_node_for(branch, workspace) for branch in eligible]
         fresh_ids = {node.branch_id for node in fresh}

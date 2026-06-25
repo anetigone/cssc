@@ -84,6 +84,21 @@ class StatementSafetyReviewerTests(unittest.TestCase):
         self.assertFalse(verdict.accepted)
         self.assertIn("statement_not_preserved", verdict.reasons)
 
+    def test_allows_prepended_helper_declarations(self) -> None:
+        # Phase 7.4: a structured assembly prepends helper declarations before
+        # the root. The root statement is still present verbatim, so the
+        # statement-preservation check must accept it (shortcut/axiom scans
+        # still run over the whole candidate to catch cheating in helpers).
+        candidate = (
+            "lemma helper : True := by trivial\n"
+            "\n"
+            "theorem sample : True := by\n"
+            "  exact helper\n"
+        )
+        verdict = self.reviewer.accepts(_task(), candidate, _accepted_result())
+
+        self.assertTrue(verdict.accepted)
+
     def test_ignores_shortcut_words_in_comments_and_strings(self) -> None:
         candidate = _render(
             'have label : String := "sorry axiom"\n'

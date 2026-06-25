@@ -131,11 +131,36 @@ class ArtifactAssembler:
         if errors:
             return AssemblyResult(accepted=False, source="", errors=tuple(errors))
 
-        source = _assemble_source(workspace, active, artifacts)
-        # Reuse the existing render/check path: the root artifact fills the
-        # task's proof hole and the adapter renders + checks the full file.
-        edit = CandidateEdit(text=source, action="assemble")
+        if len(workspace.root_obligation_ids) != 1:
+            # Phase 7.4/7.5 assumes exactly one root obligation (the one whose
+            # artifact fills the task's proof hole). Multi-root assembly is a
+            # later concern; fail loudly rather than silently mis-rendering.
+            return AssemblyResult(
+                accepted=False,
+                source="",
+                errors=(
+                    "assembly requires exactly one root obligation, got "
+                    f"{len(workspace.root_obligation_ids)}",
+                ),
+            )
+
+        ordered = _topological_by_dependency(active)
+        root_ids = set(workspace.root_obligation_ids)
+        root_obligation = next(o for o in ordered if o.obligation_id in root_ids)
+        helpers = [o for o in ordered if o.obligation_id not in root_ids]
+
+        # The root artifact fills the task's single proof hole (PROOF_BODY);
+        # helper artifacts are standalone DECLARATIONs the assembler emits as
+        # their own top-level statements, spliced in before the root. With no
+        # helpers (the single-root baseline) this is byte-for-byte the old path.
+        root_body = artifacts[root_obligation.obligation_id].source
+        edit = CandidateEdit(text=root_body, action="assemble")
         rendered = adapter.render_candidate(task, edit)
+        if helpers:
+            helper_text = "\n\n".join(
+                artifacts[o.obligation_id].source for o in helpers
+            )
+            rendered = _inject_helpers(rendered, helper_text)
         check_result = self._run_check(
             adapter, task, edit, rendered, check_workspace, budget_slice
         )
@@ -193,19 +218,33 @@ class ArtifactAssembler:
             return adapter.check(candidate.path, slice_)
 
 
-def _assemble_source(
-    workspace: ProofWorkspace,
-    active: list,
-    artifacts: Mapping[str, LeanArtifact],
-) -> str:
-    """Concatenate per-obligation artifact sources in dependency order.
+def _inject_helpers(rendered: str, helper_text: str) -> str:
+    """Splice helper declarations into an already-rendered source.
 
-    Dependencies precede dependents so the assembled snippet elaborates in a
-    single pass. For Phase 3's single-root case this is trivial, but ordering
-    keeps the helper correct once decomposition adds auxiliary obligations.
+    Helper artifacts are standalone ``def``/``lemma`` declarations a parent
+    proof references by name, so they must appear as top-level statements
+    *before* the root declaration. The injection point is the line after the
+    last preamble directive (``import`` / ``open`` / ``set_option``); if there
+    is no preamble the helpers lead the file. Only whole-line directives are
+    treated as preamble, so a directive embedded inside the root declaration is
+    never matched.
     """
-    ordered = _topological_by_dependency(active)
-    return "\n\n".join(artifacts[o.obligation_id].source for o in ordered)
+    if not helper_text:
+        return rendered
+    lines = rendered.splitlines()
+    insert_at = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            stripped.startswith("import ")
+            or stripped.startswith("open ")
+            or stripped.startswith("set_option ")
+        ):
+            insert_at = index + 1
+        else:
+            break
+    spliced = [*lines[:insert_at], helper_text, *lines[insert_at:]]
+    return "\n".join(spliced)
 
 
 def _topological_by_dependency(active: list) -> list:
