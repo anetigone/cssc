@@ -623,6 +623,68 @@ class StructuredControllerTests(unittest.TestCase):
         observations = result.metadata["workspace"]["branches"][0]["observations"]
         self.assertTrue(any(o["source"] == "capability_audit" for o in observations))
 
+    def test_capability_audit_does_not_consume_implement_candidate_limit(self) -> None:
+        # Default max_candidates_per_model_call is 1 for proof candidates, but
+        # capability audits are probes, not proof candidates. A batch containing
+        # (RUN_CAPABILITY_TEST, IMPLEMENT) must execute both: first the audit,
+        # then the single allowed implementation candidate.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class CapabilityThenImplementGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe trivial",
+                        ),
+                        payload=CapabilityTestPayload(
+                            requirement="trivial",
+                            signature="by trivial",
+                        ),
+                    ),
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="prove after probe",
+                        ),
+                        payload=ImplementPayload(proof_text="trivial"),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                CapabilityThenImplementGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=1),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual([attempt.edit.action for attempt in result.attempts], [
+            "capability_test",
+            "model_complete",
+        ])
+        self.assertEqual(result.metrics.budget_checks_used, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -179,7 +179,7 @@ class StructuredController:
 
             executable_proposals: list[StructuredActionProposal] = []
             capability_proposals: list[StructuredActionProposal] = []
-            for proposal in proposals[: self.config.max_candidates_per_model_call]:
+            for proposal in proposals:
                 proposal = self._finalize_kind(proposal, branch)
                 ok, errors = proposal.validate()
                 if not ok:
@@ -217,12 +217,16 @@ class StructuredController:
                 workspace, stop_for_capability = self._run_capability_audits(
                     task, branch, capability_proposals, workspace, state
                 )
-                if stop_for_capability or state.stop_reason:
+                if stop_for_capability or state.stop_reason != "budget":
                     frontier.update(workspace, branch.branch_id, accepted=False)
                     if not frontier.has_work():
                         if not state.stop_reason:
                             state.stop_reason = "no_actions"
                     continue
+
+            executable_proposals = executable_proposals[
+                : self.config.max_candidates_per_model_call
+            ]
 
             workspace, candidate_branches = expand_candidate_branches(
                 workspace,
