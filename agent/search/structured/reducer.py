@@ -16,6 +16,14 @@ Transitions (``tmp/plan1.md`` §5/§7/§9):
   and the artifact is retained as provenance (a failed realization does not
   negate its mathematical strategy).
 
+Phase 7.3 adds the capability-audit transition: a ``RUN_CAPABILITY_TEST`` action
+folds into a neutral :class:`Observation` (``CAPABILITY_AUDIT`` source). A
+capability the checker reports as *missing* (unknown identifier / invalid
+reference / tool unavailable) blocks the route — the branch **and** its
+obligation go ``BLOCKED`` together. Any other outcome is recorded as evidence
+but does not block: a capability audit may only block a route, never declare a
+proposition wrong.
+
 On repeated stall (same goal fingerprints across attempts) the branch is
 retired to DORMANT; if a branch implementing for the first time keeps failing
 on the same goals, a REPAIR_IMPLEMENTATION child branch is spawned so the
@@ -27,12 +35,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from ...proof_system.base import CheckResult
+from ...proof_system.base import CheckResult, DiagnosticCategory
 from ...proof_system.workspace import (
     BranchStatus,
     LeanArtifact,
+    ObligationStatus,
     ProofBranch,
     SearchAction,
+    SearchActionKind,
 )
 from ...proof_system.workspace.observation import (
     Observation,
@@ -79,6 +89,13 @@ def apply(
         # by a reducer transition we did not author). Drop the outcome
         # silently rather than corrupt the workspace.
         return workspace
+
+    if action.kind is SearchActionKind.RUN_CAPABILITY_TEST:
+        # Capability audits carry no proof body and run no safety review; they
+        # only record an observation and, on a *missing* capability, block the
+        # route (branch + obligation together). Branching before building an
+        # artifact keeps the implement path unchanged.
+        return _apply_capability_audit(workspace, branch, action, result)
 
     artifact = LeanArtifact(
         source=result.source,
@@ -145,6 +162,100 @@ def _record_failure(
         new_branches = (*new_branches, _make_repair_child(updated_branch, new_branches))
 
     return workspace.successor(branches=new_branches)
+
+
+#: Checker categories that signal a *capability the environment lacks* — the
+#: route cannot be pursued until the environment changes. A capability audit is
+#: the one place the reducer is allowed to block a route: a missing capability
+#: is an environmental fact, not a judgment about the proposition.
+_CAPABILITY_MISSING_CATEGORIES: frozenset[DiagnosticCategory] = frozenset(
+    {
+        DiagnosticCategory.UNKNOWN_IDENTIFIER,
+        DiagnosticCategory.INVALID_REFERENCE,
+        DiagnosticCategory.TOOL_UNAVAILABLE,
+    }
+)
+
+
+def _capability_missing(check_result: CheckResult) -> bool:
+    """True iff the checker reports an environment the route cannot supply.
+
+    Only ``UNKNOWN_IDENTIFIER`` / ``INVALID_REFERENCE`` / ``TOOL_UNAVAILABLE``
+    block: they name a resource (tactic, lemma, import) the proof needs but the
+    environment does not have. Other failures (unsolved goals, type mismatch) are
+    implementation problems a later IMPLEMENT may still solve, so the audit must
+    not block on them — capability audits only block routes, never propositions.
+    """
+    return check_result.category in _CAPABILITY_MISSING_CATEGORIES
+
+
+def _apply_capability_audit(
+    workspace: ProofWorkspace,
+    branch: ProofBranch,
+    action: SearchAction,
+    result: StructuredActionResult,
+) -> ProofWorkspace:
+    """Fold a capability-audit outcome into the branch (and maybe obligation).
+
+    Always appends a neutral ``CAPABILITY_AUDIT`` observation so the probe is
+    never silently dropped. When the checker reports the capability as *missing*
+    (see :func:`_capability_missing`) the route is blocked: the branch goes
+    ``BLOCKED`` and the obligation goes ``BLOCKED`` in the same successor, so
+    ``ResultSummary.blocked_branch_obligation_ids`` collapses to empty and the
+    frontier drops the branch via its non-ACTIVE status. Otherwise the branch
+    stays ACTIVE with the audit recorded as evidence and the search continues.
+    """
+    observation = _capability_observation(result)
+    updated_branch = replace(
+        branch,
+        last_action=action,
+        observations=(*branch.observations, observation),
+    )
+
+    if not _capability_missing(result.check_result):
+        new_branches = _replace_branch(workspace.branches, updated_branch)
+        return workspace.successor(branches=new_branches)
+
+    blocked_branch = replace(updated_branch, status=BranchStatus.BLOCKED)
+    new_branches = _replace_branch(workspace.branches, blocked_branch)
+    workspace = workspace.successor(branches=new_branches)
+    return _block_obligation(workspace, branch.obligation_id)
+
+
+def _capability_observation(result: StructuredActionResult) -> Observation:
+    evidence_ref = f"capability:{result.attempt_index}"
+    check = result.check_result
+    feedback = check.parsed_feedback
+    message = (
+        feedback.message
+        if feedback is not None and feedback.message
+        else (check.raw_output.strip()[:160] if check.raw_output else "")
+    )
+    prefix = "capability available" if check.accepted else "capability probe failed"
+    if message:
+        message = f"{prefix}: {message}"
+    else:
+        message = prefix
+    return Observation(
+        observation_id=f"{evidence_ref}:capability",
+        source=ObservationSource.CAPABILITY_AUDIT,
+        category=check.category.value,
+        message=message,
+        raw_evidence_ref=evidence_ref,
+    )
+
+
+def _block_obligation(
+    workspace: ProofWorkspace, obligation_id: str
+) -> ProofWorkspace:
+    """Flip an obligation to ``BLOCKED`` immutably (mirror of accept/register)."""
+    graph = workspace.obligation_graph
+    obligation = graph.by_id(obligation_id)
+    if obligation is None:
+        return workspace
+    blocked = replace(obligation, status=ObligationStatus.BLOCKED)
+    new_graph = graph.with_obligation(blocked)
+    return workspace.successor(obligation_graph=new_graph)
 
 
 def _observations_for(result: StructuredActionResult) -> tuple[Observation, ...]:

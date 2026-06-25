@@ -486,6 +486,143 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(len(result.metadata["skipped_proposals"]), 2)
         self.assertEqual(result.metadata["skipped_proposals"][0]["kind"], "decompose")
 
+    def test_capability_audit_blocks_route_when_capability_missing(self) -> None:
+        # Phase 7.3: a native generator proposes RUN_CAPABILITY_TEST. The audit
+        # renders the signature and checks it; an UNKNOWN_IDENTIFIER result
+        # blocks the branch AND the obligation, closes the result-summary gap,
+        # and the loop terminates without spending an IMPLEMENT attempt.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace.obligation import ObligationStatus
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            StructuredActionProposal,
+        )
+
+        class CapabilityProbeGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe tactic#simp",
+                        ),
+                        payload=CapabilityTestPayload(
+                            requirement="tactic#simp",
+                            signature="by simp",
+                        ),
+                    ),
+                )
+
+        class MissingCapabilityAdapter(StructuredFakeAdapter):
+            def check(self, candidate_file, budget_slice):
+                self.checked_files.append(candidate_file)
+                return CheckResult(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    raw_output="unknown identifier 'simp'",
+                    candidate_file=candidate_file,
+                    parsed_feedback=ParsedFeedback(
+                        category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                        message="unknown identifier 'simp'",
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                CapabilityProbeGenerator(),  # type: ignore[arg-type]
+                adapter=MissingCapabilityAdapter(),
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        # The capability attempt was recorded (1 check), no IMPLEMENT followed.
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(result.attempts[0].edit.action, "capability_test")
+
+        # The branch and obligation are blocked together — no gap.
+        branch = result.metadata["workspace"]["branches"][0]
+        self.assertEqual(branch["status"], "blocked")
+        obligation = result.metadata["workspace"]["obligation_graph"]["obligations"]
+        self.assertEqual(obligation[0]["status"], ObligationStatus.BLOCKED.value)
+
+        summary = result.metadata["result_summary"]
+        self.assertEqual(len(summary["blocked_obligations"]), 1)
+        self.assertEqual(
+            summary["blocked_obligations"][0]["obligation_id"], "sample"
+        )
+        self.assertEqual(summary["blocked_branch_obligation_ids"], [])
+        # RUN_CAPABILITY_TEST is now executed, not skipped.
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
+    def test_capability_audit_available_keeps_route_active(self) -> None:
+        # When the probe is accepted the route stays ACTIVE; the generator then
+        # runs out of candidates and the branch blocks via no_actions (the
+        # capability audit itself never blocks on an available capability).
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            StructuredActionProposal,
+        )
+
+        class CapabilityThenEmptyGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, request: ActionGenerationRequest):
+                self.calls += 1
+                if self.calls == 1:
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.RUN_CAPABILITY_TEST
+                                ],
+                                rationale="probe",
+                            ),
+                            payload=CapabilityTestPayload(
+                                requirement="trivial",
+                                signature="by trivial",
+                            ),
+                        ),
+                    )
+                return ()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                CapabilityThenEmptyGenerator(),  # type: ignore[arg-type]
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        # First attempt is the accepted capability probe; the route stayed
+        # ACTIVE afterwards, so a second iteration ran and produced no_actions.
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(result.attempts[0].edit.action, "capability_test")
+        # An accepted capability does NOT register a verified fact.
+        self.assertEqual(
+            len(result.metadata["workspace"]["accepted_facts"]), 0
+        )
+        observations = result.metadata["workspace"]["branches"][0]["observations"]
+        self.assertTrue(any(o["source"] == "capability_audit" for o in observations))
+
 
 if __name__ == "__main__":
     unittest.main()

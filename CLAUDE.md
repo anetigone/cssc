@@ -58,6 +58,10 @@
   - 7.0：纯函数结果契约聚合层 `agent/search/structured/summary.py`（`build_result_summary` → frozen `ResultSummary`，含 accepted/open/blocked obligations、selected branches、assembly outcome、workspace validation report、`blocked_branch_obligation_ids`）；`build_structured_result` 加 `assembly_outcome` 透传 `metadata["assembly"]`（含 errors）+ `metadata["result_summary"]`；`tests/test_structured_e2e.py` 冻结契约。
   - 7.1：纯函数投影 `agent/search/structured/projection.py`（`build_context_projection` → frozen `StructuredContextProjection`，projection 成为 prompt/summarizer 单一数据源）；`ChatActionGenerator._append_structured_projection` 渲染；minimal 永不设该键零成本。
   - 7.2：typed `StructuredActionProposal`（`agent/search/structured/proposal.py`，`SearchAction` + `ActionPayload` union：`ImplementPayload`/`DecomposePayload`/`CapabilityTestPayload`）+ `StructuredActionGenerator` Protocol；`adapt_legacy_generator` 把旧 `ActionGenerator` 包成 IMPLEMENT 提案（baseline 可比性不变），controller 用 `_finalize_kind` 复刻旧 `_pick_action` 语义。**第一轮只开放 IMPLEMENT/REPAIR（执行）、DECOMPOSE/RUN_CAPABILITY_TEST（仅类型+序列化+校验，不执行→归 7.3/7.4）**；minimal 不 import。
+- **Phase 7.3** ✅ 已完成：capability audit 闭环 + obligation BLOCKED 同步
+  - controller `_run_capability_audits` 真正执行 `RUN_CAPABILITY_TEST`：在 IMPLEMENT 候选展开前把 `CapabilityTestPayload.signature` 包进 `CandidateEdit`（`action="capability_test"`）复用 `_check`（render+adapter.check），每次 audit=1 check、不另计 model_call；audit 不跑 safety（`safety_verdict=accepted=False` 占位，capability 接受 ≠ 命题成立）。DECOMPOSE 仍 skip（归 7.4）。
+  - reducer 第三转移分支 `_apply_capability_audit`：从 check category 派生 `CAPABILITY_AUDIT` Observation；缺失判据 `_capability_missing` 只认 `UNKNOWN_IDENTIFIER`/`INVALID_REFERENCE`/`TOOL_UNAVAILABLE`（其他失败保守不阻塞——audit 只能阻塞路线、不能判命题错），缺失则 branch 置 BLOCKED **且** `_block_obligation` 把 obligation 同步置 `ObligationStatus.BLOCKED`（复刻 `register_accepted_fact` 手法），可用则保持 ACTIVE、不注册 fact。
+  - 闭合 7.0 冻结的不一致：`ResultSummary.blocked_branch_obligation_ids` 排除 obligation 已 BLOCKED 的条目，capability 缺失路径归零、`blocked_obligations` 填充；`no_actions` 路径（`block_branch` 只翻 branch）保持原样（缺候选 ≠ 机械能力缺失，是另一种 gap）。frontier 不动，BLOCKED branch 经 `status != ACTIVE` 自动掉队。minimal 不 import structured 包，零成本。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 

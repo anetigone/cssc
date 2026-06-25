@@ -186,6 +186,15 @@ agent/
 - 不变项：`action.py`（`ActionCandidate`/`ActionGenerator`/`StaticActionGenerator`）、`cli/generators.py`、`factory.py`、`workspace/action.py`、`reducer.py`/`frontier.py`/`branch_ops.py`（只读）/`finalize.py`/`projection.py`；minimal `ProofController` 不 import `proposal.py`，零成本。
 - 测试：新增 `tests/test_structured_proposal.py`（payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、adapter 正确性 + idempotent + native 旁路）；`tests/test_structured_controller.py` 三条兼容性用例不变，新增 legacy→implement/repair kind 终定 + native `StructuredActionGenerator` 旁路（`skipped_proposals` 为空）两测。
 
+## Phase 7.3 Capability audit 闭环
+
+- 7.2 把 `RUN_CAPABILITY_TEST` 定为合法、可序列化、可校验的 proposal kind 但只记 `skipped_proposals` 跳过；7.3 真正执行它：`StructuredController._run_capability_audits` 在 IMPLEMENT 候选展开前逐个跑 capability proposal——把 `CapabilityTestPayload.signature` 作为 proof body 包进 `CandidateEdit`（`action="capability_test"`），复用 `_check`（`adapter.render_candidate` 替换 hole + `adapter.check`），每次 audit = 1 check、不另计 model_call（signature 由 generator 给定、不重新调模型）。结果经 reducer `apply` 折叠；DECOMPOSE 仍 skip（归 7.4）。audit 不跑 safety：`StructuredActionResult.safety_verdict=SafetyVerdict(accepted=False)` 占位，capability signature 接受 ≠ 命题成立。
+- reducer 新增第三转移分支 `_apply_capability_audit`（`reducer.py`）：从 `check_result.category` 派生一条 `Observation`（`source=ObservationSource.CAPABILITY_AUDIT`、`raw_evidence_ref="capability:<N>"`、message 区分 available / probe failed）追加到 branch.observations。缺失判据 `_capability_missing(check_result)` 只认 `UNKNOWN_IDENTIFIER` / `INVALID_REFERENCE` / `TOOL_UNAVAILABLE` 三个 category（环境资源不可用的事实），其他失败（unsolved goals / type mismatch）保守不阻塞——capability audit 只能阻塞路线，不能判命题错。缺失时 branch 置 `BLOCKED` **且** obligation 经 `_block_obligation`（`graph.with_obligation` + `workspace.successor`，复刻 `register_accepted_fact` 手法）同步置 `ObligationStatus.BLOCKED`；可用时 branch 保持 ACTIVE、不注册 verified fact。
+- 7.3 闭合 7.0 冻结的不一致：`ResultSummary.blocked_branch_obligation_ids`（`summary.py`）现在排除 obligation 已 BLOCKED 的条目，capability 缺失路径归零、`blocked_obligations` 填充；`no_actions` 路径（`block_branch` 只翻 branch）保持原样——缺候选 ≠ 机械能力缺失，那是另一种 gap，不在 7.3 范围。
+- frontier 不动：BLOCKED branch 经 `status != ACTIVE` 自动掉队，无 ACTIVE branch 时 `frontier.has_work()` 为 False 自然终止循环。
+- 不变项：`branch_ops.block_branch`（no_actions 仍只翻 branch）、`workspace/action.py`（`RUN_CAPABILITY_TEST` 作用域早已为空集）、`proposal.py`（kind/payload 协议不变）；minimal `ProofController` 不 import structured 包，零成本。
+- 测试：`tests/test_reducer.py` 新增 `ReducerCapabilityAuditTests`（缺失→branch+obligation BLOCKED、可用→ACTIVE 不注册 fact、非缺失失败不阻塞、不可变性 4 测）；`tests/test_structured_controller.py` 新增 native capability generator 缺失阻塞 + 可用保持 ACTIVE 两测；`tests/test_structured_e2e.py` 旧 `test_capability_missing_blocked_semantics` 改名 `test_no_actions_blocks_branch_leaving_obligation_open`（冻结 no_actions 残留 gap），新增 `test_capability_missing_blocks_obligation`（capability 闭环：branch+obligation 双 BLOCKED、gap 归零）。
+
 ## `ChatDriver` 抽象
 
 `ChatDriver` 是各 agent 共享的 chat-completion 驱动，职责单一：
@@ -293,7 +302,7 @@ python -m pytest tests/ -q
 - `tests/test_hypothesis.py`：FailureHypothesis 序列化、confidence/evidence 校验、嵌套 proposed_tests 聚合。
 - `tests/test_frontier.py`：Frontier seed/pop 排序确定性、stalled_streak 派生、retired 分支不重新入队、REPAIR 子分支优先级。
 - `tests/test_solution_tracker.py`：has_complete_solution / select_solution 的 version 相容、artifact 必需、stale 版本拒绝、多 accepted 取最小 branch_id。
-- `tests/test_reducer.py`：apply 不可变转移、accepted/failure/safety 三态、DORMANT 与 REPAIR 子分支派生、原 workspace 不被 mutate。
+- `tests/test_reducer.py`：apply 不可变转移、accepted/failure/safety 三态、DORMANT 与 REPAIR 子分支派生、原 workspace 不被 mutate；Phase 7.3 capability audit 三态（缺失阻塞 branch+obligation / 可用保持 ACTIVE / 非缺失失败不阻塞）。
 - `tests/test_structured_controller.py`：StructuredController 主循环、metadata["workspace"] 透传、metrics.execution_mode、预算耗尽、REPAIR 派生、safety 拒绝、assemble 预算独立 reserve、tool_unavailable 短路、config mode 校验。
 - `tests/test_structured_e2e.py`：Phase 7.0 端到端契约——单根接受契约、两 helper+root 纯数据结构层（decompose/序列化往返/assembler 前置）、capability 缺失→blocked 现状冻结、assembly 失败 errors 透传回归。
 - `tests/test_structured_projection.py`：Phase 7.1 workspace context projection——单根无依赖、依赖闭包传递+fact 匹配、stale-fact version 守卫、argument step alignment、observation 去重+cap、sibling branches（含 cap）、failure hypotheses、branch_id 缺失尽力投影、to_dict/from_dict 往返。

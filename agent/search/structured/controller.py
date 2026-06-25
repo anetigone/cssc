@@ -78,6 +78,7 @@ from .projection import build_context_projection
 from .proposal import (
     LEGACY_ACTION_KEY,
     LEGACY_KIND_DEFERRED,
+    CapabilityTestPayload,
     StructuredActionProposal,
     adapt_legacy_generator,
 )
@@ -177,6 +178,7 @@ class StructuredController:
                 continue
 
             executable_proposals: list[StructuredActionProposal] = []
+            capability_proposals: list[StructuredActionProposal] = []
             for proposal in proposals[: self.config.max_candidates_per_model_call]:
                 proposal = self._finalize_kind(proposal, branch)
                 ok, errors = proposal.validate()
@@ -186,14 +188,21 @@ class StructuredController:
                     )
                     continue
                 action = proposal.action
+                if action.kind is SearchActionKind.RUN_CAPABILITY_TEST:
+                    # Phase 7.3: capability audits are executed (real Lean probe
+                    # → observation → maybe block). They run before any
+                    # IMPLEMENT candidate so a missing capability blocks the
+                    # route before the model wastes an implementation on it.
+                    capability_proposals.append(proposal)
+                    continue
                 if action.kind not in (
                     SearchActionKind.IMPLEMENT,
                     SearchActionKind.REPAIR_IMPLEMENTATION,
                 ):
-                    # Phase 7.2 boundary: DECOMPOSE / RUN_CAPABILITY_TEST are
-                    # valid, serialized proposal types but their executors are
-                    # Phase 7.3 / 7.4. Record what the generator emitted for
-                    # the trace, then skip without changing the workspace.
+                    # Phase 7.2/7.4 boundary: DECOMPOSE is a valid, serialized
+                    # proposal type whose executor lands in 7.4. Record what the
+                    # generator emitted for the trace, then skip without
+                    # changing the workspace.
                     state.skipped_proposals.append(
                         {
                             "attempt_index": state.attempt_index,
@@ -203,6 +212,17 @@ class StructuredController:
                     )
                     continue
                 executable_proposals.append(proposal)
+
+            if capability_proposals:
+                workspace, stop_for_capability = self._run_capability_audits(
+                    task, branch, capability_proposals, workspace, state
+                )
+                if stop_for_capability or state.stop_reason:
+                    frontier.update(workspace, branch.branch_id, accepted=False)
+                    if not frontier.has_work():
+                        if not state.stop_reason:
+                            state.stop_reason = "no_actions"
+                    continue
 
             workspace, candidate_branches = expand_candidate_branches(
                 workspace,
@@ -516,3 +536,100 @@ class StructuredController:
                 }
             )
         return verdict
+
+    def _run_capability_audits(
+        self,
+        task: ProofTask,
+        branch: ProofBranch,
+        proposals: list[StructuredActionProposal],
+        workspace: ProofWorkspace,
+        state: _StructuredRunState,
+    ) -> tuple[ProofWorkspace, bool]:
+        """Execute each ``RUN_CAPABILITY_TEST`` proposal against the checker.
+
+        Each probe renders the payload's ``signature`` (replacing the proof
+        hole, exactly like an IMPLEMENT candidate) and costs one check. A probe
+        consumes no model call of its own — the signature is supplied by the
+        generator, not regenerated. The outcome is folded through the reducer,
+        which records a ``CAPABILITY_AUDIT`` observation and, on a missing
+        capability, blocks the branch and obligation together.
+
+        Returns the successor workspace and a flag meaning "stop this branch":
+        ``True`` when the route was blocked (the reducer moved the branch out of
+        ACTIVE, so no IMPLEMENT candidate should be spent on it). Budget
+        exhaustion sets ``state.stop_reason`` and also stops the branch.
+        """
+        for proposal in proposals:
+            if not self.budget.can_check():
+                state.stop_reason = "budget:checks"
+                return workspace, True
+            proposal = self._finalize_kind(proposal, branch)
+            payload = proposal.payload
+            assert isinstance(payload, CapabilityTestPayload)
+            signature = payload.signature
+            metadata = {
+                "capability_requirement": payload.requirement,
+                "structured_action_kind": proposal.action.kind.value,
+                "structured_branch_id": branch.branch_id,
+            }
+            edit = CandidateEdit(
+                text=signature,
+                action="capability_test",
+                parent_node_id=branch.branch_id,
+                metadata=metadata,
+            )
+            check_result = self._check(task, edit, state)
+            record = AttemptRecord(
+                attempt_index=state.attempt_index,
+                candidate_id=edit.action,
+                edit=edit,
+                candidate_file=check_result.candidate_file,
+                check_result=check_result,
+            )
+            state.attempts.append(record)
+            state.attempt_metrics.append(
+                attempt_metric(
+                    state.attempt_index,
+                    action=edit.action,
+                    check_result=check_result,
+                )
+            )
+            if check_result.parsed_feedback is not None:
+                state.feedback_history.append(check_result.parsed_feedback)
+            attempt_index = state.attempt_index
+            state.attempt_index += 1
+            workspace = apply(
+                workspace,
+                proposal.action,
+                StructuredActionResult(
+                    branch_id=branch.branch_id,
+                    check_result=check_result,
+                    # A capability probe is never a proof: pass a rejecting
+                    # verdict so the reducer's capability branch — which does
+                    # not consult safety — is taken without registering a fact.
+                    safety_verdict=SafetyVerdict(accepted=False),
+                    proof_text=signature,
+                    source=signature,
+                    attempt_index=attempt_index,
+                ),
+            )
+            logger.info(
+                "Capability audit checked: task_id=%s requirement=%s "
+                "category=%s accepted=%s",
+                task.task_id,
+                payload.requirement,
+                check_result.category.value,
+                check_result.accepted,
+            )
+            if (
+                self.config.stop_on_tool_unavailable
+                and check_result.category == DiagnosticCategory.TOOL_UNAVAILABLE
+            ):
+                state.stop_reason = "tool_unavailable"
+                return workspace, True
+            # If the reducer blocked the branch, the route is dead: stop
+            # spending IMPLEMENT candidates on it this iteration.
+            updated = branch_by_id(workspace, branch.branch_id)
+            if updated is None or updated.status != BranchStatus.ACTIVE:
+                return workspace, True
+        return workspace, False

@@ -13,6 +13,7 @@ from agent.proof_system.base import (
 from agent.proof_system.workspace import (
     BranchStatus,
     DEFAULT_ALLOWED_MUTATIONS,
+    ObligationStatus,
     ProofBranch,
     SearchAction,
     SearchActionKind,
@@ -286,6 +287,165 @@ class ReducerImmutabilityTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result, workspace)
+
+
+CAPABILITY_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.RUN_CAPABILITY_TEST]
+
+
+def _capability_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.RUN_CAPABILITY_TEST,
+        target_branch_id=branch_id,
+        allowed_mutations=CAPABILITY_MUTATIONS,
+        rationale="probe tactic#simp availability",
+    )
+
+
+def _check_result(
+    *,
+    accepted: bool,
+    category: DiagnosticCategory,
+    message: str = "",
+) -> CheckResult:
+    feedback = ParsedFeedback(category=category, message=message)
+    return CheckResult(
+        accepted=accepted,
+        category=category,
+        raw_output=message,
+        parsed_feedback=feedback,
+    )
+
+
+class ReducerCapabilityAuditTests(unittest.TestCase):
+    """Phase 7.3: RUN_CAPABILITY_TEST folds into an observation and may block."""
+
+    def test_missing_capability_blocks_branch_and_obligation(self) -> None:
+        workspace = _seed_workspace()
+        original = workspace
+        action = _capability_action()
+
+        workspace = apply(
+            workspace,
+            action,
+            _result(
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    message="unknown identifier 'simp'",
+                ),
+                attempt_index=2,
+            ),
+        )
+
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.status, BranchStatus.BLOCKED)
+        self.assertIsNone(branch.lean_artifact)
+        self.assertEqual(branch.last_action, action)
+
+        # The obligation is blocked together with the branch — no gap.
+        obligation = workspace.obligation_graph.by_id("sample")
+        assert obligation is not None
+        self.assertEqual(obligation.status, ObligationStatus.BLOCKED)
+
+        # A capability-audit observation is recorded with the right source.
+        cap_obs = [
+            o for o in branch.observations
+            if o.source.value == "capability_audit"
+        ]
+        self.assertEqual(len(cap_obs), 1)
+        self.assertEqual(cap_obs[0].category, "unknown_identifier")
+        self.assertEqual(cap_obs[0].raw_evidence_ref, "capability:2")
+        self.assertIn("simp", cap_obs[0].message)
+
+        # Immutability: the input workspace is untouched.
+        self.assertNotEqual(workspace.version, original.version)
+
+    def test_available_capability_stays_active_with_observation(self) -> None:
+        workspace = _seed_workspace()
+        action = _capability_action()
+
+        workspace = apply(
+            workspace,
+            action,
+            _result(
+                check_result=_check_result(
+                    accepted=True,
+                    category=DiagnosticCategory.PROOF_ACCEPTED,
+                    message="simp compiled",
+                ),
+                attempt_index=1,
+            ),
+        )
+
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.status, BranchStatus.ACTIVE)
+        # A capability probe being accepted does NOT register a verified fact —
+        # the proposition is not proven, only the tactic exists.
+        self.assertEqual(workspace.accepted_facts, ())
+        obligation = workspace.obligation_graph.by_id("sample")
+        assert obligation is not None
+        self.assertEqual(obligation.status, ObligationStatus.OPEN)
+
+        cap_obs = [
+            o for o in branch.observations
+            if o.source.value == "capability_audit"
+        ]
+        self.assertEqual(len(cap_obs), 1)
+        self.assertIn("available", cap_obs[0].message)
+
+    def test_non_missing_failure_does_not_block(self) -> None:
+        # UNSOLVED_GOALS is an implementation problem, not a missing capability:
+        # the audit records evidence but leaves the route open for IMPLEMENT.
+        workspace = _seed_workspace()
+        action = _capability_action()
+
+        workspace = apply(
+            workspace,
+            action,
+            _result(
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNSOLVED_GOALS,
+                    message="unsolved goals",
+                ),
+                attempt_index=0,
+            ),
+        )
+
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.status, BranchStatus.ACTIVE)
+        obligation = workspace.obligation_graph.by_id("sample")
+        assert obligation is not None
+        self.assertEqual(obligation.status, ObligationStatus.OPEN)
+        cap_obs = [
+            o for o in branch.observations
+            if o.source.value == "capability_audit"
+        ]
+        self.assertEqual(len(cap_obs), 1)
+
+    def test_missing_capability_does_not_mutate_input(self) -> None:
+        workspace = _seed_workspace()
+        snapshot_version = workspace.version
+        snapshot_obligation = workspace.obligation_graph.by_id("sample")
+        assert snapshot_obligation is not None
+        snapshot_obligation_status = snapshot_obligation.status
+
+        apply(
+            workspace,
+            _capability_action(),
+            _result(
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.INVALID_REFERENCE,
+                ),
+            ),
+        )
+
+        self.assertEqual(workspace.version, snapshot_version)
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            snapshot_obligation_status,
+        )
 
 
 if __name__ == "__main__":
