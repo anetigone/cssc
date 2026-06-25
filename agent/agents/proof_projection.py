@@ -42,7 +42,15 @@ def append_structured_projection(
             if dep.get("has_accepted_fact"):
                 statement = dep.get("statement")
                 if isinstance(statement, str) and statement.strip():
-                    verified.append(statement.strip())
+                    declaration = dep.get("declaration_id")
+                    if isinstance(declaration, str) and declaration.strip():
+                        # Surface the helper's Lean name so the model can call it
+                        # directly instead of re-deriving the declaration.
+                        verified.append(
+                            f"{declaration.strip()}: {statement.strip()}"
+                        )
+                    else:
+                        verified.append(statement.strip())
             else:
                 dep_id = dep.get("obligation_id")
                 if isinstance(dep_id, str):

@@ -671,6 +671,94 @@ class StructuredControllerTests(unittest.TestCase):
             summary["blocked_obligations"][0]["obligation_id"], "sample"
         )
         self.assertEqual(summary["blocked_branch_obligation_ids"], [])
+
+    def test_blocked_helper_obligation_yields_blocked_stop_reason(self) -> None:
+        # Phase 7.5: when a decomposed helper is blocked (capability missing),
+        # the parent can never become ready, the frontier drains, and the run
+        # terminates with stop_reason "blocked" — distinguishing a mechanical
+        # dead-end from a run that merely exhausted ready work.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            DecomposeChildSpec,
+            DecomposePayload,
+            StructuredActionProposal,
+        )
+
+        class HelperBlockingGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                branch_id = request.metadata.get("branch_id", "")
+                if branch_id == "sample:root":
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.DECOMPOSE,
+                                target_branch_id=branch_id,
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.DECOMPOSE
+                                ],
+                                rationale="split into helper",
+                            ),
+                            payload=DecomposePayload(
+                                children=(
+                                    DecomposeChildSpec(
+                                        child_id="helper",
+                                        statement="lemma helper : True := by\n  {{proof}}\n",
+                                    ),
+                                )
+                            ),
+                        ),
+                    )
+                # Helper branch: probe a capability the environment lacks.
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id=branch_id,
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe tactic#simp",
+                        ),
+                        payload=CapabilityTestPayload(
+                            requirement="tactic#simp",
+                            signature="by simp",
+                        ),
+                    ),
+                )
+
+        class MissingCapabilityAdapter(StructuredFakeAdapter):
+            def check(self, candidate_file, budget_slice):
+                self.checked_files.append(candidate_file)
+                return CheckResult(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    raw_output="unknown identifier 'simp'",
+                    candidate_file=candidate_file,
+                    parsed_feedback=ParsedFeedback(
+                        category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                        message="unknown identifier 'simp'",
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                HelperBlockingGenerator(),  # type: ignore[arg-type]
+                adapter=MissingCapabilityAdapter(),
+                budget=BudgetConfig(max_checks=6, max_model_calls=6),
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.stop_reason, "blocked")
+        summary = result.metadata["result_summary"]
+        self.assertTrue(any(o["obligation_id"] == "helper" for o in summary["blocked_obligations"]))
         # RUN_CAPABILITY_TEST is now executed, not skipped.
         self.assertEqual(result.metadata["skipped_proposals"], ())
 

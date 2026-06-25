@@ -43,6 +43,7 @@ from ...proof_system.base import (
 from ...proof_system.workspace import (
     DEFAULT_ALLOWED_MUTATIONS,
     BranchStatus,
+    ObligationStatus,
     ProofBranch,
     ProofWorkspace,
     SearchAction,
@@ -364,6 +365,13 @@ class StructuredController:
             # of budget. This is the multi-obligation terminal: helpers left
             # open or blocked make their parent un-attackable.
             state.stop_reason = "no_ready_work"
+        if state.stop_reason == "no_ready_work" and self._has_blocked_obligation(
+            workspace
+        ):
+            # Sharpen the terminal reason: at least one active obligation is
+            # BLOCKED (a mechanical dead-end), distinguishing it from a run that
+            # simply ran out of ready work with everything still open.
+            state.stop_reason = "blocked"
         return build_structured_result(
             state,
             task,
@@ -373,6 +381,13 @@ class StructuredController:
             execution_mode=ExecutionMode.STRUCTURED,
             budget=self.budget,
             safety_reviewer=self.safety_reviewer,
+        )
+
+    def _has_blocked_obligation(self, workspace: ProofWorkspace) -> bool:
+        """True iff any active obligation is in the BLOCKED status."""
+        return any(
+            obligation.status == ObligationStatus.BLOCKED
+            for obligation in workspace.obligation_graph.active()
         )
 
     def _initial_workspace(self, task: ProofTask) -> ProofWorkspace:

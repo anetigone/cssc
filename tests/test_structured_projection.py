@@ -180,6 +180,40 @@ class DependencyClosureTest(unittest.TestCase):
         self.assertEqual(len(projection.accepted_facts), 1)
         self.assertEqual(projection.accepted_facts[0].obligation_id, "helper1")
 
+    def test_helper_declaration_id_propagates_to_dependency_and_fact_slots(self) -> None:
+        # Phase 7.5: a helper fact with a declaration_id surfaces in both the
+        # dependency closure and the accepted-facts slots so a parent prompt can
+        # reuse the helper by its Lean name.
+        root = _obligation("root", dependency_ids=("helper1",))
+        helper1 = _obligation("helper1")
+        fact = VerifiedFact(
+            obligation_id="helper1",
+            obligation_version=1,
+            statement="lemma helper1 : True := rfl",
+            source_attempt_index=0,
+            checker_category=DiagnosticCategory.PROOF_ACCEPTED.value,
+            safety_accepted=True,
+            declaration_id="helper1",
+            artifact_source="lemma helper1 : True := rfl",
+        )
+        workspace = _workspace(
+            obligations=(root, helper1),
+            root_obligation_id="root",
+            branches=(_branch("root:0", "root"),),
+            accepted_facts=(fact,),
+        )
+
+        projection = build_context_projection(workspace, "root:0")
+
+        dep = projection.dependency_facts[0]
+        self.assertTrue(dep.has_accepted_fact)
+        self.assertEqual(dep.declaration_id, "helper1")
+        self.assertEqual(projection.accepted_facts[0].declaration_id, "helper1")
+        # Round-trip carries the declaration_id.
+        rt = context_projection_from_dict(projection.to_dict())
+        self.assertEqual(rt.dependency_facts[0].declaration_id, "helper1")
+        self.assertEqual(rt.accepted_facts[0].declaration_id, "helper1")
+
     def test_stale_fact_version_is_rejected(self) -> None:
         root = _obligation("root", dependency_ids=("helper",))
         # Graph now at version 2 (e.g. after a decomposition new_version).

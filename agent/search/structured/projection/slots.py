@@ -60,13 +60,16 @@ class DependencyFact:
 
     ``has_accepted_fact`` is ``False`` when the helper obligation has not yet
     been proven (or only by a stale version), so the prompt can mark it as an
-    open dependency rather than a reusable conclusion.
+    open dependency rather than a reusable conclusion. ``declaration_id`` names
+    the helper's Lean declaration when it has been proven, so a parent proof can
+    reuse it by name; it is ``None`` for an open dependency.
     """
 
     obligation_id: str
     obligation_version: int
     statement: str
     has_accepted_fact: bool
+    declaration_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,36 +77,48 @@ class DependencyFact:
             "obligation_version": self.obligation_version,
             "statement": self.statement,
             "has_accepted_fact": self.has_accepted_fact,
+            "declaration_id": self.declaration_id,
         }
 
 
 def dependency_fact_from_dict(data: dict[str, Any]) -> DependencyFact:
+    declaration_id = data.get("declaration_id")
     return DependencyFact(
         obligation_id=data["obligation_id"],
         obligation_version=int(data["obligation_version"]),
         statement=data.get("statement", ""),
         has_accepted_fact=bool(data.get("has_accepted_fact", False)),
+        declaration_id=declaration_id if isinstance(declaration_id, str) else None,
     )
 
 
 @dataclass(frozen=True)
 class AcceptedFactSlot:
-    """One reusable accepted fact."""
+    """One reusable accepted fact.
+
+    ``declaration_id`` names the fact's Lean declaration when available, so a
+    dependent obligation's prompt can refer to the helper by name rather than
+    only by obligation id.
+    """
 
     obligation_id: str
     statement: str
+    declaration_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "obligation_id": self.obligation_id,
             "statement": self.statement,
+            "declaration_id": self.declaration_id,
         }
 
 
 def accepted_fact_slot_from_dict(data: dict[str, Any]) -> AcceptedFactSlot:
+    declaration_id = data.get("declaration_id")
     return AcceptedFactSlot(
         obligation_id=data["obligation_id"],
         statement=data.get("statement", ""),
+        declaration_id=declaration_id if isinstance(declaration_id, str) else None,
     )
 
 

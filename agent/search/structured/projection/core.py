@@ -285,6 +285,7 @@ def _dependency_facts(
                     matched.statement if matched is not None else dep.lean_statement
                 ),
                 has_accepted_fact=matched is not None,
+                declaration_id=matched.declaration_id if matched is not None else None,
             )
         )
     return tuple(slots)
@@ -302,6 +303,7 @@ def _accepted_facts(workspace: ProofWorkspace) -> tuple[AcceptedFactSlot, ...]:
             AcceptedFactSlot(
                 obligation_id=fact.obligation_id,
                 statement=fact.statement,
+                declaration_id=fact.declaration_id,
             )
         )
     return tuple(slots)
