@@ -470,18 +470,24 @@ class StructuredActionProposal:
                     "action kind 'propose_argument' requires "
                     "ProposeArgumentPayload"
                 )
+            else:
+                errors.extend(_argument_payload_errors(self.payload))
         elif kind is SearchActionKind.REFINE_ARGUMENT:
             if not isinstance(self.payload, RefineArgumentPayload):
                 errors.append(
                     "action kind 'refine_argument' requires "
                     "RefineArgumentPayload"
                 )
+            else:
+                errors.extend(_argument_payload_errors(self.payload))
         elif kind is SearchActionKind.CHANGE_REPRESENTATION:
             if not isinstance(self.payload, ChangeRepresentationPayload):
                 errors.append(
                     "action kind 'change_representation' requires "
                     "ChangeRepresentationPayload"
                 )
+            else:
+                errors.extend(_representation_payload_errors(self.payload))
 
         return (not errors, tuple(errors))
 
@@ -492,6 +498,48 @@ class StructuredActionProposal:
             "score": self.score,
             "metadata": dict(self.metadata),
         }
+
+
+def _alignment_errors(spec: AlignmentSpec) -> tuple[str, ...]:
+    errors: list[str] = []
+    if not isinstance(spec.argument_step_id, str) or not spec.argument_step_id.strip():
+        errors.append("alignment argument_step_id must be non-empty")
+    if spec.relation not in ALIGNMENT_RELATION_VALUES:
+        errors.append(f"unknown alignment relation {spec.relation!r}")
+        return tuple(errors)
+    has_target = any(
+        target is not None
+        for target in (
+            spec.lean_declaration_id,
+            spec.goal_fingerprint,
+            spec.source_span,
+        )
+    )
+    if spec.relation == "unaligned" and has_target:
+        errors.append("unaligned alignment must not carry a Lean target")
+    elif spec.relation != "unaligned" and not has_target:
+        errors.append(f"alignment relation {spec.relation!r} requires a Lean target")
+    return tuple(errors)
+
+
+def _argument_payload_errors(
+    payload: ProposeArgumentPayload | RefineArgumentPayload,
+) -> tuple[str, ...]:
+    errors: list[str] = []
+    for index, alignment in enumerate(payload.alignments):
+        for error in _alignment_errors(alignment):
+            errors.append(f"alignments[{index}]: {error}")
+    return tuple(errors)
+
+
+def _representation_payload_errors(
+    payload: ChangeRepresentationPayload,
+) -> tuple[str, ...]:
+    errors: list[str] = []
+    for index, alignment in enumerate(payload.alignments):
+        for error in _alignment_errors(alignment):
+            errors.append(f"alignments[{index}]: {error}")
+    return tuple(errors)
 
 
 def structured_action_proposal_from_dict(

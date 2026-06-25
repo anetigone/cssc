@@ -393,6 +393,59 @@ class ProposalValidateTest(unittest.TestCase):
             any("DecomposePayload" in err for err in errors), msg=errors
         )
 
+    def test_argument_payload_with_unknown_alignment_relation_is_invalid(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.PROPOSE_ARGUMENT,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.PROPOSE_ARGUMENT
+            ],
+            rationale="add a step",
+        )
+        ok, errors = StructuredActionProposal(
+            action=action,
+            payload=ProposeArgumentPayload(
+                steps=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+                alignments=(
+                    AlignmentSpec(
+                        argument_step_id="s1",
+                        relation="not-a-relation",
+                    ),
+                ),
+            ),
+        ).validate()
+
+        self.assertFalse(ok)
+        self.assertTrue(
+            any("unknown alignment relation" in err for err in errors),
+            msg=errors,
+        )
+
+    def test_non_unaligned_relation_requires_target(self) -> None:
+        action = SearchAction(
+            kind=SearchActionKind.CHANGE_REPRESENTATION,
+            target_branch_id="b1",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.CHANGE_REPRESENTATION
+            ],
+            rationale="switch",
+        )
+        ok, errors = StructuredActionProposal(
+            action=action,
+            payload=ChangeRepresentationPayload(
+                argument=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+                alignments=(
+                    AlignmentSpec(argument_step_id="s1", relation="implements"),
+                ),
+            ),
+        ).validate()
+
+        self.assertFalse(ok)
+        self.assertTrue(
+            any("requires a Lean target" in err for err in errors),
+            msg=errors,
+        )
+
     def test_unsupported_kind_is_invalid(self) -> None:
         # FORMALIZE is a real SearchActionKind but not in SUPPORTED_PROPOSAL_KINDS.
         self.assertNotIn(SearchActionKind.FORMALIZE, SUPPORTED_PROPOSAL_KINDS)

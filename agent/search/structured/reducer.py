@@ -321,6 +321,8 @@ def apply_argument(
     if action.kind is SearchActionKind.PROPOSE_ARGUMENT:
         if not _alignments_cover(new_steps, new_alignments):
             return workspace
+        if not _alignment_specs_valid(new_alignments):
+            return workspace
         combined_steps = (
             *branch.argument.steps,
             *(_to_argument_step(spec) for spec in new_steps),
@@ -331,6 +333,8 @@ def apply_argument(
             *(_to_alignment_link(spec) for spec in new_alignments),
         )
     else:  # REFINE_ARGUMENT
+        if not _alignment_specs_valid(refined_alignments):
+            return workspace
         existing_step_ids = {s.step_id for s in branch.argument.steps}
         existing_align_ids = {
             link.argument_step_id for link in branch.alignment
@@ -401,6 +405,10 @@ def apply_change_representation(
     parent = _find_branch(workspace, branch_id)
     if parent is None or parent.status != BranchStatus.ACTIVE:
         return workspace
+    if not _alignments_cover(argument_steps, alignments):
+        return workspace
+    if not _alignment_specs_valid(alignments):
+        return workspace
 
     new_argument = ArgumentGraph(
         steps=tuple(_to_argument_step(spec) for spec in argument_steps)
@@ -461,6 +469,8 @@ def apply_failure_hypotheses(
 
     accepted: list[FailureHypothesis] = []
     for hypothesis in hypotheses:
+        if not hypothesis.validate().ok:
+            continue
         if hypothesis.hypothesis_id in existing_ids:
             continue
         if not set(hypothesis.evidence_ids) <= observation_ids:
@@ -562,6 +572,27 @@ def _alignments_cover(
             return False
         covered.add(spec.argument_step_id)
     return {step.step_id for step in steps} == covered
+
+
+def _alignment_specs_valid(alignments: Sequence[AlignmentSpec]) -> bool:
+    for spec in alignments:
+        try:
+            relation = AlignmentRelation(spec.relation)
+        except ValueError:
+            return False
+        has_target = any(
+            target is not None
+            for target in (
+                spec.lean_declaration_id,
+                spec.goal_fingerprint,
+                spec.source_span,
+            )
+        )
+        if relation is AlignmentRelation.UNALIGNED and has_target:
+            return False
+        if relation is not AlignmentRelation.UNALIGNED and not has_target:
+            return False
+    return True
 
 
 def _declaration_id(source: str) -> str | None:

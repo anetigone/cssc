@@ -1219,6 +1219,91 @@ class StructuredControllerTests(unittest.TestCase):
         assert selected2 is not None
         self.assertEqual(selected2.kind, SearchActionKind.IMPLEMENT)
 
+    def test_selected_hypothesis_test_is_exposed_to_next_generation(self) -> None:
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace import (
+            FailureHypothesis,
+            FailureKind,
+        )
+        from agent.search.structured.proposal import (
+            FAILURE_HYPOTHESES_KEY,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class HypothesisThenInspectGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self.requests: list[ActionGenerationRequest] = []
+
+            def generate(self, request: ActionGenerationRequest):
+                self.requests.append(request)
+                if len(self.requests) == 1:
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail first",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                        ),
+                    )
+                if len(self.requests) == 2:
+                    projection = request.metadata["structured_projection"]
+                    obs_id = projection["observations"][0]["observation_id"]
+                    test_action = SearchAction(
+                        kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                        target_branch_id="sample:root",
+                        allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                            SearchActionKind.RUN_CAPABILITY_TEST
+                        ],
+                        rationale="probe capability",
+                    )
+                    hypothesis = FailureHypothesis(
+                        hypothesis_id="h1",
+                        kind=FailureKind.CAPABILITY_MISSING,
+                        confidence=0.6,
+                        evidence_ids=(obs_id,),
+                        proposed_tests=(test_action,),
+                    )
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail while attaching hypothesis",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                            metadata={FAILURE_HYPOTHESES_KEY: [hypothesis]},
+                        ),
+                    )
+                return ()
+
+        generator = HypothesisThenInspectGenerator()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._controller(
+                tmp,
+                generator,  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=5, max_model_calls=5),
+            ).run(_task())
+
+        self.assertGreaterEqual(len(generator.requests), 3)
+        selected = generator.requests[2].metadata["selected_test_action"]
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["kind"], SearchActionKind.RUN_CAPABILITY_TEST.value)
+
 
 if __name__ == "__main__":
     unittest.main()

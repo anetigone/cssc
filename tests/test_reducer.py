@@ -893,6 +893,23 @@ class ReducerChangeRepresentationTests(unittest.TestCase):
         )
         self.assertEqual(workspace, workspace_before)
 
+    def test_invalid_alignment_relation_is_noop(self) -> None:
+        workspace_before = _seed_workspace()
+        workspace = apply_argument(
+            workspace_before,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+            new_alignments=(
+                AlignmentSpec(
+                    argument_step_id="s1",
+                    relation="not-a-relation",
+                ),
+            ),
+        )
+
+        self.assertEqual(workspace, workspace_before)
+
 
 class ReducerFailureHypothesisTests(unittest.TestCase):
     def _branch_with_evidence(self):
@@ -936,6 +953,23 @@ class ReducerFailureHypothesisTests(unittest.TestCase):
         workspace = apply_failure_hypotheses(
             workspace, branch_id="root-branch", hypotheses=(hyp,)
         )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_drops_intrinsically_invalid_hypothesis(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="bad",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=2.0,
+            evidence_ids=(evidence,),
+        )
+        workspace_before = workspace
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+
         self.assertEqual(workspace, workspace_before)
 
     def test_drops_hypothesis_with_wrong_branch_test(self) -> None:

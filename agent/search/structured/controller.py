@@ -200,6 +200,8 @@ class StructuredController:
             workspace = self._fold_failure_hypotheses(
                 branch, list(proposals), workspace
             )
+            branch = branch_by_id(workspace, branch.branch_id) or branch
+            proposals = self._prioritize_selected_test(branch, tuple(proposals))
 
             executable_proposals: list[StructuredActionProposal] = []
             capability_proposals: list[StructuredActionProposal] = []
@@ -583,6 +585,7 @@ class StructuredController:
             self.context_summarizer,
             previous_attempt,
         )
+        selected_test_action = self._select_test_action(branch)
         return {
             "proof_phase": (
                 "implement" if branch.last_action is None else "repair"
@@ -609,6 +612,11 @@ class StructuredController:
             "retrieved_results": state.current_retrieved,
             "retrieved_history": tuple(state.retrieved_history),
             "summarized_context": summarized_context,
+            "selected_test_action": (
+                selected_test_action.to_dict()
+                if selected_test_action is not None
+                else None
+            ),
             "structured_workspace_version": workspace.version,
             "budget": self.budget.snapshot(),
         }
@@ -1026,6 +1034,27 @@ class StructuredController:
             return None
         candidates.sort(key=lambda item: (item[0], item[1]))
         return candidates[0][2]
+
+    def _prioritize_selected_test(
+        self,
+        branch: ProofBranch,
+        proposals: tuple[StructuredActionProposal, ...],
+    ) -> tuple[StructuredActionProposal, ...]:
+        """Move proposals matching the selected hypothesis test to the front."""
+        selected = self._select_test_action(branch)
+        if selected is None:
+            return proposals
+        matching: list[StructuredActionProposal] = []
+        other: list[StructuredActionProposal] = []
+        for proposal in proposals:
+            finalized = self._finalize_kind(proposal, branch)
+            if finalized.action.kind is selected.kind:
+                matching.append(proposal)
+            else:
+                other.append(proposal)
+        if not matching:
+            return proposals
+        return tuple((*matching, *other))
 
     def _fold_failure_hypotheses(
         self,
