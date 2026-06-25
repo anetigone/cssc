@@ -84,6 +84,17 @@ class StatementSafetyReviewerTests(unittest.TestCase):
         self.assertFalse(verdict.accepted)
         self.assertIn("statement_not_preserved", verdict.reasons)
 
+    def test_rejects_statement_header_only_preserved_in_comment(self) -> None:
+        candidate = (
+            "-- theorem sample : True := by\n"
+            "theorem renamed : False := by\n"
+            "  trivial\n"
+        )
+        verdict = self.reviewer.accepts(_task(), candidate, _accepted_result())
+
+        self.assertFalse(verdict.accepted)
+        self.assertIn("statement_not_preserved", verdict.reasons)
+
     def test_allows_prepended_helper_declarations(self) -> None:
         # Phase 7.4: a structured assembly prepends helper declarations before
         # the root. The root statement is still present verbatim, so the
@@ -96,6 +107,25 @@ class StatementSafetyReviewerTests(unittest.TestCase):
             "  exact helper\n"
         )
         verdict = self.reviewer.accepts(_task(), candidate, _accepted_result())
+
+        self.assertTrue(verdict.accepted)
+
+    def test_allows_helper_declarations_after_template_preamble(self) -> None:
+        template = (
+            "import Mathlib.Data.Nat.Basic\n"
+            "\n"
+            "theorem sample : True := by\n"
+            "  {{proof}}\n"
+        )
+        task = ProofTask("sample", template)
+        candidate = (
+            "import Mathlib.Data.Nat.Basic\n"
+            "lemma helper : True := by trivial\n"
+            "\n"
+            "theorem sample : True := by\n"
+            "  exact helper\n"
+        )
+        verdict = self.reviewer.accepts(task, candidate, _accepted_result())
 
         self.assertTrue(verdict.accepted)
 

@@ -595,6 +595,7 @@ class StructuredControllerTests(unittest.TestCase):
         ]
         self.assertEqual(len(helper_facts), 1)
         self.assertIn("lemma helper", helper_facts[0]["statement"])
+        self.assertEqual(helper_facts[0]["declaration_id"], "helper")
 
     def test_capability_audit_blocks_route_when_capability_missing(self) -> None:
         # Phase 7.3: a native generator proposes RUN_CAPABILITY_TEST. The audit

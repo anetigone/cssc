@@ -44,6 +44,7 @@ search can retry a different realization without overwriting the parent.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Sequence
 
@@ -74,6 +75,12 @@ if TYPE_CHECKING:
 #: Two identical-fingerprint failures suggest the realization is stuck but the
 #: strategy may still be viable, so the search forks rather than abandons.
 REPAIR_THRESHOLD = 2
+
+_DECLARATION_ID_RE = re.compile(
+    r"^[ \t]*(?:private[ \t]+)?(?:noncomputable[ \t]+)?"
+    r"(?:theorem|lemma|def)[ \t]+([^\s:({]+)",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -118,6 +125,7 @@ def apply(
         obligation_id=branch.obligation_id,
         obligation_version=branch.obligation_version,
         proof_body=result.proof_text,
+        declaration_id=None if is_root else _declaration_id(result.source),
         # A root obligation fills the task's proof hole (snippet); a helper
         # (decomposed child) is a standalone declaration the assembler emits as
         # its own top-level statement. The kind tells the assembler how to
@@ -253,6 +261,14 @@ def _next_parent_branch_id(
     prefix = f"{parent_branch_id}.p"
     count = sum(1 for b in branches if b.branch_id.startswith(prefix))
     return f"{prefix}{count}"
+
+
+def _declaration_id(source: str) -> str | None:
+    """Best-effort Lean declaration name from a standalone helper artifact."""
+    match = _DECLARATION_ID_RE.search(source)
+    if match is None:
+        return None
+    return match.group(1)
 
 
 def _accept(
