@@ -1072,6 +1072,12 @@ class ReducerTransitiveBlockTests(unittest.TestCase):
         root = result.obligation_graph.by_id("sample")
         self.assertEqual(helper.status, ObligationStatus.BLOCKED)
         self.assertEqual(root.status, ObligationStatus.BLOCKED)
+        parent_branch = next(
+            b
+            for b in result.branches
+            if b.obligation_id == "sample" and b.status != BranchStatus.SUPERSEDED
+        )
+        self.assertEqual(parent_branch.status, BranchStatus.BLOCKED)
 
     def test_block_does_not_touch_verified_siblings(self) -> None:
         workspace = self._decomposed()
@@ -1232,6 +1238,42 @@ class ReducerDormantRecoveryTests(unittest.TestCase):
         self.assertEqual(
             workspace.branches[0].status, BranchStatus.ACTIVE
         )
+
+    def test_accepting_helper_does_not_revive_accepted_obligation_sibling(self) -> None:
+        workspace = self._decomposed()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        dormant_sibling = ProofBranch(
+            branch_id="sample.helper1.dormant",
+            obligation_id="sample.helper1",
+            obligation_version=helper_branch.obligation_version,
+            status=BranchStatus.DORMANT,
+        )
+        workspace = workspace.successor(
+            branches=(*workspace.branches, dormant_sibling)
+        )
+        workspace = apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=helper_branch.branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement helper",
+            ),
+            StructuredActionResult(
+                branch_id=helper_branch.branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text="trivial",
+                source="lemma helper1 : True := by trivial",
+                attempt_index=0,
+            ),
+        )
+        sibling = next(
+            b for b in workspace.branches if b.branch_id == dormant_sibling.branch_id
+        )
+        self.assertEqual(sibling.status, BranchStatus.DORMANT)
 
     def test_missing_capability_does_not_revive(self) -> None:
         workspace = _seed_workspace()

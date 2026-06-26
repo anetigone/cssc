@@ -384,6 +384,7 @@ def _block_obligation(
         closure.add(current)
         frontier.extend(dependents.get(current, ()))
     new_graph = graph
+    blocked_pins: set[tuple[str, int]] = set()
     for blocked_id in closure:
         current = new_graph.by_id(blocked_id)
         if current is None:
@@ -396,10 +397,20 @@ def _block_obligation(
             # SUPERSEDED) untouched: a verified fact stays verified even if a
             # sibling route dies, and superseded versions are provenance.
             continue
+        blocked_pins.add((current.obligation_id, current.version))
         new_graph = new_graph.with_obligation(
             replace(current, status=ObligationStatus.BLOCKED)
         )
-    return workspace.successor(obligation_graph=new_graph)
+    new_branches = tuple(
+        replace(branch, status=BranchStatus.BLOCKED)
+        if (
+            (branch.obligation_id, branch.obligation_version) in blocked_pins
+            and branch.status in (BranchStatus.ACTIVE, BranchStatus.DORMANT)
+        )
+        else branch
+        for branch in workspace.branches
+    )
+    return workspace.successor(obligation_graph=new_graph, branches=new_branches)
 
 
 def _reactivate_dormant(
@@ -434,9 +445,14 @@ def _reactivate_dormant(
     revived = False
     new_branches = list(workspace.branches)
     for index, branch in enumerate(new_branches):
+        current = graph.by_id(branch.obligation_id)
         if (
             branch.status == BranchStatus.DORMANT
             and branch.obligation_id in dependent_ids
+            and current is not None
+            and current.version == branch.obligation_version
+            and current.status
+            in (ObligationStatus.OPEN, ObligationStatus.IN_PROGRESS)
         ):
             new_branches[index] = replace(branch, status=BranchStatus.ACTIVE)
             revived = True
