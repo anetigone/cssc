@@ -15,8 +15,6 @@ PAYLOAD_KIND_CHANGE_REPRESENTATION = "change_representation"
 
 @dataclass(frozen=True)
 class ImplementPayload:
-    """A proof body realizing the branch's current obligation."""
-
     proof_text: str
     source: str = ""
 
@@ -30,8 +28,6 @@ class ImplementPayload:
 
 @dataclass(frozen=True)
 class DecomposeChildSpec:
-    """One child obligation proposed by a ``DECOMPOSE`` action."""
-
     child_id: str
     statement: str
     dependency_ids: tuple[str, ...] = ()
@@ -54,8 +50,6 @@ def decompose_child_spec_from_dict(data: dict[str, Any]) -> DecomposeChildSpec:
 
 @dataclass(frozen=True)
 class DecomposePayload:
-    """Propose decomposition of the branch's obligation into children."""
-
     children: tuple[DecomposeChildSpec, ...]
     strategy: str = ""
 
@@ -79,8 +73,6 @@ def decompose_payload_from_dict(data: dict[str, Any]) -> DecomposePayload:
 
 @dataclass(frozen=True)
 class CapabilityTestPayload:
-    """A minimal Lean snippet probing an environment capability."""
-
     requirement: str
     signature: str
     expected_outcome: str = ""
@@ -104,8 +96,6 @@ def capability_test_payload_from_dict(data: dict[str, Any]) -> CapabilityTestPay
 
 @dataclass(frozen=True)
 class ArgumentStepSpec:
-    """A serializable description of one mathematical argument step."""
-
     step_id: str
     claim: str
     justification: str = ""
@@ -142,8 +132,6 @@ ALIGNMENT_RELATION_VALUES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class AlignmentSpec:
-    """A serializable description of one alignment link."""
-
     argument_step_id: str
     relation: str = "unaligned"
     lean_declaration_id: str | None = None

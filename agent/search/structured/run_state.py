@@ -1,18 +1,4 @@
-"""Run state and result construction for the structured controller.
-
-Parallel to ``agent/search/controller/results.py`` but built on the structured
-``_StructuredRunState``: the structured loop's authoritative state lives in the
-:class:`ProofWorkspace`, so the run state only accumulates the shared
-attempt/metric/safety observations that flow into :class:`RunMetrics` and the
-trace. We reuse :func:`summarize_run` / :func:`new_sample_id` from the common
-metrics module so structured and minimal runs produce identical observation
-fields for cross-mode comparison.
-
-We deliberately do not refactor ``results.py``: its builders are coupled to the
-minimal ``_ControllerRunState`` (linear feedback history, self-managed memory),
-and sharing them would risk the minimal path. Keeping a parallel builder here
-is the lower-risk choice.
-"""
+"""Run state and result construction for the structured controller."""
 
 from __future__ import annotations
 
@@ -39,12 +25,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _StructuredRunState:
-    """Mutable accumulator for one structured run's shared observations.
-
-    The authoritative search state is the :class:`ProofWorkspace`; this object
-    only holds the attempt stream and safety rejections that the Phase 0
-    metrics layer and the trace need regardless of execution mode.
-    """
+    """Mutable accumulator for shared run observations."""
 
     attempts: list[AttemptRecord] = field(default_factory=list)
     attempt_metrics: list = field(default_factory=list)
@@ -56,29 +37,12 @@ class _StructuredRunState:
     current_retrieved: tuple = ()
     retrieved_history: list = field(default_factory=list)
     retrieved_this_iteration: bool = False
-    # Phase 7.2: proposals the generator emitted but the controller did not
-    # execute (the kinds whose executors have not landed). The legacy adapter
-    # only emits IMPLEMENT/REPAIR, so this stays empty on the baseline path; it
-    # records what a native structured generator tried that the loop skipped.
     skipped_proposals: list[dict[str, Any]] = field(default_factory=list)
-    # Phase 7.4: DECOMPOSE proposals the controller *executed* (structural
-    # obligation splits). Unlike attempts these consume no check and no model
-    # call, so they are not AttemptRecords; they are recorded for the trace so
-    # the search tree's decompositions are visible. Empty on the baseline path
-    # (only a native generator emits DECOMPOSE).
     decompose_records: list[dict[str, Any]] = field(default_factory=list)
-    # Phase 7.6: argument-layer edits (PROPOSE_ARGUMENT / REFINE_ARGUMENT) the
-    # controller *executed*. Like decompose these are structural (no check, no
-    # model call of their own), recorded for trace visibility.
     argument_records: list[dict[str, Any]] = field(default_factory=list)
-    # Phase 7.6: CHANGE_REPRESENTATION forks the controller *executed* — one
-    # record per representation branch spawned.
     representation_records: list[dict[str, Any]] = field(default_factory=list)
 
 
-#: Obligation statuses that still represent work the search could pursue. A
-#: run whose every active obligation is outside this set has no live route
-#: left — only verified (ACCEPTED) or dead (BLOCKED) obligations remain.
 _SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
     {ObligationStatus.OPEN, ObligationStatus.IN_PROGRESS}
 )
@@ -87,27 +51,7 @@ _SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
 def finalize_workspace_status(
     workspace: ProofWorkspace, *, accepted: bool
 ) -> WorkspaceStatus:
-    """Derive the deterministic terminal status of a structured run.
-
-    This is the Phase 7.7 run finalizer. ``accepted`` runs are ``ACCEPTED``
-    (the assembler already set this on its success path; the finalizer is
-    idempotent). For a run that did not close:
-
-    * if no active obligation is still solvable (every route is ACCEPTED or
-      BLOCKED) and the root is not accepted, the run is **BLOCKED** — all
-      remaining lines are mechanical dead-ends;
-    * otherwise, if at least one *non-root* active obligation is ACCEPTED,
-      the run is **PARTIAL** — it produced a reusable verified sub-result even
-      though the root did not close (``tmp/plan1.md`` §budget: insufficient
-      budget can only yield PARTIAL or BLOCKED);
-    * otherwise the run stays **SEARCHING** — a single-root run (or one with
-      no verified helpers) that ran out of budget mid-search is neither a
-      partial success nor a clean failure, so it is not mislabelled.
-
-    The single-root baseline never has a non-root ACCEPTED obligation, so a
-    budget-exhausted baseline run stays SEARCHING rather than being misreported
-    as PARTIAL.
-    """
+    """Derive the deterministic terminal status of a structured run."""
     if accepted:
         return WorkspaceStatus.ACCEPTED
 
@@ -176,10 +120,6 @@ def build_structured_result(
     accepted_attempt = (
         state.attempts[-1] if accepted and state.attempts else None
     )
-    # Phase 7.7: derive the terminal workspace status from the obligation DAG
-    # so the serialized workspace and the result summary report a honest
-    # ACCEPTED / PARTIAL / BLOCKED instead of the in-progress SEARCHING the run
-    # carried while looping. Idempotent on the accepted path (already ACCEPTED).
     final_status = finalize_workspace_status(workspace, accepted=accepted)
     logger.info(
         "Structured workspace finalized: task_id=%s accepted=%s stop_reason=%s "

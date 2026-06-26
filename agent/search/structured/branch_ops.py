@@ -1,10 +1,4 @@
-"""Pure branch/workspace operations used by the structured controller.
-
-These helpers are deliberately stateless: they take a :class:`ProofWorkspace`
-and return a successor workspace (or a branch/view), never mutating the input.
-Keeping them out of :mod:`.controller` shortens the controller file and makes
-the branch lifecycle easier to test in isolation.
-"""
+"""Branch/workspace helpers for the structured controller."""
 
 from __future__ import annotations
 
@@ -54,7 +48,6 @@ def expand_candidate_branches(
     count: int,
     batch_index: int,
 ) -> tuple[ProofWorkspace, tuple[ProofBranch, ...]]:
-    """Materialize one branch per candidate without overwriting alternatives."""
     if count <= 1:
         return workspace, (branch,)
     alternatives = [branch]

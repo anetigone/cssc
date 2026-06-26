@@ -1,11 +1,4 @@
-"""Final assembly and result construction for the structured controller.
-
-When :func:`solution_tracker.has_complete_solution` reports a ready workspace,
-the controller calls :func:`assemble_and_finalize` to reserve one additional
-check budget, run the artifact assembler, and build the
-:class:`ControllerResult`. Keeping this out of :mod:`.controller` shortens the
-controller and isolates the assembly-specific dependencies.
-"""
+"""Final assembly and result construction for the structured controller."""
 
 from __future__ import annotations
 
@@ -43,13 +36,7 @@ def assemble_and_finalize(
     safety_reviewer: SafetyReviewer,
     execution_mode: ExecutionMode,
 ) -> ControllerResult:
-    """Reserve budget, assemble the whole source, and build the run result.
-
-    If the budget has no check remaining, returns an unaccepted result with
-    ``stop_reason="budget:checks"``. Otherwise runs the assembler and returns
-    either an accepted result or an assembly-failed result, both carrying the
-    raw assembly outcome in ``metadata["assembly"]``.
-    """
+    """Reserve budget, assemble the whole source, and build the run result."""
     if not budget.can_check():
         state.stop_reason = "budget:checks"
         logger.info(

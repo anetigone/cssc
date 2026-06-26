@@ -1,31 +1,4 @@
-"""Structured run result-contract projection.
-
-Phase 7.0 freezes the machine-assertable view of a structured run's final
-state. ``metadata["workspace"]`` (via ``ProofWorkspace.to_dict``) is the full
-serialized workspace, but answering "which obligations are accepted/open/
-blocked, which branches were selected, what alternatives were preserved,
-whether assembly ran and why it failed, and whether the workspace validates"
-means deriving those answers by hand from that dict — brittle.
-
-This module is a pure derivation over the workspace (plus an optional
-:class:`AssemblyResult`): :func:`build_result_summary` returns a frozen
-:dataclass:`ResultSummary` whose ``to_dict`` shape is stable and directly
-assertable. It adds no new dependencies and never mutates the workspace; the
-minimal loop does not import it (it is structured-only, like the rest of this
-sub-package).
-
-Deliberate non-decisions (frozen as Phase 7.0 contracts):
-
-* Phase 7.3 collapsed the "branch BLOCKED but obligation still OPEN" gap **on
-  the capability-audit path**: when the reducer blocks a branch for a missing
-  capability it flips the obligation to BLOCKED in the same transition, so
-  :attr:`ResultSummary.blocked_branch_obligation_ids` excludes those. The
-  ``no_actions`` path still blocks only the branch (a generator producing no
-  candidates is not a mechanical capability gap), so this field can still be
-  non-empty there — that is the residual gap, by design.
-* Phase 7.0 does **not** drive decomposition — :func:`build_result_summary`
-  reads whatever obligation DAG it is handed.
-"""
+"""Structured run result summary."""
 
 from __future__ import annotations
 
@@ -42,7 +15,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ObligationSummary:
-    """One active obligation as seen by the result contract."""
+    """Summary for one active obligation."""
 
     obligation_id: str
     version: int
@@ -72,7 +45,7 @@ def obligation_summary_from_dict(data: dict[str, Any]) -> ObligationSummary:
 
 @dataclass(frozen=True)
 class BranchSummary:
-    """One branch as seen by the result contract."""
+    """Summary for one branch."""
 
     branch_id: str
     obligation_id: str
@@ -108,13 +81,7 @@ def branch_summary_from_dict(data: dict[str, Any]) -> BranchSummary:
 
 @dataclass(frozen=True)
 class AssemblyOutcomeSummary:
-    """Assembly outcome as seen by the result contract.
-
-    Always present on a :class:`ResultSummary` (never ``None``): when the run
-    never reached assembly, :attr:`executed` is ``False`` and the rest is the
-    empty placeholder. This keeps ``to_dict`` shape stable so the contract is
-    the same regardless of terminal path.
-    """
+    """Assembly outcome summary."""
 
     executed: bool
     accepted: bool
@@ -146,7 +113,7 @@ def assembly_outcome_summary_from_dict(
 
 @dataclass(frozen=True)
 class ResultSummary:
-    """The machine-assertable terminal view of one structured run."""
+    """Terminal view of one structured run."""
 
     workspace_id: str
     workspace_version: int
@@ -162,12 +129,6 @@ class ResultSummary:
     selected_branches: tuple[BranchSummary, ...]
     preserved_alternatives: tuple[BranchSummary, ...]
 
-    #: Obligation ids that have a BLOCKED branch but whose obligation is
-    #: neither ACCEPTED nor BLOCKED — the residual "branch blocked, obligation
-    #: still open" gap. Phase 7.3's capability-audit path closes this by
-    #: blocking the obligation together with the branch; the ``no_actions``
-    #: path (branch blocked for lack of candidates) does not, so it can still
-    #: surface here.
     blocked_branch_obligation_ids: tuple[str, ...]
 
     assembly: AssemblyOutcomeSummary
@@ -207,14 +168,7 @@ def build_result_summary(
     assembly_result: AssemblyResult | None = None,
     selected_branch_ids: Sequence[str] = (),
 ) -> ResultSummary:
-    """Derive the :class:`ResultSummary` for ``workspace``.
-
-    ``selected_branch_ids`` may be passed explicitly; when omitted and the
-    assembly succeeded, :func:`select_solution` fills it automatically so the
-    controller's normal path needs no extra bookkeeping. ``assembly_result``
-    is ``None`` on terminal paths that never reached assembly (budget
-    exhaustion, ``no_actions``, ``tool_unavailable``).
-    """
+    """Derive a summary for ``workspace``."""
     report = workspace.validate()
     active = workspace.obligation_graph.active()
 

@@ -1,35 +1,4 @@
-"""Structured workspace context projection builder.
-
-Phase 6 drove the structured loop but handed the proof generator only a
-"minimal-style" context: the branch's obligation id + two statement strings,
-a flat list of accepted facts, and a ``previous_attempt`` carrying just the
-proof body plus raw observations. The real workspace state — argument steps,
-the goal↔step alignment, the current obligation's dependency closure, the
-competing failure hypotheses, and sibling strategies on the same obligation —
-never reached the prompt.
-
-This module is a pure derivation over a :class:`ProofWorkspace` plus a
-``branch_id``: :func:`build_context_projection` returns a frozen
-:class:`StructuredContextProjection` whose ``to_dict`` shape is stable and
-renderable. It adds no new dependencies and never mutates the workspace; the
-minimal loop does not import it (it is structured-only, like the rest of the
-parent sub-package, and deliberately absent from ``__init__.__all__``).
-
-The projection crosses the structured→prompt boundary as a plain dict: the
-shared :mod:`agent.agents.proof` renderer duck-types it via
-``Mapping``/``Sequence`` checks, exactly like the existing ``branch_obligation``
-/``verified_facts`` keys, so ``proof.py`` never imports this package and the
-minimal path pays nothing.
-
-Deliberate non-decisions:
-
-* Observation/branch counts are capped (see :data:`.slots.MAX_PROJECTED_OBSERVATIONS`
-  and :data:`.slots.MAX_SIBLING_BRANCHES`) to bound prompt growth; everything else is
-  bounded by the workspace DAGs themselves.
-* Version-staleness is enforced for dependency facts (a fact from obligation
-  v1 is not reused against v2), mirroring the :class:`VerifiedFact` provenance
-  invariant.
-"""
+"""Structured workspace context projection builder."""
 
 from __future__ import annotations
 
@@ -60,13 +29,7 @@ from .slots import (
 
 @dataclass(frozen=True)
 class StructuredContextProjection:
-    """The structured workspace projected onto prompt-renderable slots.
-
-    ``branch_id`` is ``None`` only when :func:`build_context_projection` could
-    not resolve the requested branch; the root obligation is still derived when
-    the graph has one (best-effort, never raises), and every per-branch section
-    is empty.
-    """
+    """Workspace data projected onto prompt-renderable slots."""
 
     workspace_id: str
     workspace_version: int

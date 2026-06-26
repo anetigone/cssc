@@ -1,10 +1,4 @@
-"""Prompt-renderable slot dataclasses for the structured context projection.
-
-Each slot is a frozen value object with ``to_dict`` / ``from_dict`` helpers so
-that the projection can cross the structured→prompt boundary as a plain dict.
-No workspace logic lives here; see :mod:`.core` for the actual projection
-builder.
-"""
+"""Prompt-renderable slot dataclasses for context projection."""
 
 from __future__ import annotations
 
@@ -12,19 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 
-#: Most recent observations kept after dedup. Observations accumulate across
-#: attempts, so the tail (latest) is the most relevant for a repair attempt.
 MAX_PROJECTED_OBSERVATIONS = 12
 
-#: Sibling strategies on the same obligation to surface. Bounded purely to
-#: keep the prompt from listing an unbounded fan-out of repair branches.
 MAX_SIBLING_BRANCHES = 8
 
 
 @dataclass(frozen=True)
 class ObligationSlot:
-    """One obligation as seen by the context projection."""
-
     obligation_id: str
     version: int
     title: str
@@ -56,15 +44,6 @@ def obligation_slot_from_dict(data: dict[str, Any]) -> ObligationSlot:
 
 @dataclass(frozen=True)
 class DependencyFact:
-    """One obligation in the current obligation's dependency closure.
-
-    ``has_accepted_fact`` is ``False`` when the helper obligation has not yet
-    been proven (or only by a stale version), so the prompt can mark it as an
-    open dependency rather than a reusable conclusion. ``declaration_id`` names
-    the helper's Lean declaration when it has been proven, so a parent proof can
-    reuse it by name; it is ``None`` for an open dependency.
-    """
-
     obligation_id: str
     obligation_version: int
     statement: str
@@ -94,13 +73,6 @@ def dependency_fact_from_dict(data: dict[str, Any]) -> DependencyFact:
 
 @dataclass(frozen=True)
 class AcceptedFactSlot:
-    """One reusable accepted fact.
-
-    ``declaration_id`` names the fact's Lean declaration when available, so a
-    dependent obligation's prompt can refer to the helper by name rather than
-    only by obligation id.
-    """
-
     obligation_id: str
     statement: str
     declaration_id: str | None = None
@@ -124,14 +96,10 @@ def accepted_fact_slot_from_dict(data: dict[str, Any]) -> AcceptedFactSlot:
 
 @dataclass(frozen=True)
 class ArgumentStepSlot:
-    """One argument step plus its goal↔Lean alignment relation."""
-
     step_id: str
     claim: str
     justification: str
     depends_on: tuple[str, ...]
-    #: ``"implements"`` / ``"partial"`` / ``"unaligned"``; ``None`` when no
-    #: alignment link exists for this step.
     alignment_relation: str | None
     aligned_declaration: str | None
 
