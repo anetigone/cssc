@@ -26,9 +26,9 @@ from ..metrics import new_sample_id, summarize_run
 from .summary import build_result_summary
 
 if TYPE_CHECKING:
-    from ...proof_system.assembler import AssemblyResult
-    from ...proof_system.base import ProofTask
-    from ...proof_system.workspace import ProofWorkspace
+    from agent.proof_system.assembler import AssemblyResult
+    from agent.proof_system.base import ProofTask
+    from agent.proof_system.workspace import ProofWorkspace
     from ..safety import SafetyReviewer
 
 

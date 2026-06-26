@@ -32,12 +32,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ...proof_system.workspace import BranchStatus, ObligationStatus
+from agent.proof_system.workspace import BranchStatus, ObligationStatus
 from .solution_tracker import select_solution
 
 if TYPE_CHECKING:
-    from ...proof_system.assembler import AssemblyResult
-    from ...proof_system.workspace import ProofWorkspace
+    from agent.proof_system.assembler import AssemblyResult
+    from agent.proof_system.workspace import ProofWorkspace
 
 
 @dataclass(frozen=True)

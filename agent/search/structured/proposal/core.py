@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
-from ....proof_system.workspace import (
+from agent.proof_system.workspace import (
     DEFAULT_ALLOWED_MUTATIONS,
     SearchAction,
     SearchActionKind,
     search_action_from_dict,
 )
-from ...action import ActionGenerationRequest, ActionGenerator
+from agent.search.action import ActionGenerationRequest, ActionGenerator
 from .types import (
     ALIGNMENT_RELATION_VALUES,
     PAYLOAD_KIND_CAPABILITY_TEST,

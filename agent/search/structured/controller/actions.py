@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import logging
 
-from ....proof_system.base import CandidateEdit, DiagnosticCategory, ProofTask
-from ....proof_system.workspace import (
+from agent.proof_system.base import CandidateEdit, DiagnosticCategory, ProofTask
+from agent.proof_system.workspace import (
     BranchStatus,
     ProofBranch,
     ProofWorkspace,
     SearchAction,
     SearchActionKind,
 )
-from ...controller.types import AttemptRecord
-from ...metrics import attempt_metric
-from ...safety import SafetyVerdict
+from agent.search.controller.types import AttemptRecord
+from agent.search.metrics import attempt_metric
+from agent.search.safety import SafetyVerdict
 from ..branch_ops import branch_by_id
 from ..proposal import (
     FAILURE_HYPOTHESES_KEY,

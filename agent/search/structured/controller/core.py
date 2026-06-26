@@ -33,14 +33,14 @@ import logging
 from dataclasses import replace
 from typing import Any
 
-from ....proof_system.assembler import ArtifactAssembler
-from ....proof_system.base import (
+from agent.proof_system.assembler import ArtifactAssembler
+from agent.proof_system.base import (
     CandidateEdit,
     DiagnosticCategory,
     ProofSystemAdapter,
     ProofTask,
 )
-from ....proof_system.workspace import (
+from agent.proof_system.workspace import (
     DEFAULT_ALLOWED_MUTATIONS,
     BranchStatus,
     ObligationStatus,
@@ -51,20 +51,20 @@ from ....proof_system.workspace import (
     WorkspaceStatus,
     initialize_from_task,
 )
-from ...action import ActionGenerationRequest, ActionGenerator
-from ...budget import BudgetConfig, BudgetManager
-from ...controller.types import (
+from agent.search.action import ActionGenerationRequest, ActionGenerator
+from agent.search.budget import BudgetConfig, BudgetManager
+from agent.search.controller.types import (
     AttemptRecord,
     ControllerConfig,
     ControllerResult,
     Retriever,
 )
-from ...controller.context import maybe_retrieve, summarize_context
-from ...execution import ExecutionMode
-from ...metrics import attempt_metric
-from ...safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
-from ....agents.context import ContextSummarizer
-from ....runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
+from agent.search.controller.context import maybe_retrieve, summarize_context
+from agent.search.execution import ExecutionMode
+from agent.search.metrics import attempt_metric
+from agent.search.safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
+from agent.agents.context import ContextSummarizer
+from agent.runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
 from ..branch_ops import (
     block_branch,
     branch_by_id,

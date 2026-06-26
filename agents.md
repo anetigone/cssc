@@ -103,6 +103,11 @@ agent/
 
 > `controller`、`workspace`、`tools`、`structured` 已拆分为子模块包；每个包的 `__init__.py` 通过向后兼容的 re-export 保留原有公共 API，现有 `from agent.search.controller import ...`、`from agent.proof_system.workspace import ...`、`from agent.agents import ...`、`from agent.search.structured.controller import ...`、`from agent.search.structured.proposal import ...`、`from agent.search.structured.reducer import ...` 等导入路径无需修改。
 
+## 导入风格
+
+- 同一子模块包内优先使用相对导入（1~2 个点），保持重构时路径稳定。
+- 当相对导入需要 3 个及以上点时，必须使用绝对导入，避免出现 `from ....x import ...` 这种过深路径。
+
 ## Agent 角色
 
 | 角色 | 类 | 输入 | 输出 | 说明 |

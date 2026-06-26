@@ -12,20 +12,20 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ...proof_system.assembler import ArtifactAssembler
-from ...proof_system.workspace import WorkspaceStatus
+from agent.proof_system.assembler import ArtifactAssembler
+from agent.proof_system.workspace import WorkspaceStatus
 from .run_state import _StructuredRunState, build_structured_result
 from .solution_tracker import select_solution
 
 if TYPE_CHECKING:
-    from ...proof_system.assembler import AssemblyResult
-    from ...proof_system.base import ProofSystemAdapter, ProofTask
-    from ...proof_system.workspace import ProofWorkspace
+    from agent.proof_system.assembler import AssemblyResult
+    from agent.proof_system.base import ProofSystemAdapter, ProofTask
+    from agent.proof_system.workspace import ProofWorkspace
     from ..budget import BudgetManager
     from ..controller.types import ControllerResult
     from ..execution import ExecutionMode
     from ..safety import SafetyReviewer
-    from ...runtime.workspace import EphemeralCheckWorkspace
+    from agent.runtime.workspace import EphemeralCheckWorkspace
 
 
 logger = logging.getLogger(__name__)

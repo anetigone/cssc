@@ -17,11 +17,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ...proof_system.workspace import BranchStatus
-from ...proof_system.workspace.obligation import ObligationStatus
+from agent.proof_system.workspace import BranchStatus
+from agent.proof_system.workspace.obligation import ObligationStatus
 
 if TYPE_CHECKING:
-    from ...proof_system.workspace import ProofBranch, ProofWorkspace
+    from agent.proof_system.workspace import ProofBranch, ProofWorkspace
 
 
 def _accepted_branches_for(

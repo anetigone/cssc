@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from ....agents.context import ContextSummarizer
-from ....proof_system.base import CandidateEdit, ProofTask
-from ....proof_system.workspace import (
+from agent.agents.context import ContextSummarizer
+from agent.proof_system.base import CandidateEdit, ProofTask
+from agent.proof_system.workspace import (
     DEFAULT_ALLOWED_MUTATIONS,
     BranchStatus,
     ObligationStatus,
@@ -18,9 +18,9 @@ from ....proof_system.workspace import (
     WorkspaceStatus,
     initialize_from_task,
 )
-from ...action import ActionGenerationRequest
-from ...controller.context import summarize_context
-from ...safety import SafetyVerdict
+from agent.search.action import ActionGenerationRequest
+from agent.search.controller.context import summarize_context
+from agent.search.safety import SafetyVerdict
 from ..branch_ops import action_rationale, root_branch_id
 from ..projection import build_context_projection
 from ..proposal import (

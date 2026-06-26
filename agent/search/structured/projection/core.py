@@ -37,7 +37,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-from ....proof_system.workspace import ProofWorkspace
+from agent.proof_system.workspace import ProofWorkspace
 from .slots import (
     MAX_PROJECTED_OBSERVATIONS,
     MAX_SIBLING_BRANCHES,

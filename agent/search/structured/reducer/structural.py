@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Sequence
 
-from ....proof_system.workspace import (
+from agent.proof_system.workspace import (
     AlignmentLink,
     AlignmentRelation,
     ArgumentGraph,
@@ -16,7 +16,7 @@ from ....proof_system.workspace import (
     SearchAction,
     SearchActionKind,
 )
-from ....proof_system.workspace.workspace import ProofWorkspace
+from agent.proof_system.workspace.workspace import ProofWorkspace
 from ..proposal import AlignmentSpec, ArgumentStepSpec
 
 

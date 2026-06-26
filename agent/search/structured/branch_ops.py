@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from ...proof_system.base import ProofTask
-from ...proof_system.workspace import (
+from agent.proof_system.base import ProofTask
+from agent.proof_system.workspace import (
     BranchStatus,
     ProofBranch,
     ProofWorkspace,

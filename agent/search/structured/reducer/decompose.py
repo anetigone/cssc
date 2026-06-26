@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Sequence
 
-from ....proof_system.workspace import (
+from agent.proof_system.workspace import (
     BranchStatus,
     ObligationStatus,
     ProofBranch,
@@ -18,7 +18,7 @@ from ..proposal import DecomposeChildSpec
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ....proof_system.workspace import ProofWorkspace
+    from agent.proof_system.workspace import ProofWorkspace
 
 
 def apply_decompose(

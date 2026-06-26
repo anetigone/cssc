@@ -33,10 +33,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ...proof_system.workspace import BranchStatus, ObligationStatus
+from agent.proof_system.workspace import BranchStatus, ObligationStatus
 
 if TYPE_CHECKING:
-    from ...proof_system.workspace import ProofBranch, ProofWorkspace
+    from agent.proof_system.workspace import ProofBranch, ProofWorkspace
 
 
 #: Consecutive identical goal-fingerprint sets before a branch is retired.
