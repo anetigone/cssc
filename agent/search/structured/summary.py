@@ -16,10 +16,13 @@ sub-package).
 
 Deliberate non-decisions (frozen as Phase 7.0 contracts):
 
-* Phase 7.0 does **not** fix the "branch BLOCKED but obligation still OPEN"
-  inconsistency (the controller's ``_block_branch`` flips a branch to BLOCKED
-  while the obligation stays OPEN). :attr:`ResultSummary.blocked_branch_obligation_ids`
-  surfaces that gap explicitly; Phase 7.3 capability-audit will collapse it.
+* Phase 7.3 collapsed the "branch BLOCKED but obligation still OPEN" gap **on
+  the capability-audit path**: when the reducer blocks a branch for a missing
+  capability it flips the obligation to BLOCKED in the same transition, so
+  :attr:`ResultSummary.blocked_branch_obligation_ids` excludes those. The
+  ``no_actions`` path still blocks only the branch (a generator producing no
+  candidates is not a mechanical capability gap), so this field can still be
+  non-empty there — that is the residual gap, by design.
 * Phase 7.0 does **not** drive decomposition — :func:`build_result_summary`
   reads whatever obligation DAG it is handed.
 """
@@ -29,12 +32,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ...proof_system.workspace import BranchStatus, ObligationStatus
+from agent.proof_system.workspace import BranchStatus, ObligationStatus
 from .solution_tracker import select_solution
 
 if TYPE_CHECKING:
-    from ...proof_system.assembler import AssemblyResult
-    from ...proof_system.workspace import ProofWorkspace
+    from agent.proof_system.assembler import AssemblyResult
+    from agent.proof_system.workspace import ProofWorkspace
 
 
 @dataclass(frozen=True)
@@ -159,10 +162,12 @@ class ResultSummary:
     selected_branches: tuple[BranchSummary, ...]
     preserved_alternatives: tuple[BranchSummary, ...]
 
-    #: Obligation ids that have a BLOCKED branch but whose obligation is not
-    #: yet ACCEPTED. Phase 7.0 freezes this gap; Phase 7.3 capability-audit
-    #: flips the obligation to BLOCKED too, at which point this empties and
-    #: ``blocked_obligations`` fills instead.
+    #: Obligation ids that have a BLOCKED branch but whose obligation is
+    #: neither ACCEPTED nor BLOCKED — the residual "branch blocked, obligation
+    #: still open" gap. Phase 7.3's capability-audit path closes this by
+    #: blocking the obligation together with the branch; the ``no_actions``
+    #: path (branch blocked for lack of candidates) does not, so it can still
+    #: surface here.
     blocked_branch_obligation_ids: tuple[str, ...]
 
     assembly: AssemblyOutcomeSummary
@@ -254,6 +259,11 @@ def build_result_summary(
                 if branch.status == BranchStatus.BLOCKED
             }
             - accepted_ids
+            - {
+                obligation.obligation_id
+                for obligation in active
+                if obligation.status == ObligationStatus.BLOCKED
+            }
         )
     )
 

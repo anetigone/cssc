@@ -7,13 +7,15 @@ adapter drives the controller the same way ``test_structured_controller.py``
 does, but here the assertions target the machine-assertable summary view, not
 mechanics like budget counts or repair-fork branch ids.
 
-Three scenarios, matching the Phase 7.0 contract fixtures:
+Scenarios, matching the Phase 7.0/7.3 contract fixtures:
 
 * single-root acceptance (Phase 6 behavior does not regress, contract is full);
 * two-helper-plus-root decomposition at the *data-structure* layer (the
   multi-obligation *loop* is Phase 7.4 — the frontier has no AND-readiness yet);
-* capability-missing → blocked semantics (freezes the current "branch BLOCKED
-  but obligation still OPEN" gap until Phase 7.3 capability-audit fixes it).
+* no-actions → branch blocked (the residual "branch BLOCKED but obligation
+  OPEN" gap that the no_actions path keeps by design);
+* capability-missing → branch + obligation blocked (Phase 7.3 closes that gap
+  on the capability-audit path).
 
 Plus one regression guard: assembly failure must surface its ``errors``
 (previously dropped on ``assembly_failed``).
@@ -260,9 +262,16 @@ class StructuredEndToEndContractTests(unittest.TestCase):
         self.assertEqual(summary["assembly"]["executed"], False)
         self.assertEqual(summary["selected_branches"], [])
 
-    # --- scenario 3: capability-missing → blocked semantics ------------------
+    # --- scenario 3: no-actions → branch-blocked (residual gap) ---------------
 
-    def test_capability_missing_blocked_semantics(self) -> None:
+    def test_no_actions_blocks_branch_leaving_obligation_open(self) -> None:
+        # A generator that produces no candidates blocks the *branch* but, by
+        # design, not the obligation: lack of candidates is not a mechanical
+        # capability gap (the generator may simply have nothing to say). This
+        # is the residual "branch BLOCKED but obligation OPEN" case the result
+        # contract surfaces via ``blocked_branch_obligation_ids``. The
+        # capability-audit path (Phase 7.3) closes its own copy of this gap by
+        # blocking the obligation too — see test_structured_controller.py.
         with tempfile.TemporaryDirectory() as tmp:
             result = self._controller(tmp, _QueueGenerator([])).run(_task())
 
@@ -276,15 +285,15 @@ class StructuredEndToEndContractTests(unittest.TestCase):
         branches = result.metadata["workspace"]["branches"]
         self.assertEqual(branches[0]["status"], "blocked")
 
-        # Obligation-layer fact: still OPEN. Phase 7.0 freezes this gap;
-        # Phase 7.3 capability-audit will flip the obligation to BLOCKED too.
+        # Obligation-layer fact: still OPEN. The no_actions path keeps this
+        # gap by design; only capability-audit blocks the obligation.
         self.assertEqual(len(summary["open_obligations"]), 1)
         self.assertEqual(summary["open_obligations"][0]["obligation_id"], "sample")
         self.assertEqual(summary["open_obligations"][0]["status"], "open")
         self.assertEqual(summary["open_obligations"][0]["has_accepted_branch"], False)
         self.assertEqual(summary["blocked_obligations"], [])
 
-        # The gap is surfaced explicitly.
+        # The residual gap is surfaced explicitly.
         self.assertIn("sample", summary["blocked_branch_obligation_ids"])
 
         # Assembly never ran.
@@ -295,6 +304,87 @@ class StructuredEndToEndContractTests(unittest.TestCase):
         self.assertEqual(summary["selected_branches"], [])
         self.assertEqual(len(summary["preserved_alternatives"]), 1)
         self.assertEqual(summary["preserved_alternatives"][0]["status"], "blocked")
+
+    # --- scenario 3b: capability-missing → branch + obligation blocked -------
+
+    def test_capability_missing_blocks_obligation(self) -> None:
+        # Phase 7.3: a capability probe the environment cannot supply blocks
+        # the route — branch AND obligation go BLOCKED together, so the
+        # result-summary gap collapses to empty and ``blocked_obligations``
+        # fills. This is the closed-loop counterpart of the no_actions case.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace.obligation import ObligationStatus
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            StructuredActionProposal,
+        )
+
+        class CapabilityProbeGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe tactic#simp",
+                        ),
+                        payload=CapabilityTestPayload(
+                            requirement="tactic#simp",
+                            signature="by simp",
+                        ),
+                    ),
+                )
+
+        class MissingCapabilityAdapter(_FakeAdapter):
+            def check(self, candidate_file, budget_slice):
+                self.checked_files.append(candidate_file)
+                return CheckResult(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    raw_output="unknown identifier 'simp'",
+                    candidate_file=candidate_file,
+                    parsed_feedback=ParsedFeedback(
+                        category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                        message="unknown identifier 'simp'",
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                CapabilityProbeGenerator(),  # type: ignore[arg-type]
+                adapter=MissingCapabilityAdapter(),
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+
+        summary = result.metadata["result_summary"]
+        # Both layers agree: branch blocked, obligation blocked.
+        branches = result.metadata["workspace"]["branches"]
+        self.assertEqual(branches[0]["status"], "blocked")
+        self.assertEqual(len(summary["blocked_obligations"]), 1)
+        self.assertEqual(
+            summary["blocked_obligations"][0]["obligation_id"], "sample"
+        )
+        self.assertEqual(
+            summary["blocked_obligations"][0]["status"],
+            ObligationStatus.BLOCKED.value,
+        )
+        self.assertEqual(summary["open_obligations"], [])
+        # The gap is closed on this path.
+        self.assertEqual(summary["blocked_branch_obligation_ids"], [])
+        # Assembly never ran.
+        self.assertEqual(summary["assembly"]["executed"], False)
+        self.assertNotIn("assembly", result.metadata)
 
     # --- regression: assembly failure must surface its errors ----------------
 

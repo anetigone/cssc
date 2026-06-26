@@ -159,6 +159,25 @@ class StructuredControllerTests(unittest.TestCase):
         # Assembly consumed one extra check on top of the single attempt.
         self.assertEqual(result.metrics.budget_checks_used, 2)
 
+    def test_generation_metadata_carries_context_projection(self) -> None:
+        generator = QueueGenerator([["trivial"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, generator)
+            controller.run(_task())
+
+        # The controller derives the structured context projection in
+        # _generation_metadata and serializes it for the shared prompt renderer.
+        self.assertTrue(generator.requests)
+        projection = generator.requests[0].metadata["structured_projection"]
+        self.assertEqual(projection["branch_id"], "sample:root")
+        self.assertIsNotNone(projection["current_obligation"])
+        self.assertEqual(projection["current_obligation"]["obligation_id"], "sample")
+        # branch_obligation / verified_facts are derived from the same projection.
+        self.assertEqual(
+            generator.requests[0].metadata["branch_obligation"]["obligation_id"],
+            "sample",
+        )
+
     def test_budget_exhaustion_returns_unaccepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = self._controller(
@@ -305,6 +324,993 @@ class StructuredControllerTests(unittest.TestCase):
                     workspace=AttemptWorkspace(tmp),
                     config=ControllerConfig(execution_mode=ExecutionMode.MINIMAL),
                 )
+
+    def test_legacy_generator_finalizes_kind(self) -> None:
+        # A legacy ActionGenerator (ActionCandidate) is adapted; the controller
+        # finalizes IMPLEMENT on the first attempt of a branch and
+        # REPAIR_IMPLEMENTATION on the second (reproducing _pick_action).
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["fail"], ["trivial"]]),
+                budget=BudgetConfig(max_checks=8, max_model_calls=8),
+            )
+            result = controller.run(_task())
+
+        kinds = [att.edit.metadata["structured_action_kind"] for att in result.attempts]
+        self.assertEqual(kinds, ["implement", "repair_implementation"])
+
+    def test_native_structured_generator_is_not_re_wrapped(self) -> None:
+        # A native StructuredActionGenerator carries finalized IMPLEMENT
+        # proposals; _finalize_kind must be a no-op (no LEGACY_KIND_DEFERRED),
+        # and the controller must accept it without re-wrapping.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeImplementGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self.requests: list[ActionGenerationRequest] = []
+
+            def generate(self, request: ActionGenerationRequest):
+                self.requests.append(request)
+                action = SearchAction(
+                    kind=SearchActionKind.IMPLEMENT,
+                    target_branch_id="sample:root",
+                    allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                        SearchActionKind.IMPLEMENT
+                    ],
+                    rationale="native implement",
+                )
+                return (
+                    StructuredActionProposal(
+                        action=action,
+                        payload=ImplementPayload(proof_text="trivial"),
+                    ),
+                )
+
+        native = NativeImplementGenerator()
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, native)  # type: ignore[arg-type]
+            # Constructor adapted the generator — but a native generator
+            # declares _is_structured_generator, so it is used as-is.
+            self.assertIs(controller.action_generator, native)
+            result = controller.run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(
+            result.attempts[0].edit.metadata["structured_action_kind"], "implement"
+        )
+        # The skipped-proposals log stays empty: only IMPLEMENT was emitted.
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
+    def test_native_multi_candidate_actions_are_retargeted_to_materialized_branches(self) -> None:
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeMultiImplementGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                def proposal(proof_text: str) -> StructuredActionProposal:
+                    return StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="native implement",
+                        ),
+                        payload=ImplementPayload(proof_text=proof_text),
+                    )
+
+                return (proposal("fail"), proposal("trivial"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeMultiImplementGenerator(),  # type: ignore[arg-type]
+                max_candidates=2,
+                budget=BudgetConfig(max_checks=3, max_model_calls=1),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        for branch in result.metadata["workspace"]["branches"]:
+            last_action = branch.get("last_action")
+            if last_action is not None:
+                self.assertEqual(last_action["target_branch_id"], branch["branch_id"])
+
+    def test_native_decompose_executes_and_structures_the_workspace(self) -> None:
+        # Phase 7.4: a native StructuredActionGenerator emitting a DECOMPOSE
+        # proposal is executed (not skipped). The root obligation is split into
+        # a helper, the old root branch is superseded, and new branches are
+        # seeded for the helper and the new parent version. The decompose is
+        # recorded under ``decompose_records`` and never reaches
+        # ``skipped_proposals``.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            DecomposeChildSpec,
+            DecomposePayload,
+            StructuredActionProposal,
+        )
+
+        class NativeDecomposeGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self._fired = False
+
+            def generate(self, request: ActionGenerationRequest):
+                if self._fired:
+                    return ()
+                self._fired = True
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.DECOMPOSE,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.DECOMPOSE
+                            ],
+                            rationale="split first",
+                        ),
+                        payload=DecomposePayload(
+                            children=(
+                                DecomposeChildSpec(
+                                    child_id="helper",
+                                    statement="helper statement",
+                                ),
+                            )
+                        ),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeDecomposeGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=2),
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        branches = result.metadata["workspace"]["branches"]
+        # Old root branch (superseded) + new parent branch + one helper branch.
+        self.assertGreater(len(branches), 1)
+        branch_ids = [b["branch_id"] for b in branches]
+        self.assertTrue(
+            any(b["status"] == "superseded" and b["branch_id"] == "sample:root" for b in branches)
+        )
+        self.assertTrue(any("helper" in bid for bid in branch_ids))
+        # The decompose was executed, not skipped.
+        self.assertEqual(len(result.metadata["decompose_records"]), 1)
+        self.assertEqual(
+            result.metadata["decompose_records"][0]["children"][0]["child_id"],
+            "helper",
+        )
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
+    def test_multi_obligation_decompose_then_helpers_then_root_assembles(self) -> None:
+        # Phase 7.4 end-to-end: a native generator decomposes the root into a
+        # helper, the helper is implemented and accepted, the new parent version
+        # (now ready, its dependency closed) is implemented and accepted, and the
+        # final whole-source assembly passes. This is the AND-OR search closing.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            DecomposeChildSpec,
+            DecomposePayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        helper_statement = "lemma helper : True := by\n  {{proof}}\n"
+
+        class MultiObligationGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                branch_id = request.metadata.get("branch_id", "")
+                if branch_id == "sample:root":
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.DECOMPOSE,
+                                target_branch_id=branch_id,
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.DECOMPOSE
+                                ],
+                                rationale="split into helper",
+                            ),
+                            payload=DecomposePayload(
+                                children=(
+                                    DecomposeChildSpec(
+                                        child_id="helper",
+                                        statement=helper_statement,
+                                    ),
+                                )
+                            ),
+                        ),
+                    )
+                # Helper branch and new parent branch: implement with trivial.
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id=branch_id,
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="implement",
+                        ),
+                        payload=ImplementPayload(proof_text="trivial"),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                MultiObligationGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=6, max_model_calls=6),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.stop_reason, "accepted")
+        summary = result.metadata["result_summary"]
+        # Root + helper both accepted; nothing left open or blocked.
+        accepted_ids = {o["obligation_id"] for o in summary["accepted_obligations"]}
+        self.assertIn("sample", accepted_ids)
+        self.assertIn("helper", accepted_ids)
+        self.assertEqual(summary["open_obligations"], [])
+        self.assertEqual(summary["blocked_obligations"], [])
+        self.assertTrue(summary["assembly"]["executed"])
+        self.assertTrue(summary["assembly"]["accepted"])
+        # The helper fact carries its rendered declaration for parent reuse.
+        helper_facts = [
+            f for f in result.metadata["workspace"]["accepted_facts"]
+            if f["obligation_id"] == "helper"
+        ]
+        self.assertEqual(len(helper_facts), 1)
+        self.assertIn("lemma helper", helper_facts[0]["statement"])
+        self.assertEqual(helper_facts[0]["declaration_id"], "helper")
+
+    def test_capability_audit_blocks_route_when_capability_missing(self) -> None:
+        # Phase 7.3: a native generator proposes RUN_CAPABILITY_TEST. The audit
+        # renders the signature and checks it; an UNKNOWN_IDENTIFIER result
+        # blocks the branch AND the obligation, closes the result-summary gap,
+        # and the loop terminates without spending an IMPLEMENT attempt.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace.obligation import ObligationStatus
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            StructuredActionProposal,
+        )
+
+        class CapabilityProbeGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe tactic#simp",
+                        ),
+                        payload=CapabilityTestPayload(
+                            requirement="tactic#simp",
+                            signature="by simp",
+                        ),
+                    ),
+                )
+
+        class MissingCapabilityAdapter(StructuredFakeAdapter):
+            def check(self, candidate_file, budget_slice):
+                self.checked_files.append(candidate_file)
+                return CheckResult(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    raw_output="unknown identifier 'simp'",
+                    candidate_file=candidate_file,
+                    parsed_feedback=ParsedFeedback(
+                        category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                        message="unknown identifier 'simp'",
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                CapabilityProbeGenerator(),  # type: ignore[arg-type]
+                adapter=MissingCapabilityAdapter(),
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        # The capability attempt was recorded (1 check), no IMPLEMENT followed.
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(result.attempts[0].edit.action, "capability_test")
+
+        # The branch and obligation are blocked together — no gap.
+        branch = result.metadata["workspace"]["branches"][0]
+        self.assertEqual(branch["status"], "blocked")
+        obligation = result.metadata["workspace"]["obligation_graph"]["obligations"]
+        self.assertEqual(obligation[0]["status"], ObligationStatus.BLOCKED.value)
+
+        summary = result.metadata["result_summary"]
+        self.assertEqual(len(summary["blocked_obligations"]), 1)
+        self.assertEqual(
+            summary["blocked_obligations"][0]["obligation_id"], "sample"
+        )
+        self.assertEqual(summary["blocked_branch_obligation_ids"], [])
+
+    def test_blocked_helper_obligation_yields_blocked_stop_reason(self) -> None:
+        # Phase 7.5: when a decomposed helper is blocked (capability missing),
+        # the parent can never become ready, the frontier drains, and the run
+        # terminates with stop_reason "blocked" — distinguishing a mechanical
+        # dead-end from a run that merely exhausted ready work.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            DecomposeChildSpec,
+            DecomposePayload,
+            StructuredActionProposal,
+        )
+
+        class HelperBlockingGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                branch_id = request.metadata.get("branch_id", "")
+                if branch_id == "sample:root":
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.DECOMPOSE,
+                                target_branch_id=branch_id,
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.DECOMPOSE
+                                ],
+                                rationale="split into helper",
+                            ),
+                            payload=DecomposePayload(
+                                children=(
+                                    DecomposeChildSpec(
+                                        child_id="helper",
+                                        statement="lemma helper : True := by\n  {{proof}}\n",
+                                    ),
+                                )
+                            ),
+                        ),
+                    )
+                # Helper branch: probe a capability the environment lacks.
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id=branch_id,
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe tactic#simp",
+                        ),
+                        payload=CapabilityTestPayload(
+                            requirement="tactic#simp",
+                            signature="by simp",
+                        ),
+                    ),
+                )
+
+        class MissingCapabilityAdapter(StructuredFakeAdapter):
+            def check(self, candidate_file, budget_slice):
+                self.checked_files.append(candidate_file)
+                return CheckResult(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    raw_output="unknown identifier 'simp'",
+                    candidate_file=candidate_file,
+                    parsed_feedback=ParsedFeedback(
+                        category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                        message="unknown identifier 'simp'",
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                HelperBlockingGenerator(),  # type: ignore[arg-type]
+                adapter=MissingCapabilityAdapter(),
+                budget=BudgetConfig(max_checks=6, max_model_calls=6),
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.stop_reason, "blocked")
+        summary = result.metadata["result_summary"]
+        self.assertTrue(any(o["obligation_id"] == "helper" for o in summary["blocked_obligations"]))
+        # Phase 7.7: the blocked helper propagates transitively — the root
+        # obligation (which depends on it) is blocked too, and the run's
+        # terminal workspace status is BLOCKED rather than the in-progress
+        # SEARCHING the loop carried.
+        self.assertTrue(
+            any(o["obligation_id"] == "sample" for o in summary["blocked_obligations"])
+        )
+        self.assertEqual(summary["workspace_status"], "blocked")
+        # RUN_CAPABILITY_TEST is now executed, not skipped.
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
+    def test_capability_audit_available_keeps_route_active(self) -> None:
+        # When the probe is accepted the route stays ACTIVE; the generator then
+        # runs out of candidates and the branch blocks via no_actions (the
+        # capability audit itself never blocks on an available capability).
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            StructuredActionProposal,
+        )
+
+        class CapabilityThenEmptyGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, request: ActionGenerationRequest):
+                self.calls += 1
+                if self.calls == 1:
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.RUN_CAPABILITY_TEST
+                                ],
+                                rationale="probe",
+                            ),
+                            payload=CapabilityTestPayload(
+                                requirement="trivial",
+                                signature="by trivial",
+                            ),
+                        ),
+                    )
+                return ()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                CapabilityThenEmptyGenerator(),  # type: ignore[arg-type]
+            ).run(_task())
+
+        self.assertFalse(result.accepted)
+        # First attempt is the accepted capability probe; the route stayed
+        # ACTIVE afterwards, so a second iteration ran and produced no_actions.
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(result.attempts[0].edit.action, "capability_test")
+        # An accepted capability does NOT register a verified fact.
+        self.assertEqual(
+            len(result.metadata["workspace"]["accepted_facts"]), 0
+        )
+        observations = result.metadata["workspace"]["branches"][0]["observations"]
+        self.assertTrue(any(o["source"] == "capability_audit" for o in observations))
+
+    def test_capability_audit_does_not_consume_implement_candidate_limit(self) -> None:
+        # Default max_candidates_per_model_call is 1 for proof candidates, but
+        # capability audits are probes, not proof candidates. A batch containing
+        # (RUN_CAPABILITY_TEST, IMPLEMENT) must execute both: first the audit,
+        # then the single allowed implementation candidate.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class CapabilityThenImplementGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request: ActionGenerationRequest):
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe trivial",
+                        ),
+                        payload=CapabilityTestPayload(
+                            requirement="trivial",
+                            signature="by trivial",
+                        ),
+                    ),
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="prove after probe",
+                        ),
+                        payload=ImplementPayload(proof_text="trivial"),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                CapabilityThenImplementGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=1),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual([attempt.edit.action for attempt in result.attempts], [
+            "capability_test",
+            "model_complete",
+        ])
+        self.assertEqual(result.metrics.budget_checks_used, 3)
+
+    def test_native_propose_argument_executes_and_validates(self) -> None:
+        # Phase 7.6: a native generator emitting a PROPOSE_ARGUMENT proposal is
+        # executed (not skipped). The branch carries the new argument step +
+        # alignment, the workspace validates, and the edit is recorded under
+        # argument_records rather than skipped_proposals.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            AlignmentSpec,
+            ArgumentStepSpec,
+            ImplementPayload,
+            ProposeArgumentPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeArgumentGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self._fired = False
+
+            def generate(self, request: ActionGenerationRequest):
+                if self._fired:
+                    # Then accept with a proof body so the run terminates.
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="accept",
+                            ),
+                            payload=ImplementPayload(proof_text="trivial"),
+                        ),
+                    )
+                self._fired = True
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.PROPOSE_ARGUMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.PROPOSE_ARGUMENT
+                            ],
+                            rationale="add an inductive step",
+                        ),
+                        payload=ProposeArgumentPayload(
+                            steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+                            alignments=(
+                                AlignmentSpec(
+                                    argument_step_id="s1", relation="unaligned"
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeArgumentGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=3),
+            ).run(_task())
+
+        workspace = result.metadata["workspace"]
+        # workspace validate is implicit in serialization; assert the step landed
+        root_branch = next(
+            b for b in workspace["branches"] if b["branch_id"] == "sample:root"
+        )
+        step_ids = [s["step_id"] for s in root_branch["argument"]["steps"]]
+        self.assertIn("s1", step_ids)
+        self.assertEqual(root_branch["alignment"][0]["relation"], "unaligned")
+        self.assertEqual(len(result.metadata["argument_records"]), 1)
+        self.assertEqual(
+            result.metadata["argument_records"][0]["kind"], "propose_argument"
+        )
+        self.assertEqual(result.metadata["skipped_proposals"], ())
+
+    def test_native_change_representation_forks_branch(self) -> None:
+        # Phase 7.6: CHANGE_REPRESENTATION forks a <parent>.rep0 branch carrying
+        # the payload's argument layer and supersedes the parent.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            AlignmentSpec,
+            ArgumentStepSpec,
+            ChangeRepresentationPayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class NativeRepresentationGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self._fired = False
+
+            def generate(self, request: ActionGenerationRequest):
+                if self._fired:
+                    # A failing IMPLEMENT on the forked child keeps it ACTIVE so
+                    # the fork structure is observable (no accept masking it).
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                        ),
+                    )
+                self._fired = True
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.CHANGE_REPRESENTATION,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.CHANGE_REPRESENTATION
+                            ],
+                            rationale="switch to cases",
+                        ),
+                        payload=ChangeRepresentationPayload(
+                            argument=(
+                                ArgumentStepSpec(step_id="r1", claim="by cases"),
+                            ),
+                            alignments=(
+                                AlignmentSpec(
+                                    argument_step_id="r1", relation="unaligned"
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                NativeRepresentationGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=3, max_model_calls=3),
+            ).run(_task())
+
+        branches = result.metadata["workspace"]["branches"]
+        parent = next(b for b in branches if b["branch_id"] == "sample:root")
+        self.assertEqual(parent["status"], "superseded")
+        child = next(
+            b for b in branches if b["branch_id"] == "sample:root.rep0"
+        )
+        self.assertEqual(child["status"], "active")
+        self.assertEqual(
+            [s["step_id"] for s in child["argument"]["steps"]], ["r1"]
+        )
+        self.assertEqual(len(result.metadata["representation_records"]), 1)
+
+    def test_implement_failure_records_competing_hypotheses(self) -> None:
+        # Phase 7.6: after a failing IMPLEMENT the generator emits competing
+        # FailureHypotheses (carried on a proposal's metadata). The controller
+        # folds them onto the branch after the failure's observations are
+        # present, so they appear in the workspace and projection.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace import (
+            FailureHypothesis,
+            FailureKind,
+        )
+        from agent.search.structured.proposal import (
+            FAILURE_HYPOTHESES_KEY,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class FailingThenHypothesisGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self._phase = 0
+
+            def generate(self, request: ActionGenerationRequest):
+                self._phase += 1
+                if self._phase == 1:
+                    # Failing implementation (non-trivial, non-stuck -> summary
+                    # observation at attempt:0).
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail first",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                        ),
+                    )
+                # Second call: read the projected observation id and attach a
+                # hypothesis citing it. Branch has no argument steps yet, so
+                # affected_step_ids is empty (allowed).
+                projection = request.metadata["structured_projection"]
+                obs_id = projection["observations"][0]["observation_id"]
+                hypothesis = FailureHypothesis(
+                    hypothesis_id="h1",
+                    kind=FailureKind.ARGUMENT_GAP,
+                    confidence=0.6,
+                    evidence_ids=(obs_id,),
+                )
+                metadata = {FAILURE_HYPOTHESES_KEY: [hypothesis]}
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="retry",
+                        ),
+                        payload=ImplementPayload(proof_text="trivial"),
+                        metadata=metadata,
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                FailingThenHypothesisGenerator(),  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=4, max_model_calls=4),
+            ).run(_task())
+
+        root_branch = next(
+            b
+            for b in result.metadata["workspace"]["branches"]
+            if b["branch_id"] == "sample:root"
+        )
+        hyp_ids = [h["hypothesis_id"] for h in root_branch["failure_hypotheses"]]
+        self.assertIn("h1", hyp_ids)
+
+    def test_select_test_action_promotes_lowest_cost(self) -> None:
+        # Phase 7.6: _select_test_action ranks structural probes (capability
+        # audit) cheaper than a full IMPLEMENT, even when the IMPLEMENT comes
+        # from a higher-confidence hypothesis.
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace import (
+            FailureHypothesis,
+            FailureKind,
+            Observation,
+            ObservationSource,
+            ProofBranch,
+        )
+        from agent.search.structured.controller import StructuredController  # noqa: F401
+
+        obs = Observation(
+            observation_id="attempt:0:summary",
+            source=ObservationSource.CHECKER,
+            category="unsolved_goals",
+            message="unsolved",
+            raw_evidence_ref="attempt:0",
+        )
+        branch = ProofBranch(
+            branch_id="sample:root",
+            obligation_id="sample",
+            obligation_version=1,
+            observations=(obs,),
+            failure_hypotheses=(
+                # High-confidence hypothesis proposing an IMPLEMENT (expensive).
+                FailureHypothesis(
+                    hypothesis_id="h1",
+                    kind=FailureKind.IMPLEMENTATION_DEFECT,
+                    confidence=0.9,
+                    evidence_ids=("attempt:0:summary",),
+                    proposed_tests=(
+                        SearchAction(
+                            kind=SearchActionKind.IMPLEMENT,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="reimplement",
+                        ),
+                    ),
+                ),
+                # Low-confidence hypothesis proposing a capability probe (cheap).
+                FailureHypothesis(
+                    hypothesis_id="h2",
+                    kind=FailureKind.CAPABILITY_MISSING,
+                    confidence=0.3,
+                    evidence_ids=("attempt:0:summary",),
+                    proposed_tests=(
+                        SearchAction(
+                            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                            target_branch_id="sample:root",
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        controller = StructuredController.__new__(StructuredController)
+        selected = controller._select_test_action(branch)
+        assert selected is not None
+        self.assertEqual(selected.kind, SearchActionKind.RUN_CAPABILITY_TEST)
+
+        # With only the expensive hypothesis, the IMPLEMENT test is selected.
+        branch_expensive = ProofBranch(
+            branch_id="sample:root",
+            obligation_id="sample",
+            obligation_version=1,
+            observations=(obs,),
+            failure_hypotheses=branch.failure_hypotheses[:1],
+        )
+        selected2 = controller._select_test_action(branch_expensive)
+        assert selected2 is not None
+        self.assertEqual(selected2.kind, SearchActionKind.IMPLEMENT)
+
+    def test_selected_hypothesis_test_is_exposed_to_next_generation(self) -> None:
+        from agent.proof_system.workspace.action import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.proof_system.workspace import (
+            FailureHypothesis,
+            FailureKind,
+        )
+        from agent.search.structured.proposal import (
+            FAILURE_HYPOTHESES_KEY,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class HypothesisThenInspectGenerator:
+            _is_structured_generator = True
+
+            def __init__(self) -> None:
+                self.requests: list[ActionGenerationRequest] = []
+
+            def generate(self, request: ActionGenerationRequest):
+                self.requests.append(request)
+                if len(self.requests) == 1:
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail first",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                        ),
+                    )
+                if len(self.requests) == 2:
+                    projection = request.metadata["structured_projection"]
+                    obs_id = projection["observations"][0]["observation_id"]
+                    test_action = SearchAction(
+                        kind=SearchActionKind.RUN_CAPABILITY_TEST,
+                        target_branch_id="sample:root",
+                        allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                            SearchActionKind.RUN_CAPABILITY_TEST
+                        ],
+                        rationale="probe capability",
+                    )
+                    hypothesis = FailureHypothesis(
+                        hypothesis_id="h1",
+                        kind=FailureKind.CAPABILITY_MISSING,
+                        confidence=0.6,
+                        evidence_ids=(obs_id,),
+                        proposed_tests=(test_action,),
+                    )
+                    return (
+                        StructuredActionProposal(
+                            action=SearchAction(
+                                kind=SearchActionKind.IMPLEMENT,
+                                target_branch_id="sample:root",
+                                allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                    SearchActionKind.IMPLEMENT
+                                ],
+                                rationale="fail while attaching hypothesis",
+                            ),
+                            payload=ImplementPayload(proof_text="bogus"),
+                            metadata={FAILURE_HYPOTHESES_KEY: [hypothesis]},
+                        ),
+                    )
+                return ()
+
+        generator = HypothesisThenInspectGenerator()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._controller(
+                tmp,
+                generator,  # type: ignore[arg-type]
+                budget=BudgetConfig(max_checks=5, max_model_calls=5),
+            ).run(_task())
+
+        self.assertGreaterEqual(len(generator.requests), 3)
+        selected = generator.requests[2].metadata["selected_test_action"]
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["kind"], SearchActionKind.RUN_CAPABILITY_TEST.value)
 
 
 if __name__ == "__main__":

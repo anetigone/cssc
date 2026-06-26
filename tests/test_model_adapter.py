@@ -14,6 +14,7 @@ from agent.agents import (
     FunctionTool,
     ModelAdapterError,
 )
+from agent.agents.context import ChatContextSummarizer, SummarizationRequest
 from agent.agents.openai import UrllibChatTransport, chat_completions_url
 from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 
@@ -209,6 +210,72 @@ class ChatActionGeneratorTests(unittest.TestCase):
                             "statement": "lemma helper : True := rfl",
                         },
                     ),
+                    "structured_projection": {
+                        "workspace_id": "ws",
+                        "workspace_version": 3,
+                        "branch_id": "sample:root",
+                        "root": None,
+                        "current_obligation": {
+                            "obligation_id": "sample",
+                            "version": 1,
+                            "title": "",
+                            "statement_nl": "Show the sample theorem holds.",
+                            "lean_statement": "theorem sample : True := by",
+                            "is_root": True,
+                        },
+                        "dependency_facts": (
+                            {
+                                "obligation_id": "helper",
+                                "obligation_version": 1,
+                                "statement": "lemma helper : True := rfl",
+                                "has_accepted_fact": True,
+                            },
+                        ),
+                        "accepted_facts": (
+                            {
+                                "obligation_id": "helper",
+                                "statement": "lemma helper : True := rfl",
+                            },
+                        ),
+                        "argument_steps": (
+                            {
+                                "step_id": "s1",
+                                "claim": "apply the helper lemma",
+                                "justification": "",
+                                "depends_on": [],
+                                "alignment_relation": "implements",
+                                "aligned_declaration": "helper",
+                            },
+                        ),
+                        "lean_artifact_proof_body": "exact trivial",
+                        "observations": (
+                            {
+                                "observation_id": "attempt:0:goal:0",
+                                "source": "checker",
+                                "category": "unsolved_goals",
+                                "message": "unsolved goals",
+                                "goal_fingerprint": "fp1",
+                                "raw_evidence_ref": "attempt:0",
+                            },
+                        ),
+                        "failure_hypotheses": (
+                            {
+                                "hypothesis_id": "h1",
+                                "kind": "implementation_defect",
+                                "confidence": 0.6,
+                                "evidence_ids": ["attempt:0:goal:0"],
+                                "affected_step_ids": ["s1"],
+                            },
+                        ),
+                        "sibling_branches": (
+                            {
+                                "branch_id": "sample:repair1",
+                                "status": "dormant",
+                                "has_artifact": True,
+                                "observation_count": 2,
+                            },
+                        ),
+                    },
                 },
             )
         )
@@ -220,6 +287,25 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertIn("exact trivial", prompt)
         # Accepted facts from other branches are surfaced for reuse.
         self.assertIn("lemma helper : True := rfl", prompt)
+        # The projection surfaces the obligation version.
+        self.assertIn("Current obligation: sample v1", prompt)
+        # Dependency facts reuse the verified conclusion.
+        self.assertIn(
+            "Dependency facts (verified conclusions this proof may rely on):",
+            prompt,
+        )
+        # Argument steps carry the goal↔step alignment relation.
+        self.assertIn("apply the helper lemma [implements]", prompt)
+        # Deduplicated observations are rendered.
+        self.assertIn("Observations (deduplicated):", prompt)
+        self.assertIn("[checker:unsolved_goals] unsolved goals", prompt)
+        # Competing failure hypotheses are surfaced.
+        self.assertIn("Competing failure hypotheses:", prompt)
+        # Sibling strategies on the same obligation appear.
+        self.assertIn("Other strategies on this obligation:", prompt)
+        self.assertIn(
+            "sample:repair1: dormant (2 observations, artifact)", prompt
+        )
 
     def test_removes_exploration_commands_from_final_candidate(self) -> None:
         transport = RecordingTransport(
@@ -481,6 +567,38 @@ class ChatActionGeneratorTests(unittest.TestCase):
         prompt = transport.calls[0][2]["messages"][1]["content"]
         self.assertNotIn("Retrieved Lean snippets:", prompt)
         self.assertNotIn("Nat.add_comm", prompt)
+
+    def test_context_summarizer_renders_projected_observations(self) -> None:
+        summarizer = ChatContextSummarizer(ChatConfig(api_key="key", model="model"))
+
+        prompt = summarizer._build_user_prompt(
+            SummarizationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=2,
+                previous_attempt={
+                    "proof_text": "exact badLemma",
+                    "observations": [
+                        {
+                            "category": "unsolved_goals",
+                            "message": "unknown identifier badLemma",
+                            "goal_fingerprint": "fp-projected",
+                        }
+                    ],
+                },
+                feedback_history=(
+                    ParsedFeedback(
+                        category=DiagnosticCategory.UNKNOWN,
+                        message="raw fallback feedback",
+                    ),
+                ),
+            )
+        )
+
+        self.assertIn("Projected checker observations:", prompt)
+        self.assertIn(
+            "- unsolved_goals: goal=fp-projected: unknown identifier badLemma",
+            prompt,
+        )
 
     def test_no_summary_keeps_all_retrieved_snippets(self) -> None:
         from agent.retrieval import RetrievalResult

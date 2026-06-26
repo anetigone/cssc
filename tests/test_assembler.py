@@ -21,6 +21,7 @@ from agent.proof_system.base import (
     ProofTask,
 )
 from agent.proof_system.workspace import (
+    ArtifactKind,
     ObligationGraph,
     ObligationStatus,
     ProofBranch,
@@ -282,6 +283,110 @@ class ArtifactAssemblerTests(unittest.TestCase):
 
         self.assertTrue(result.accepted)
         self.assertFalse(adapter.checked_paths[0].exists())
+
+
+def _accepted_multi_obligation_workspace(task: ProofTask) -> ProofWorkspace:
+    """Root + two accepted helpers, root depending on both (all ACCEPTED)."""
+    workspace = initialize_from_task(task)
+    root = ProofObligation(
+        obligation_id=task.task_id,
+        version=2,
+        lean_statement=task.source_template,
+        dependency_ids=(f"{task.task_id}.h1", f"{task.task_id}.h2"),
+        status=ObligationStatus.ACCEPTED,
+    )
+    root_v1 = ProofObligation(
+        obligation_id=task.task_id,
+        version=1,
+        lean_statement=task.source_template,
+        status=ObligationStatus.SUPERSEDED,
+    )
+    helpers = tuple(
+        ProofObligation(
+            obligation_id=f"{task.task_id}.{suffix}",
+            version=1,
+            lean_statement=f"lemma {suffix} : True := by trivial",
+            status=ObligationStatus.ACCEPTED,
+        )
+        for suffix in ("h1", "h2")
+    )
+    graph = ObligationGraph(
+        obligations=(root_v1, root, *helpers),
+        root_obligation_id=task.task_id,
+    )
+    from dataclasses import replace
+
+    return replace(
+        workspace, obligation_graph=graph, status=WorkspaceStatus.ASSEMBLING
+    )
+
+
+class ArtifactAssemblerMultiObligationTests(unittest.TestCase):
+    """Phase 7.4: helper declarations render before the root proof body."""
+
+    def test_helpers_injected_before_root_and_root_body_in_hole_once(self) -> None:
+        task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
+        workspace = _accepted_multi_obligation_workspace(task)
+        artifacts = {
+            "demo": LeanArtifact(
+                source="trivial",
+                obligation_id="demo",
+                obligation_version=2,
+                kind=ArtifactKind.PROOF_BODY,
+            ),
+            "demo.h1": LeanArtifact(
+                source="lemma h1 : True := by trivial",
+                obligation_id="demo.h1",
+                obligation_version=1,
+                kind=ArtifactKind.DECLARATION,
+            ),
+            "demo.h2": LeanArtifact(
+                source="lemma h2 : True := by trivial",
+                obligation_id="demo.h2",
+                obligation_version=1,
+                kind=ArtifactKind.DECLARATION,
+            ),
+        }
+        adapter = _AcceptIfContainsAdapter()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ArtifactAssembler().assemble(
+                workspace,
+                artifacts,
+                adapter=adapter,
+                task=task,
+            )
+
+        self.assertTrue(result.accepted)
+        source = adapter.checked_sources[0]
+        # Root proof body fills the hole exactly once.
+        self.assertEqual(source.count("theorem demo : True := by"), 1)
+        # Both helper declarations appear before the root declaration.
+        h1_pos = source.index("lemma h1")
+        h2_pos = source.index("lemma h2")
+        root_pos = source.index("theorem demo")
+        self.assertLess(h1_pos, root_pos)
+        self.assertLess(h2_pos, root_pos)
+
+    def test_single_root_assembly_unchanged_without_helpers(self) -> None:
+        # Baseline regression: a single root with no helpers renders exactly as
+        # before 7.4 (root body in the hole, no preamble injection).
+        task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")
+        workspace = _accepted_root_workspace(task)
+        artifacts = {
+            task.task_id: LeanArtifact(
+                source="trivial",
+                obligation_id=task.task_id,
+                obligation_version=1,
+            )
+        }
+        adapter = _AcceptIfContainsAdapter()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ArtifactAssembler().assemble(
+                workspace, artifacts, adapter=adapter, task=task
+            )
+        self.assertTrue(result.accepted)
+        self.assertEqual(adapter.checked_sources[0].count("theorem demo"), 1)
 
 
 if __name__ == "__main__":

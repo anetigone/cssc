@@ -184,11 +184,17 @@ class ProofWorkspace:
         source_attempt_index: int,
         check_result: CheckResult,
         safety_accepted: bool,
+        declaration_id: str | None = None,
+        artifact_source: str | None = None,
     ) -> ProofWorkspace:
         """Mark an obligation ACCEPTED and record a provenance-carrying fact.
 
         The fact is pinned to the obligation's current version and may only be
         registered from a checker-accepted, safety-accepted attempt.
+        ``declaration_id`` / ``artifact_source`` are optional reuse provenance:
+        they let a dependent obligation's prompt refer to the helper by its Lean
+        name and show its declaration. Both default to ``None`` so the
+        single-root baseline (which has no helpers) is unchanged.
         """
         graph = self.obligation_graph
         obligation = graph.by_id(obligation_id)
@@ -218,6 +224,8 @@ class ProofWorkspace:
             source_attempt_index=source_attempt_index,
             checker_category=check_result.category.value,
             safety_accepted=True,
+            declaration_id=declaration_id,
+            artifact_source=artifact_source,
         )
         accepted_facts = (*self.accepted_facts, fact)
         return self.successor(

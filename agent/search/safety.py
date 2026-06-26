@@ -79,11 +79,13 @@ class StatementSafetyReviewer:
 
         reasons: list[str] = []
 
-        statement_reason = self._statement_preservation_reason(task, candidate_source)
+        scanned_candidate = _strip_lean_comments_and_strings(candidate_source)
+        statement_reason = self._statement_preservation_reason(
+            task, scanned_candidate
+        )
         if statement_reason is not None:
             reasons.append(statement_reason)
 
-        scanned_candidate = _strip_lean_comments_and_strings(candidate_source)
         reasons.extend(self._shortcut_reasons(scanned_candidate))
         reasons.extend(self._axiom_reasons(task, scanned_candidate))
 
@@ -108,10 +110,12 @@ class StatementSafetyReviewer:
     ) -> str | None:
         """Detect a rewritten statement header.
 
-        The task template is split at the editable hole. Everything before the
-        hole — imports, declaration keyword, theorem/lemma signature — must be
-        preserved verbatim in the rendered candidate. Any drift there means the
-        model changed what it was supposed to prove.
+        The task template is split at the editable hole. The root declaration
+        prefix (declaration keyword, theorem/lemma signature, and ``:= by``)
+        must appear verbatim in executable Lean code. A structured assembly may
+        insert helper declarations between leading preamble directives
+        (``import`` / ``open`` / ``set_option``) and the root, so those preamble
+        lines are checked separately at the start of the candidate.
         """
         hole_index = task.source_template.find(task.hole_marker)
         if hole_index < 0:
@@ -122,7 +126,14 @@ class StatementSafetyReviewer:
         prefix = prefix.rstrip()
         if not prefix:
             return None
-        if not candidate_source.rstrip().startswith(prefix):
+        preamble, declaration_prefix = _split_leading_preamble(prefix)
+        candidate = candidate_source.rstrip()
+        if preamble and not candidate.startswith(preamble.rstrip()):
+            return "statement_not_preserved"
+        fixed_declaration = declaration_prefix.strip()
+        if fixed_declaration and fixed_declaration not in candidate:
+            return "statement_not_preserved"
+        if not fixed_declaration and prefix not in candidate:
             return "statement_not_preserved"
         return None
 
@@ -149,6 +160,29 @@ class StatementSafetyReviewer:
 
 def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+def _split_leading_preamble(prefix: str) -> tuple[str, str]:
+    """Return leading Lean preamble lines and the remaining declaration prefix."""
+    lines = prefix.splitlines(keepends=True)
+    index = 0
+    preamble: list[str] = []
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            preamble.append(lines[index])
+            index += 1
+            continue
+        if (
+            stripped.startswith("import ")
+            or stripped.startswith("open ")
+            or stripped.startswith("set_option ")
+        ):
+            preamble.append(lines[index])
+            index += 1
+            continue
+        break
+    return "".join(preamble).rstrip(), "".join(lines[index:])
 
 
 def _strip_lean_comments_and_strings(source: str) -> str:

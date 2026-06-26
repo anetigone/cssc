@@ -11,8 +11,12 @@ from agent.proof_system.base import (
     ProofTask,
 )
 from agent.proof_system.workspace import (
+    ArgumentStep,
     BranchStatus,
     DEFAULT_ALLOWED_MUTATIONS,
+    FailureHypothesis,
+    FailureKind,
+    ObligationStatus,
     ProofBranch,
     SearchAction,
     SearchActionKind,
@@ -23,6 +27,15 @@ from agent.search.structured.reducer import (
     REPAIR_THRESHOLD,
     StructuredActionResult,
     apply,
+    apply_argument,
+    apply_change_representation,
+    apply_decompose,
+    apply_failure_hypotheses,
+)
+from agent.search.structured.proposal import (
+    AlignmentSpec,
+    ArgumentStepSpec,
+    DecomposeChildSpec,
 )
 
 IMPLEMENT_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.IMPLEMENT]
@@ -286,6 +299,1012 @@ class ReducerImmutabilityTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result, workspace)
+
+
+CAPABILITY_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.RUN_CAPABILITY_TEST]
+
+
+def _capability_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.RUN_CAPABILITY_TEST,
+        target_branch_id=branch_id,
+        allowed_mutations=CAPABILITY_MUTATIONS,
+        rationale="probe tactic#simp availability",
+    )
+
+
+def _check_result(
+    *,
+    accepted: bool,
+    category: DiagnosticCategory,
+    message: str = "",
+) -> CheckResult:
+    feedback = ParsedFeedback(category=category, message=message)
+    return CheckResult(
+        accepted=accepted,
+        category=category,
+        raw_output=message,
+        parsed_feedback=feedback,
+    )
+
+
+class ReducerCapabilityAuditTests(unittest.TestCase):
+    """Phase 7.3: RUN_CAPABILITY_TEST folds into an observation and may block."""
+
+    def test_missing_capability_blocks_branch_and_obligation(self) -> None:
+        workspace = _seed_workspace()
+        original = workspace
+        action = _capability_action()
+
+        workspace = apply(
+            workspace,
+            action,
+            _result(
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    message="unknown identifier 'simp'",
+                ),
+                attempt_index=2,
+            ),
+        )
+
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.status, BranchStatus.BLOCKED)
+        self.assertIsNone(branch.lean_artifact)
+        self.assertEqual(branch.last_action, action)
+
+        # The obligation is blocked together with the branch — no gap.
+        obligation = workspace.obligation_graph.by_id("sample")
+        assert obligation is not None
+        self.assertEqual(obligation.status, ObligationStatus.BLOCKED)
+
+        # A capability-audit observation is recorded with the right source.
+        cap_obs = [
+            o for o in branch.observations
+            if o.source.value == "capability_audit"
+        ]
+        self.assertEqual(len(cap_obs), 1)
+        self.assertEqual(cap_obs[0].category, "unknown_identifier")
+        self.assertEqual(cap_obs[0].raw_evidence_ref, "capability:2")
+        self.assertIn("simp", cap_obs[0].message)
+
+        # Immutability: the input workspace is untouched.
+        self.assertNotEqual(workspace.version, original.version)
+
+    def test_available_capability_stays_active_with_observation(self) -> None:
+        workspace = _seed_workspace()
+        action = _capability_action()
+
+        workspace = apply(
+            workspace,
+            action,
+            _result(
+                check_result=_check_result(
+                    accepted=True,
+                    category=DiagnosticCategory.PROOF_ACCEPTED,
+                    message="simp compiled",
+                ),
+                attempt_index=1,
+            ),
+        )
+
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.status, BranchStatus.ACTIVE)
+        # A capability probe being accepted does NOT register a verified fact —
+        # the proposition is not proven, only the tactic exists.
+        self.assertEqual(workspace.accepted_facts, ())
+        obligation = workspace.obligation_graph.by_id("sample")
+        assert obligation is not None
+        self.assertEqual(obligation.status, ObligationStatus.OPEN)
+
+        cap_obs = [
+            o for o in branch.observations
+            if o.source.value == "capability_audit"
+        ]
+        self.assertEqual(len(cap_obs), 1)
+        self.assertIn("available", cap_obs[0].message)
+
+    def test_non_missing_failure_does_not_block(self) -> None:
+        # UNSOLVED_GOALS is an implementation problem, not a missing capability:
+        # the audit records evidence but leaves the route open for IMPLEMENT.
+        workspace = _seed_workspace()
+        action = _capability_action()
+
+        workspace = apply(
+            workspace,
+            action,
+            _result(
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNSOLVED_GOALS,
+                    message="unsolved goals",
+                ),
+                attempt_index=0,
+            ),
+        )
+
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.status, BranchStatus.ACTIVE)
+        obligation = workspace.obligation_graph.by_id("sample")
+        assert obligation is not None
+        self.assertEqual(obligation.status, ObligationStatus.OPEN)
+        cap_obs = [
+            o for o in branch.observations
+            if o.source.value == "capability_audit"
+        ]
+        self.assertEqual(len(cap_obs), 1)
+
+    def test_missing_capability_does_not_mutate_input(self) -> None:
+        workspace = _seed_workspace()
+        snapshot_version = workspace.version
+        snapshot_obligation = workspace.obligation_graph.by_id("sample")
+        assert snapshot_obligation is not None
+        snapshot_obligation_status = snapshot_obligation.status
+
+        apply(
+            workspace,
+            _capability_action(),
+            _result(
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.INVALID_REFERENCE,
+                ),
+            ),
+        )
+
+        self.assertEqual(workspace.version, snapshot_version)
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            snapshot_obligation_status,
+        )
+
+
+def _decompose_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.DECOMPOSE,
+        target_branch_id=branch_id,
+        allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.DECOMPOSE],
+        rationale="decompose root into helpers",
+    )
+
+
+def _helpers() -> list[DecomposeChildSpec]:
+    return [
+        DecomposeChildSpec(
+            child_id="sample.helper1",
+            statement="lemma helper1 : True := by trivial",
+        ),
+        DecomposeChildSpec(
+            child_id="sample.helper2",
+            statement="lemma helper2 : True := by trivial",
+        ),
+    ]
+
+
+class ReducerDecomposeTests(unittest.TestCase):
+    def test_decompose_supersedes_parent_and_seeds_child_branches(self) -> None:
+        workspace = _seed_workspace()
+        original = workspace
+
+        workspace = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+
+        # The workspace validates immediately — the old parent-version branch
+        # must have been retired to SUPERSEDED in the same successor.
+        self.assertTrue(workspace.validate().ok)
+
+        # Old root branch retired; new parent-v2 branch + two child branches.
+        old_root = next(
+            b for b in workspace.branches if b.branch_id == "root-branch"
+        )
+        self.assertEqual(old_root.status, BranchStatus.SUPERSEDED)
+        new_parent_branches = [
+            b
+            for b in workspace.branches
+            if b.obligation_id == "sample" and b.status == BranchStatus.ACTIVE
+        ]
+        self.assertEqual(len(new_parent_branches), 1)
+        self.assertEqual(new_parent_branches[0].obligation_version, 2)
+        child_branches = sorted(
+            (b for b in workspace.branches if b.obligation_id.startswith("sample.helper")),
+            key=lambda b: b.branch_id,
+        )
+        self.assertEqual(len(child_branches), 2)
+        for child in child_branches:
+            self.assertEqual(child.status, BranchStatus.ACTIVE)
+            self.assertEqual(child.obligation_version, 1)
+
+        # The root obligation now depends on both helpers.
+        root = workspace.obligation_graph.by_id("sample")
+        assert root is not None
+        self.assertEqual(root.version, 2)
+        self.assertIn("sample.helper1", root.dependency_ids)
+        self.assertIn("sample.helper2", root.dependency_ids)
+
+        # Immutability.
+        self.assertIsNot(workspace, original)
+        self.assertGreater(workspace.version, original.version)
+
+    def test_decompose_no_op_on_empty_children(self) -> None:
+        workspace = _seed_workspace()
+        result = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=[],
+            parent_branch_id="root-branch",
+        )
+        self.assertIs(result, workspace)
+
+    def test_decompose_skips_stale_parent_version(self) -> None:
+        # Decompose once, then try to decompose the (now superseded) old branch
+        # again — it pins v1 while the current obligation is v2, so the second
+        # decompose is a no-op.
+        workspace = _seed_workspace()
+        workspace = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+        version_before = workspace.version
+        result = apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+        self.assertEqual(result.version, version_before)
+
+
+class ReducerArtifactContractTests(unittest.TestCase):
+    """Phase 7.4: root vs helper artifact kind and fact statement."""
+
+    def _decomposed_workspace(self):
+        workspace = _seed_workspace()
+        return apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=_helpers(),
+            parent_branch_id="root-branch",
+        )
+
+    def _accept_branch(
+        self,
+        workspace,
+        branch_id,
+        *,
+        proof_text="trivial",
+        source=None,
+    ):
+        return apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement",
+            ),
+            StructuredActionResult(
+                branch_id=branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text=proof_text,
+                source=source if source is not None else proof_text,
+                attempt_index=0,
+            ),
+        )
+
+    def test_helper_fact_statement_is_the_rendered_declaration(self) -> None:
+        workspace = self._decomposed_workspace()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        # The controller renders a helper as its full declaration (statement
+        # template with the proof body in the hole); the reducer mirrors that
+        # rendered source as the fact statement so a parent proof can reuse the
+        # helper by name. Here we pass the rendered declaration directly.
+        rendered = "lemma helper1 : True := by trivial"
+        workspace = self._accept_branch(
+            workspace,
+            helper_branch.branch_id,
+            proof_text="trivial",
+            source=rendered,
+        )
+
+        helper_fact = next(
+            f for f in workspace.accepted_facts if f.obligation_id == "sample.helper1"
+        )
+        self.assertEqual(helper_fact.statement, rendered)
+        self.assertEqual(helper_fact.artifact_source, rendered)
+
+    def test_helper_artifact_kind_is_declaration(self) -> None:
+        workspace = self._decomposed_workspace()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        workspace = self._accept_branch(workspace, helper_branch.branch_id)
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        assert helper_branch.lean_artifact is not None
+        self.assertEqual(helper_branch.lean_artifact.kind.value, "declaration")
+
+    def test_root_artifact_kind_is_proof_body(self) -> None:
+        # Baseline: the single-root accept path still produces a PROOF_BODY
+        # artifact and a proof-body fact statement.
+        workspace = _seed_workspace()
+        workspace = self._accept_branch(workspace, "root-branch", proof_text="trivial")
+        root_branch = next(
+            b for b in workspace.branches if b.branch_id == "root-branch"
+        )
+        assert root_branch.lean_artifact is not None
+        self.assertEqual(root_branch.lean_artifact.kind.value, "proof_body")
+        root_fact = workspace.accepted_facts[0]
+        self.assertEqual(root_fact.statement, "trivial")
+
+
+PROPOSE_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.PROPOSE_ARGUMENT]
+REFINE_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[SearchActionKind.REFINE_ARGUMENT]
+CHANGE_REP_MUTATIONS = DEFAULT_ALLOWED_MUTATIONS[
+    SearchActionKind.CHANGE_REPRESENTATION
+]
+
+
+def _propose_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.PROPOSE_ARGUMENT,
+        target_branch_id=branch_id,
+        allowed_mutations=PROPOSE_MUTATIONS,
+        rationale="propose a step",
+    )
+
+
+def _refine_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.REFINE_ARGUMENT,
+        target_branch_id=branch_id,
+        allowed_mutations=REFINE_MUTATIONS,
+        rationale="refine a step",
+    )
+
+
+def _change_rep_action(branch_id: str = "root-branch") -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.CHANGE_REPRESENTATION,
+        target_branch_id=branch_id,
+        allowed_mutations=CHANGE_REP_MUTATIONS,
+        rationale="switch representation",
+    )
+
+
+class ReducerArgumentTests(unittest.TestCase):
+    def test_propose_appends_step_and_alignment_in_one_transition(self) -> None:
+        # PROPOSE_ARGUMENT lands the step and its alignment in the SAME
+        # successor, keeping workspace.validate() green (every step must have
+        # an alignment).
+        workspace = _seed_workspace()
+        action = _propose_action()
+        workspace = apply_argument(
+            workspace,
+            action,
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual([s.step_id for s in branch.argument.steps], ["s1"])
+        self.assertEqual(branch.alignment[0].argument_step_id, "s1")
+        self.assertEqual(branch.alignment[0].relation.value, "unaligned")
+        self.assertEqual(branch.last_action, action)
+
+    def test_propose_is_pure_structure_no_artifact_or_observation(self) -> None:
+        workspace = _seed_workspace()
+        workspace = apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertIsNone(branch.lean_artifact)
+        self.assertEqual(branch.observations, ())
+
+    def test_propose_with_implements_alignment_carries_declaration(self) -> None:
+        workspace = _seed_workspace()
+        workspace = apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(
+                    argument_step_id="s1",
+                    relation="implements",
+                    lean_declaration_id="foo",
+                ),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.alignment[0].relation.value, "implements")
+        self.assertEqual(branch.alignment[0].lean_declaration_id, "foo")
+
+    def test_propose_missing_alignment_is_noop(self) -> None:
+        # The reducer refuses a PROPOSE whose step has no alignment rather
+        # than emitting a branch that fails the every-step-has-alignment rule.
+        workspace_before = _seed_workspace()
+        workspace = apply_argument(
+            workspace_before,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(),  # no alignment for s1 -> rejected
+        )
+        self.assertEqual(workspace, workspace_before)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(branch.argument.steps, ())
+
+    def test_refine_replaces_existing_step_claim(self) -> None:
+        workspace = _seed_workspace()
+        # Seed two steps via PROPOSE.
+        workspace = apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(
+                ArgumentStepSpec(step_id="s1", claim="claim 1"),
+                ArgumentStepSpec(step_id="s2", claim="claim 2"),
+            ),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+                AlignmentSpec(argument_step_id="s2", relation="unaligned"),
+            ),
+        )
+        # REFINE only s1's claim; s2 must be untouched.
+        workspace = apply_argument(
+            workspace,
+            _refine_action(),
+            branch_id="root-branch",
+            refined_steps=(ArgumentStepSpec(step_id="s1", claim="revised claim"),),
+            refined_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        steps = {s.step_id: s for s in branch.argument.steps}
+        self.assertEqual(steps["s1"].claim, "revised claim")
+        self.assertEqual(steps["s2"].claim, "claim 2")
+
+    def test_refine_unknown_step_id_is_noop(self) -> None:
+        workspace_before = _seed_workspace()
+        workspace = apply_argument(
+            workspace_before,
+            _refine_action(),
+            branch_id="root-branch",
+            refined_steps=(ArgumentStepSpec(step_id="ghost", claim="x"),),
+            refined_alignments=(
+                AlignmentSpec(argument_step_id="ghost", relation="unaligned"),
+            ),
+        )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_argument_actions_do_not_mutate_input(self) -> None:
+        workspace = _seed_workspace()
+        original_branches = workspace.branches
+        apply_argument(
+            workspace,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim 1"),),
+            new_alignments=(
+                AlignmentSpec(argument_step_id="s1", relation="unaligned"),
+            ),
+        )
+        self.assertEqual(workspace.branches, original_branches)
+
+
+class ReducerChangeRepresentationTests(unittest.TestCase):
+    def test_forks_child_and_supersedes_parent(self) -> None:
+        workspace = _seed_workspace()
+        # Give the parent some observations so we can assert inheritance.
+        workspace = apply(
+            workspace,
+            _implement_action(),
+            _result(
+                check_result=_rejected_check(),
+                safety_verdict=SafetyVerdict(accepted=False),
+            ),
+        )
+        parent = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertGreater(len(parent.observations), 0)
+
+        workspace = apply_change_representation(
+            workspace,
+            _change_rep_action(),
+            branch_id="root-branch",
+            argument_steps=(ArgumentStepSpec(step_id="r1", claim="new claim"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="r1", relation="unaligned"),
+            ),
+        )
+        self.assertTrue(workspace.validate().ok)
+        parent_after = next(
+            b for b in workspace.branches if b.branch_id == "root-branch"
+        )
+        self.assertEqual(parent_after.status, BranchStatus.SUPERSEDED)
+        child = next(
+            b for b in workspace.branches if b.branch_id == "root-branch.rep0"
+        )
+        self.assertEqual(child.status, BranchStatus.ACTIVE)
+        self.assertEqual(child.parent_branch_id, "root-branch")
+        self.assertEqual([s.step_id for s in child.argument.steps], ["r1"])
+        self.assertEqual(child.alignment[0].argument_step_id, "r1")
+        self.assertIsNone(child.lean_artifact)
+        # Child inherits the parent's evidence.
+        self.assertEqual(child.observations, parent.observations)
+
+    def test_branch_id_is_deterministic(self) -> None:
+        workspace = _seed_workspace()
+        workspace = apply_change_representation(
+            workspace,
+            _change_rep_action(),
+            branch_id="root-branch",
+            argument_steps=(ArgumentStepSpec(step_id="r1", claim="claim"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="r1", relation="unaligned"),
+            ),
+        )
+        ids = {b.branch_id for b in workspace.branches}
+        self.assertIn("root-branch.rep0", ids)
+        # Fork again from the (now child) branch's representation tree: target
+        # the child, which yields .rep1 off the root counting.
+        workspace = apply_change_representation(
+            workspace,
+            _change_rep_action(),
+            branch_id="root-branch.rep0",
+            argument_steps=(ArgumentStepSpec(step_id="r2", claim="claim 2"),),
+            alignments=(
+                AlignmentSpec(argument_step_id="r2", relation="unaligned"),
+            ),
+        )
+        ids = {b.branch_id for b in workspace.branches}
+        self.assertIn("root-branch.rep0.rep0", ids)
+
+    def test_missing_alignment_is_noop(self) -> None:
+        workspace_before = _seed_workspace()
+        workspace = apply_change_representation(
+            workspace_before,
+            _change_rep_action(),
+            branch_id="root-branch",
+            argument_steps=(ArgumentStepSpec(step_id="r1", claim="claim"),),
+            alignments=(),  # no alignment -> child invalid -> no-op
+        )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_invalid_alignment_relation_is_noop(self) -> None:
+        workspace_before = _seed_workspace()
+        workspace = apply_argument(
+            workspace_before,
+            _propose_action(),
+            branch_id="root-branch",
+            new_steps=(ArgumentStepSpec(step_id="s1", claim="claim"),),
+            new_alignments=(
+                AlignmentSpec(
+                    argument_step_id="s1",
+                    relation="not-a-relation",
+                ),
+            ),
+        )
+
+        self.assertEqual(workspace, workspace_before)
+
+
+class ReducerFailureHypothesisTests(unittest.TestCase):
+    def _branch_with_evidence(self):
+        workspace = _seed_workspace()
+        workspace = apply(
+            workspace,
+            _implement_action(),
+            _result(
+                check_result=_rejected_check(),
+                safety_verdict=SafetyVerdict(accepted=False),
+            ),
+        )
+        return workspace
+
+    def test_appends_validated_hypotheses(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.7,
+            evidence_ids=(evidence,),
+        )
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertTrue(workspace.validate().ok)
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual([h.hypothesis_id for h in branch.failure_hypotheses], ["h1"])
+
+    def test_drops_hypothesis_with_missing_evidence(self) -> None:
+        workspace = self._branch_with_evidence()
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.5,
+            evidence_ids=("nonexistent-obs",),
+        )
+        workspace_before = workspace
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_drops_intrinsically_invalid_hypothesis(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="bad",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=2.0,
+            evidence_ids=(evidence,),
+        )
+        workspace_before = workspace
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+
+        self.assertEqual(workspace, workspace_before)
+
+    def test_drops_hypothesis_with_wrong_branch_test(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        bad_test = SearchAction(
+            kind=SearchActionKind.RUN_CAPABILITY_TEST,
+            target_branch_id="some-other-branch",
+            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                SearchActionKind.RUN_CAPABILITY_TEST
+            ],
+            rationale="probe",
+        )
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.CAPABILITY_MISSING,
+            confidence=0.5,
+            evidence_ids=(evidence,),
+            proposed_tests=(bad_test,),
+        )
+        workspace_before = workspace
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertEqual(workspace, workspace_before)
+
+    def test_drops_duplicate_hypothesis_id(self) -> None:
+        workspace = self._branch_with_evidence()
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="dup",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.5,
+            evidence_ids=(evidence,),
+        )
+        workspace = apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp, hyp)
+        )
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        self.assertEqual(len(branch.failure_hypotheses), 1)
+
+    def test_does_not_mutate_input(self) -> None:
+        workspace = self._branch_with_evidence()
+        original_branches = workspace.branches
+        branch = next(b for b in workspace.branches if b.branch_id == "root-branch")
+        evidence = branch.observations[0].observation_id
+        hyp = FailureHypothesis(
+            hypothesis_id="h1",
+            kind=FailureKind.ARGUMENT_GAP,
+            confidence=0.7,
+            evidence_ids=(evidence,),
+        )
+        apply_failure_hypotheses(
+            workspace, branch_id="root-branch", hypotheses=(hyp,)
+        )
+        self.assertEqual(workspace.branches, original_branches)
+
+
+class ReducerTransitiveBlockTests(unittest.TestCase):
+    """Phase 7.7: a blocked helper propagates the block to its dependents."""
+
+    def _decomposed(self):
+        # root decomposed into helper1; root (new version) depends on helper1.
+        workspace = _seed_workspace()
+        return apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=[
+                DecomposeChildSpec(
+                    child_id="sample.helper1",
+                    statement="lemma helper1 : True := by trivial",
+                )
+            ],
+            parent_branch_id="root-branch",
+        )
+
+    def test_blocking_helper_blocks_dependent_parent(self) -> None:
+        workspace = self._decomposed()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        # A capability audit reporting the helper's environment as missing
+        # blocks the helper obligation; the root (which depends on it) must be
+        # blocked in the same successor.
+        result = apply(
+            workspace,
+            _capability_action(branch_id=helper_branch.branch_id),
+            _result(
+                branch_id=helper_branch.branch_id,
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    message="unknown 'simp'",
+                ),
+            ),
+        )
+        helper = result.obligation_graph.by_id("sample.helper1")
+        root = result.obligation_graph.by_id("sample")
+        self.assertEqual(helper.status, ObligationStatus.BLOCKED)
+        self.assertEqual(root.status, ObligationStatus.BLOCKED)
+        parent_branch = next(
+            b
+            for b in result.branches
+            if b.obligation_id == "sample" and b.status != BranchStatus.SUPERSEDED
+        )
+        self.assertEqual(parent_branch.status, BranchStatus.BLOCKED)
+
+    def test_block_does_not_touch_verified_siblings(self) -> None:
+        workspace = self._decomposed()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        # First accept the helper, then block... there is nothing left to block
+        # against, so instead verify an ACCEPTED obligation survives a block on
+        # an unrelated sibling obligation: accept helper, then re-add a second
+        # helper and block it — the accepted helper must stay ACCEPTED.
+        workspace = apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=helper_branch.branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement helper",
+            ),
+            StructuredActionResult(
+                branch_id=helper_branch.branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text="trivial",
+                source="lemma helper1 : True := by trivial",
+                attempt_index=0,
+            ),
+        )
+        # helper1 is now ACCEPTED; the root still depends on it. Blocking the
+        # root directly must not flip the accepted helper to BLOCKED.
+        from agent.search.structured.reducer.core import _block_obligation
+
+        root = workspace.obligation_graph.by_id("sample")
+        workspace = _block_obligation(workspace, root.obligation_id)
+        helper = workspace.obligation_graph.by_id("sample.helper1")
+        self.assertEqual(helper.status, ObligationStatus.ACCEPTED)
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            ObligationStatus.BLOCKED,
+        )
+
+    def test_block_branch_path_does_not_block_obligation(self) -> None:
+        # The no_actions path (block_branch) only retires a branch; it must not
+        # route through transitive obligation propagation. A single-root
+        # block_branch leaves the obligation OPEN.
+        from agent.search.structured.branch_ops import block_branch
+
+        workspace = _seed_workspace()
+        workspace = block_branch(workspace, "root-branch")
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            ObligationStatus.OPEN,
+        )
+        self.assertEqual(
+            workspace.branches[0].status, BranchStatus.BLOCKED
+        )
+
+    def test_block_is_immutable(self) -> None:
+        workspace = self._decomposed()
+        original_root_status = workspace.obligation_graph.by_id("sample").status
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        apply(
+            workspace,
+            _capability_action(branch_id=helper_branch.branch_id),
+            _result(
+                branch_id=helper_branch.branch_id,
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                ),
+            ),
+        )
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            original_root_status,
+        )
+
+
+class ReducerDormantRecoveryTests(unittest.TestCase):
+    """Phase 7.7: DORMANT branches revive when new evidence unblocks them."""
+
+    def _decomposed(self):
+        workspace = _seed_workspace()
+        return apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=[
+                DecomposeChildSpec(
+                    child_id="sample.helper1",
+                    statement="lemma helper1 : True := by trivial",
+                )
+            ],
+            parent_branch_id="root-branch",
+        )
+
+    def test_accepting_helper_revives_dormant_parent_branch(self) -> None:
+        workspace = self._decomposed()
+        # Pin the new parent branch DORMANT (simulating a stall before helper1
+        # was available), then accept helper1. The DORMANT parent should revive
+        # to ACTIVE because its dependency just closed.
+        parent_branch = next(
+            b
+            for b in workspace.branches
+            if b.obligation_id == "sample"
+            and b.status == BranchStatus.ACTIVE
+        )
+        dormant_parent = replace(parent_branch, status=BranchStatus.DORMANT)
+        workspace = workspace.successor(
+            branches=tuple(
+                dormant_parent if b.branch_id == parent_branch.branch_id else b
+                for b in workspace.branches
+            )
+        )
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        workspace = apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=helper_branch.branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement helper",
+            ),
+            StructuredActionResult(
+                branch_id=helper_branch.branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text="trivial",
+                source="lemma helper1 : True := by trivial",
+                attempt_index=0,
+            ),
+        )
+        revived = next(
+            b for b in workspace.branches if b.branch_id == parent_branch.branch_id
+        )
+        self.assertEqual(revived.status, BranchStatus.ACTIVE)
+
+    def test_available_capability_revives_dormant_same_obligation(self) -> None:
+        workspace = _seed_workspace()
+        dormant = replace(workspace.branches[0], status=BranchStatus.DORMANT)
+        workspace = workspace.successor(branches=(dormant,))
+        # A capability audit on the same obligation that reports the resource
+        # *available* revives the dormant branch.
+        workspace = apply(
+            workspace,
+            _capability_action(branch_id="root-branch"),
+            _result(
+                branch_id="root-branch",
+                check_result=_check_result(
+                    accepted=True,
+                    category=DiagnosticCategory.PROOF_ACCEPTED,
+                    message="capability available",
+                ),
+            ),
+        )
+        self.assertEqual(
+            workspace.branches[0].status, BranchStatus.ACTIVE
+        )
+
+    def test_accepting_helper_does_not_revive_accepted_obligation_sibling(self) -> None:
+        workspace = self._decomposed()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        dormant_sibling = ProofBranch(
+            branch_id="sample.helper1.dormant",
+            obligation_id="sample.helper1",
+            obligation_version=helper_branch.obligation_version,
+            status=BranchStatus.DORMANT,
+        )
+        workspace = workspace.successor(
+            branches=(*workspace.branches, dormant_sibling)
+        )
+        workspace = apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=helper_branch.branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement helper",
+            ),
+            StructuredActionResult(
+                branch_id=helper_branch.branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text="trivial",
+                source="lemma helper1 : True := by trivial",
+                attempt_index=0,
+            ),
+        )
+        sibling = next(
+            b for b in workspace.branches if b.branch_id == dormant_sibling.branch_id
+        )
+        self.assertEqual(sibling.status, BranchStatus.DORMANT)
+
+    def test_missing_capability_does_not_revive(self) -> None:
+        workspace = _seed_workspace()
+        dormant = replace(workspace.branches[0], status=BranchStatus.DORMANT)
+        workspace = workspace.successor(branches=(dormant,))
+        workspace = apply(
+            workspace,
+            _capability_action(branch_id="root-branch"),
+            _result(
+                branch_id="root-branch",
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                ),
+            ),
+        )
+        # Missing capability is not evidence that unsticks anything; the branch
+        # goes BLOCKED, not revived.
+        self.assertEqual(
+            workspace.branches[0].status, BranchStatus.BLOCKED
+        )
+
+    def test_no_dormant_branch_is_noop(self) -> None:
+        # When nothing is dormant, accept/audit return the workspace without a
+        # spurious version bump beyond the transition itself. (Here we just
+        # assert revival is a no-op helper.)
+        from agent.search.structured.reducer.core import _reactivate_dormant
+
+        workspace = _seed_workspace()
+        same = _reactivate_dormant(workspace, trigger_obligation_id="sample")
+        self.assertEqual(same, workspace)
 
 
 if __name__ == "__main__":

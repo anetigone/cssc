@@ -12,6 +12,7 @@ from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGene
 from .chat_driver import ChatDriver
 from .context import SummarizationResult
 from ..search.memory import ProofMemory, memory_to_prompt
+from .proof_projection import append_structured_projection
 from .openai import (
     ChatConfig,
     ChatTransport,
@@ -255,6 +256,20 @@ def _build_user_prompt(request: ActionGenerationRequest) -> str:
                     "```",
                 ]
             )
+    # The structured workspace context projection is the authoritative view of
+    # the current branch: obligation + version, dependency closure, the
+    # argument-step ↔ goal alignment, deduplicated observations, competing
+    # failure hypotheses, and sibling strategies. It only flows in structured
+    # mode (minimal never sets the key); render it via Mapping/Sequence
+    # duck-typing so this shared renderer never imports the structured package.
+    # The previous proof body is rendered by the ``previous_attempt`` block
+    # above when present, so the projection re-surfaces it only on a fresh
+    # branch with no recorded attempt.
+    append_structured_projection(
+        parts,
+        request.metadata.get("structured_projection"),
+        render_artifact=not has_previous_attempt,
+    )
     retrieved = request.metadata.get("retrieved_results") or ()
     if isinstance(retrieved, Sequence) and retrieved:
         # ``None`` means "no summary produced": keep every retrieved snippet.

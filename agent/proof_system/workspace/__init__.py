@@ -33,7 +33,7 @@ from .argument import (
     argument_graph_from_dict,
     argument_step_from_dict,
 )
-from .artifact import LeanArtifact, lean_artifact_from_dict
+from .artifact import ArtifactKind, LeanArtifact, lean_artifact_from_dict
 from .branch import (
     BranchStatus,
     ProofBranch,
@@ -82,6 +82,7 @@ __all__ = [
     "ArgumentGraph",
     "ArgumentGraphReport",
     "ArgumentStep",
+    "ArtifactKind",
     "BranchStatus",
     "DEFAULT_ALLOWED_MUTATIONS",
     "FailureHypothesis",
