@@ -16,6 +16,7 @@ is the lower-risk choice.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,9 @@ if TYPE_CHECKING:
     from agent.proof_system.base import ProofTask
     from agent.proof_system.workspace import ProofWorkspace
     from ..safety import SafetyReviewer
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -176,9 +180,17 @@ def build_structured_result(
     # so the serialized workspace and the result summary report a honest
     # ACCEPTED / PARTIAL / BLOCKED instead of the in-progress SEARCHING the run
     # carried while looping. Idempotent on the accepted path (already ACCEPTED).
-    workspace = workspace.successor(
-        status=finalize_workspace_status(workspace, accepted=accepted)
+    final_status = finalize_workspace_status(workspace, accepted=accepted)
+    logger.info(
+        "Structured workspace finalized: task_id=%s accepted=%s stop_reason=%s "
+        "workspace_status=%s workspace_version=%d",
+        task.task_id,
+        accepted,
+        stop_reason,
+        final_status.value,
+        workspace.version,
     )
+    workspace = workspace.successor(status=final_status)
     metadata: dict[str, Any] = {
         "workspace": workspace.to_dict(),
         "safety_rejections": tuple(state.safety_rejections),

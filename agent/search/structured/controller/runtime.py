@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any
 
@@ -31,6 +32,9 @@ from ..proposal import (
 from ..run_state import _StructuredRunState
 
 
+logger = logging.getLogger(__name__)
+
+
 class StructuredControllerRuntimeMixin:
     """Shared rendering, generation, and safety-review helpers."""
 
@@ -50,10 +54,17 @@ class StructuredControllerRuntimeMixin:
             obligation_version=1,
             status=BranchStatus.ACTIVE,
         )
-        return workspace.successor(
+        workspace = workspace.successor(
             branches=(root_branch,),
             status=WorkspaceStatus.SEARCHING,
         )
+        logger.info(
+            "Structured workspace initialized: task_id=%s workspace_version=%d root_branch=%s",
+            task.task_id,
+            workspace.version,
+            root_branch.branch_id,
+        )
+        return workspace
 
     def _finalize_kind(
         self, proposal: StructuredActionProposal, branch: ProofBranch
@@ -109,7 +120,31 @@ class StructuredControllerRuntimeMixin:
             max_candidates=self.config.max_candidates_per_model_call,
             metadata=self._generation_metadata(task, branch, workspace, state),
         )
-        return tuple(self.action_generator.generate(request))
+        logger.debug(
+            "Structured generation request: task_id=%s branch=%s obligation=%s "
+            "attempt_index=%d workspace_version=%d retrieved=%d feedback_items=%d",
+            task.task_id,
+            branch.branch_id,
+            branch.obligation_id,
+            state.attempt_index,
+            workspace.version,
+            len(state.current_retrieved),
+            len(state.feedback_history),
+        )
+        proposals = tuple(self.action_generator.generate(request))
+        logger.info(
+            "Structured proposals generated: task_id=%s branch=%s count=%d",
+            task.task_id,
+            branch.branch_id,
+            len(proposals),
+        )
+        logger.debug(
+            "Structured proposal kinds: task_id=%s branch=%s kinds=%s",
+            task.task_id,
+            branch.branch_id,
+            [proposal.action.kind.value for proposal in proposals],
+        )
+        return proposals
 
     def _generation_metadata(
         self,
@@ -135,6 +170,19 @@ class StructuredControllerRuntimeMixin:
                 ],
             }
         selected_test_action = self._select_test_action(branch)
+        logger.debug(
+            "Structured projection built: task_id=%s branch=%s current_obligation=%s "
+            "dependencies=%d accepted_facts=%d observations=%d hypotheses=%d siblings=%d selected_test=%s",
+            task.task_id,
+            branch.branch_id,
+            current.obligation_id if current is not None else None,
+            len(projection.dependency_facts),
+            len(projection.accepted_facts),
+            len(projection.observations),
+            len(projection.failure_hypotheses),
+            len(projection.sibling_branches),
+            selected_test_action.kind.value if selected_test_action is not None else None,
+        )
         return {
             "proof_phase": "implement" if branch.last_action is None else "repair",
             "branch_id": branch.branch_id,
@@ -161,11 +209,9 @@ class StructuredControllerRuntimeMixin:
                 self.context_summarizer,
                 previous_attempt,
             ),
-            "selected_test_action": (
-                selected_test_action.to_dict()
-                if selected_test_action is not None
-                else None
-            ),
+            "selected_test_action": selected_test_action.to_dict()
+            if selected_test_action is not None
+            else None,
             "structured_workspace_version": workspace.version,
             "budget": self.budget.snapshot(),
         }
@@ -199,6 +245,13 @@ class StructuredControllerRuntimeMixin:
         state: _StructuredRunState,
     ) -> Any:
         source = self.adapter.render_candidate(task, edit)
+        logger.debug(
+            "Structured candidate rendered: task_id=%s action=%s parent=%s source_chars=%d",
+            task.task_id,
+            getattr(edit, "action", ""),
+            getattr(edit, "parent_node_id", None),
+            len(source),
+        )
         materialized = self.workspace.write_candidate(
             task,
             edit,
@@ -206,8 +259,26 @@ class StructuredControllerRuntimeMixin:
             extension=self.config.candidate_extension,
         )
         budget_slice = self.budget.reserve_check()
+        logger.debug(
+            "Structured checker reserved: task_id=%s candidate_id=%s checks_used=%d "
+            "remaining_checks=%s timeout=%s",
+            task.task_id,
+            materialized.candidate_id,
+            self.budget.snapshot().checks_used,
+            self.budget.snapshot().remaining_checks,
+            budget_slice.timeout_seconds,
+        )
         if self.check_workspace is None:
-            return self.adapter.check(materialized.path, budget_slice)
+            check_result = self.adapter.check(materialized.path, budget_slice)
+            logger.info(
+                "Structured check completed: task_id=%s candidate_id=%s accepted=%s category=%s elapsed=%.3f",
+                task.task_id,
+                materialized.candidate_id,
+                check_result.accepted,
+                check_result.category.value,
+                check_result.elapsed_seconds,
+            )
+            return check_result
         with self.check_workspace.materialize_candidate(
             task,
             candidate_id=materialized.candidate_id,
@@ -215,6 +286,14 @@ class StructuredControllerRuntimeMixin:
             extension=self.config.candidate_extension,
         ) as check_candidate:
             check_result = self.adapter.check(check_candidate.path, budget_slice)
+        logger.info(
+            "Structured check completed: task_id=%s candidate_id=%s accepted=%s category=%s elapsed=%.3f",
+            task.task_id,
+            materialized.candidate_id,
+            check_result.accepted,
+            check_result.category.value,
+            check_result.elapsed_seconds,
+        )
         return replace(check_result, candidate_file=materialized.path)
 
     def _review(
@@ -225,9 +304,20 @@ class StructuredControllerRuntimeMixin:
         state: _StructuredRunState,
     ) -> SafetyVerdict:
         if not check_result.accepted:
+            logger.debug(
+                "Structured safety skipped: task_id=%s category=%s",
+                task.task_id,
+                check_result.category.value,
+            )
             return SafetyVerdict(accepted=False)
         source = self.adapter.render_candidate(task, edit)
         verdict = self.safety_reviewer.accepts(task, source, check_result)
+        logger.info(
+            "Structured safety reviewed: task_id=%s accepted=%s reasons=%d",
+            task.task_id,
+            verdict.accepted,
+            len(verdict.reasons),
+        )
         if not verdict.accepted:
             state.safety_rejections.append(
                 {

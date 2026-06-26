@@ -52,10 +52,22 @@ class StructuredControllerActionMixin:
         for proposal in proposals:
             if not self.budget.can_check():
                 state.stop_reason = "budget:checks"
+                logger.info(
+                    "Capability audit skipped due to check budget: task_id=%s branch=%s",
+                    task.task_id,
+                    branch.branch_id,
+                )
                 return workspace, True
             proposal = self._finalize_kind(proposal, branch)
             payload = proposal.payload
             assert isinstance(payload, CapabilityTestPayload)
+            logger.debug(
+                "Capability audit starting: task_id=%s branch=%s requirement=%s signature_chars=%d",
+                task.task_id,
+                branch.branch_id,
+                payload.requirement,
+                len(payload.signature),
+            )
             edit = CandidateEdit(
                 text=payload.signature,
                 action="capability_test",
@@ -98,14 +110,35 @@ class StructuredControllerActionMixin:
                     attempt_index=attempt_index,
                 ),
             )
+            logger.info(
+                "Capability audit completed: task_id=%s branch=%s attempt_index=%d "
+                "accepted=%s category=%s workspace_version=%d",
+                task.task_id,
+                branch.branch_id,
+                attempt_index,
+                check_result.accepted,
+                check_result.category.value,
+                workspace.version,
+            )
             if (
                 self.config.stop_on_tool_unavailable
                 and check_result.category == DiagnosticCategory.TOOL_UNAVAILABLE
             ):
                 state.stop_reason = "tool_unavailable"
+                logger.info(
+                    "Capability audit stopped on tool unavailable: task_id=%s branch=%s",
+                    task.task_id,
+                    branch.branch_id,
+                )
                 return workspace, True
             updated = branch_by_id(workspace, branch.branch_id)
             if updated is None or updated.status != BranchStatus.ACTIVE:
+                logger.info(
+                    "Capability audit retired branch: task_id=%s branch=%s status=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    None if updated is None else updated.status.value,
+                )
                 return workspace, True
         return workspace, False
 
@@ -128,6 +161,12 @@ class StructuredControllerActionMixin:
             current = branch_by_id(workspace, branch.branch_id)
             if current is None or current.status != BranchStatus.ACTIVE:
                 _record_skipped(state, proposal)
+                logger.debug(
+                    "Decompose skipped for inactive branch: task_id=%s branch=%s status=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    None if current is None else current.status.value,
+                )
                 continue
             workspace = apply_decompose(
                 workspace,
@@ -220,6 +259,12 @@ class StructuredControllerActionMixin:
             current = branch_by_id(workspace, branch.branch_id)
             if current is None or current.status != BranchStatus.ACTIVE:
                 _record_skipped(state, proposal)
+                logger.debug(
+                    "Representation change skipped for inactive branch: task_id=%s branch=%s status=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    None if current is None else current.status.value,
+                )
                 continue
             payload = proposal.payload
             assert isinstance(payload, ChangeRepresentationPayload)
@@ -293,9 +338,20 @@ class StructuredControllerActionMixin:
             hypotheses.extend(proposal.metadata.get(FAILURE_HYPOTHESES_KEY, ()))
         if not hypotheses:
             return workspace
-        return apply_failure_hypotheses(
+        logger.info(
+            "Folding failure hypotheses: branch=%s count=%d",
+            branch.branch_id,
+            len(hypotheses),
+        )
+        updated = apply_failure_hypotheses(
             workspace, branch_id=branch.branch_id, hypotheses=hypotheses
         )
+        logger.debug(
+            "Failure hypotheses folded: branch=%s workspace_version=%d",
+            branch.branch_id,
+            updated.version,
+        )
+        return updated
 
 
 def _record_skipped(

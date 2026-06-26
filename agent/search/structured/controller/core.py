@@ -150,6 +150,14 @@ class StructuredController(
         state = _StructuredRunState()
         frontier = Frontier()
         frontier.seed(workspace)
+        logger.debug(
+            "Structured frontier seeded: task_id=%s has_work=%s checks_available=%s "
+            "model_calls_available=%s",
+            task.task_id,
+            frontier.has_work(),
+            self.budget.can_check(),
+            self.budget.can_call_model(),
+        )
 
         while (
             frontier.has_work()
@@ -159,7 +167,23 @@ class StructuredController(
             node = frontier.pop()
             branch = branch_by_id(workspace, node.branch_id)
             if branch is None or branch.status != BranchStatus.ACTIVE:
+                logger.debug(
+                    "Structured frontier node skipped: task_id=%s branch=%s reason=%s",
+                    task.task_id,
+                    node.branch_id,
+                    "missing" if branch is None else branch.status.value,
+                )
                 continue
+            logger.info(
+                "Structured frontier pop: task_id=%s branch=%s obligation=%s "
+                "attempt_index=%d stalled_streak=%d attempts=%d",
+                task.task_id,
+                branch.branch_id,
+                branch.obligation_id,
+                state.attempt_index,
+                node.stalled_streak,
+                node.attempt_count,
+            )
 
             state.retrieved_this_iteration = False
             state.current_retrieved = maybe_retrieve(
@@ -171,13 +195,34 @@ class StructuredController(
             )
             if state.current_retrieved:
                 state.retrieved_history.extend(state.current_retrieved)
+                logger.debug(
+                    "Structured retrieval attached: task_id=%s branch=%s retrieved=%d history=%d",
+                    task.task_id,
+                    branch.branch_id,
+                    len(state.current_retrieved),
+                    len(state.retrieved_history),
+                )
             self.budget.reserve_model_call()
+            logger.debug(
+                "Structured model call reserved: task_id=%s branch=%s model_calls_used=%d "
+                "remaining_model_calls=%s",
+                task.task_id,
+                branch.branch_id,
+                self.budget.snapshot().model_calls_used,
+                self.budget.snapshot().remaining_model_calls,
+            )
             proposals = self._generate(task, branch, workspace, state)
             if not proposals:
                 workspace = block_branch(workspace, branch.branch_id)
                 frontier.update(workspace, branch.branch_id, accepted=False)
                 if not frontier.has_work():
                     state.stop_reason = "no_actions"
+                logger.info(
+                    "Structured branch blocked after empty proposals: task_id=%s branch=%s stop_reason=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    state.stop_reason,
+                )
                 continue
 
             # Phase 7.6: a native generator may attach competing failure
@@ -255,7 +300,26 @@ class StructuredController(
                     continue
                 executable_proposals.append(proposal)
 
+            logger.debug(
+                "Structured proposals classified: task_id=%s branch=%s implement=%d "
+                "capability=%d decompose=%d argument=%d representation=%d skipped=%d",
+                task.task_id,
+                branch.branch_id,
+                len(executable_proposals),
+                len(capability_proposals),
+                len(decompose_proposals),
+                len(argument_proposals),
+                len(representation_proposals),
+                len(state.skipped_proposals),
+            )
+
             if capability_proposals:
+                logger.info(
+                    "Structured capability audits starting: task_id=%s branch=%s count=%d",
+                    task.task_id,
+                    branch.branch_id,
+                    len(capability_proposals),
+                )
                 workspace, stop_for_capability = self._run_capability_audits(
                     task, branch, capability_proposals, workspace, state
                 )
@@ -264,6 +328,13 @@ class StructuredController(
                     if not frontier.has_work():
                         if not state.stop_reason:
                             state.stop_reason = "no_actions"
+                    logger.info(
+                        "Structured capability audits stopped branch: task_id=%s branch=%s stop_reason=%s frontier_has_work=%s",
+                        task.task_id,
+                        branch.branch_id,
+                        state.stop_reason,
+                        frontier.has_work(),
+                    )
                     continue
 
             if decompose_proposals:
@@ -279,6 +350,13 @@ class StructuredController(
                 if not frontier.has_work():
                     if not state.stop_reason:
                         state.stop_reason = "no_actions"
+                logger.debug(
+                    "Structured frontier refreshed after decompose: task_id=%s branch=%s has_work=%s stop_reason=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    frontier.has_work(),
+                    state.stop_reason,
+                )
                 continue
 
             if argument_proposals:
@@ -293,6 +371,13 @@ class StructuredController(
                 if not frontier.has_work():
                     if not state.stop_reason:
                         state.stop_reason = "no_actions"
+                logger.debug(
+                    "Structured frontier refreshed after argument edit: task_id=%s branch=%s has_work=%s stop_reason=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    frontier.has_work(),
+                    state.stop_reason,
+                )
                 continue
 
             if representation_proposals:
@@ -306,11 +391,25 @@ class StructuredController(
                 if not frontier.has_work():
                     if not state.stop_reason:
                         state.stop_reason = "no_actions"
+                logger.debug(
+                    "Structured frontier refreshed after representation change: task_id=%s branch=%s has_work=%s stop_reason=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    frontier.has_work(),
+                    state.stop_reason,
+                )
                 continue
 
             executable_proposals = executable_proposals[
                 : self.config.max_candidates_per_model_call
             ]
+            logger.debug(
+                "Structured implement proposals selected: task_id=%s branch=%s count=%d max=%d",
+                task.task_id,
+                branch.branch_id,
+                len(executable_proposals),
+                self.config.max_candidates_per_model_call,
+            )
 
             workspace, candidate_branches = expand_candidate_branches(
                 workspace,
@@ -323,10 +422,22 @@ class StructuredController(
             for proposal, candidate_branch in zip(executable_proposals, candidate_branches):
                 if not self.budget.can_check():
                     state.stop_reason = "budget:checks"
+                    logger.info(
+                        "Structured check budget exhausted before candidate: task_id=%s branch=%s",
+                        task.task_id,
+                        candidate_branch.branch_id,
+                    )
                     break
                 proposal = self._finalize_kind(proposal, candidate_branch)
                 action = proposal.action
                 proof_text = proposal.payload.proof_text  # type: ignore[union-attr]
+                logger.debug(
+                    "Structured implementation attempt starting: task_id=%s branch=%s kind=%s proof_chars=%d",
+                    task.task_id,
+                    candidate_branch.branch_id,
+                    action.kind.value,
+                    len(proof_text),
+                )
                 # Render against the right obligation. A root obligation fills
                 # the task's proof hole (and its artifact source is the proof
                 # body, the baseline). A helper obligation is a standalone
@@ -411,6 +522,15 @@ class StructuredController(
                 accepted=False,
                 attempted_branch_ids=tuple(attempted_branch_ids),
             )
+            logger.debug(
+                "Structured frontier refreshed after attempts: task_id=%s branch=%s "
+                "attempted=%s has_work=%s stop_reason=%s",
+                task.task_id,
+                branch.branch_id,
+                attempted_branch_ids,
+                frontier.has_work(),
+                state.stop_reason,
+            )
             if stop_for_tool or state.stop_reason == "budget:checks":
                 break
 
@@ -418,12 +538,22 @@ class StructuredController(
             reason = self.budget.exhausted_reason()
             if reason is not None:
                 state.stop_reason = f"budget:{reason}"
+                logger.info(
+                    "Structured budget exhausted: task_id=%s reason=%s",
+                    task.task_id,
+                    state.stop_reason,
+                )
         if state.stop_reason == "budget" and not frontier.has_work():
             # The loop ended because no branch is ready (every ACTIVE branch's
             # obligation has an un-accepted or blocked dependency), not because
             # of budget. This is the multi-obligation terminal: helpers left
             # open or blocked make their parent un-attackable.
             state.stop_reason = "no_ready_work"
+            logger.info(
+                "Structured run has no ready work: task_id=%s workspace_version=%d",
+                task.task_id,
+                workspace.version,
+            )
         if state.stop_reason == "no_ready_work" and self._has_blocked_obligation(
             workspace
         ):
@@ -431,7 +561,11 @@ class StructuredController(
             # BLOCKED (a mechanical dead-end), distinguishing it from a run that
             # simply ran out of ready work with everything still open.
             state.stop_reason = "blocked"
-        return build_structured_result(
+            logger.info(
+                "Structured run terminal reason sharpened to blocked: task_id=%s",
+                task.task_id,
+            )
+        result = build_structured_result(
             state,
             task,
             workspace,
@@ -441,3 +575,14 @@ class StructuredController(
             budget=self.budget,
             safety_reviewer=self.safety_reviewer,
         )
+        logger.info(
+            "Structured controller run finished: task_id=%s accepted=%s stop_reason=%s "
+            "attempts=%d checks=%d model_calls=%d",
+            task.task_id,
+            result.accepted,
+            result.stop_reason,
+            len(result.attempts),
+            result.budget.checks_used,
+            result.budget.model_calls_used,
+        )
+        return result

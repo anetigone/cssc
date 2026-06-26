@@ -52,6 +52,11 @@ def assemble_and_finalize(
     """
     if not budget.can_check():
         state.stop_reason = "budget:checks"
+        logger.info(
+            "Structured assembly skipped due to check budget: task_id=%s workspace_version=%d",
+            task.task_id,
+            workspace.version,
+        )
         return build_structured_result(
             state,
             task,
@@ -69,6 +74,18 @@ def assemble_and_finalize(
         for branch in solution_branches
         if branch.lean_artifact is not None
     }
+    logger.info(
+        "Structured assembly starting: task_id=%s workspace_version=%d branches=%d artifacts=%d",
+        task.task_id,
+        workspace.version,
+        len(solution_branches),
+        len(artifacts),
+    )
+    logger.debug(
+        "Structured assembly artifact obligations: task_id=%s obligations=%s",
+        task.task_id,
+        sorted(artifacts),
+    )
     assembly = assembler.assemble(
         workspace,
         artifacts,
@@ -86,7 +103,7 @@ def assemble_and_finalize(
     )
     if assembly.accepted:
         workspace = workspace.successor(status=WorkspaceStatus.ACCEPTED)
-        return build_structured_result(
+        result = build_structured_result(
             state,
             task,
             workspace,
@@ -97,8 +114,19 @@ def assemble_and_finalize(
             safety_reviewer=safety_reviewer,
             assembly_outcome=assembly,
         )
+        logger.info(
+            "Structured controller run finished: task_id=%s accepted=%s stop_reason=%s "
+            "attempts=%d checks=%d model_calls=%d",
+            task.task_id,
+            result.accepted,
+            result.stop_reason,
+            len(result.attempts),
+            result.budget.checks_used,
+            result.budget.model_calls_used,
+        )
+        return result
     state.stop_reason = "assembly_failed"
-    return build_structured_result(
+    result = build_structured_result(
         state,
         task,
         workspace,
@@ -109,3 +137,14 @@ def assemble_and_finalize(
         safety_reviewer=safety_reviewer,
         assembly_outcome=assembly,
     )
+    logger.info(
+        "Structured controller run finished: task_id=%s accepted=%s stop_reason=%s "
+        "attempts=%d checks=%d model_calls=%d",
+        task.task_id,
+        result.accepted,
+        result.stop_reason,
+        len(result.attempts),
+        result.budget.checks_used,
+        result.budget.model_calls_used,
+    )
+    return result
