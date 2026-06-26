@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from agent.proof_system.workspace import ObligationStatus, WorkspaceStatus
 from ..budget import BudgetManager
 from ..controller.types import AttemptRecord, ControllerResult
 from ..execution import ExecutionMode
@@ -71,6 +72,63 @@ class _StructuredRunState:
     representation_records: list[dict[str, Any]] = field(default_factory=list)
 
 
+#: Obligation statuses that still represent work the search could pursue. A
+#: run whose every active obligation is outside this set has no live route
+#: left — only verified (ACCEPTED) or dead (BLOCKED) obligations remain.
+_SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
+    {ObligationStatus.OPEN, ObligationStatus.IN_PROGRESS}
+)
+
+
+def finalize_workspace_status(
+    workspace: ProofWorkspace, *, accepted: bool
+) -> WorkspaceStatus:
+    """Derive the deterministic terminal status of a structured run.
+
+    This is the Phase 7.7 run finalizer. ``accepted`` runs are ``ACCEPTED``
+    (the assembler already set this on its success path; the finalizer is
+    idempotent). For a run that did not close:
+
+    * if no active obligation is still solvable (every route is ACCEPTED or
+      BLOCKED) and the root is not accepted, the run is **BLOCKED** — all
+      remaining lines are mechanical dead-ends;
+    * otherwise, if at least one *non-root* active obligation is ACCEPTED,
+      the run is **PARTIAL** — it produced a reusable verified sub-result even
+      though the root did not close (``tmp/plan1.md`` §budget: insufficient
+      budget can only yield PARTIAL or BLOCKED);
+    * otherwise the run stays **SEARCHING** — a single-root run (or one with
+      no verified helpers) that ran out of budget mid-search is neither a
+      partial success nor a clean failure, so it is not mislabelled.
+
+    The single-root baseline never has a non-root ACCEPTED obligation, so a
+    budget-exhausted baseline run stays SEARCHING rather than being misreported
+    as PARTIAL.
+    """
+    if accepted:
+        return WorkspaceStatus.ACCEPTED
+
+    graph = workspace.obligation_graph
+    active = graph.active()
+    root = graph.root()
+    root_accepted = root is not None and root.status == ObligationStatus.ACCEPTED
+
+    has_solvable = any(
+        obligation.status in _SOLVABLE_STATUSES for obligation in active
+    )
+    if not has_solvable and not root_accepted:
+        return WorkspaceStatus.BLOCKED
+
+    has_verified_helper = any(
+        obligation.obligation_id not in workspace.root_obligation_ids
+        and obligation.status == ObligationStatus.ACCEPTED
+        for obligation in active
+    )
+    if has_verified_helper:
+        return WorkspaceStatus.PARTIAL
+
+    return WorkspaceStatus.SEARCHING
+
+
 def build_structured_result(
     state: _StructuredRunState,
     task: ProofTask,
@@ -113,6 +171,13 @@ def build_structured_result(
     )
     accepted_attempt = (
         state.attempts[-1] if accepted and state.attempts else None
+    )
+    # Phase 7.7: derive the terminal workspace status from the obligation DAG
+    # so the serialized workspace and the result summary report a honest
+    # ACCEPTED / PARTIAL / BLOCKED instead of the in-progress SEARCHING the run
+    # carried while looping. Idempotent on the accepted path (already ACCEPTED).
+    workspace = workspace.successor(
+        status=finalize_workspace_status(workspace, accepted=accepted)
     )
     metadata: dict[str, Any] = {
         "workspace": workspace.to_dict(),

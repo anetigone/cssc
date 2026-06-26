@@ -14,6 +14,10 @@ class WorkspaceStatus(str, Enum):
     SEARCHING = "searching"
     ASSEMBLING = "assembling"
     ACCEPTED = "accepted"
+    #: A run that did not close the root obligation but left at least one
+    #: non-root obligation verified — a reusable partial result, not a clean
+    #: failure. Derived deterministically by the run finalizer (Phase 7.7).
+    PARTIAL = "partial"
     BLOCKED = "blocked"
 
 

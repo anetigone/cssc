@@ -760,6 +760,14 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(result.stop_reason, "blocked")
         summary = result.metadata["result_summary"]
         self.assertTrue(any(o["obligation_id"] == "helper" for o in summary["blocked_obligations"]))
+        # Phase 7.7: the blocked helper propagates transitively — the root
+        # obligation (which depends on it) is blocked too, and the run's
+        # terminal workspace status is BLOCKED rather than the in-progress
+        # SEARCHING the loop carried.
+        self.assertTrue(
+            any(o["obligation_id"] == "sample" for o in summary["blocked_obligations"])
+        )
+        self.assertEqual(summary["workspace_status"], "blocked")
         # RUN_CAPABILITY_TEST is now executed, not skipped.
         self.assertEqual(result.metadata["skipped_proposals"], ())
 

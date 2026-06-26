@@ -1030,5 +1030,240 @@ class ReducerFailureHypothesisTests(unittest.TestCase):
         self.assertEqual(workspace.branches, original_branches)
 
 
+class ReducerTransitiveBlockTests(unittest.TestCase):
+    """Phase 7.7: a blocked helper propagates the block to its dependents."""
+
+    def _decomposed(self):
+        # root decomposed into helper1; root (new version) depends on helper1.
+        workspace = _seed_workspace()
+        return apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=[
+                DecomposeChildSpec(
+                    child_id="sample.helper1",
+                    statement="lemma helper1 : True := by trivial",
+                )
+            ],
+            parent_branch_id="root-branch",
+        )
+
+    def test_blocking_helper_blocks_dependent_parent(self) -> None:
+        workspace = self._decomposed()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        # A capability audit reporting the helper's environment as missing
+        # blocks the helper obligation; the root (which depends on it) must be
+        # blocked in the same successor.
+        result = apply(
+            workspace,
+            _capability_action(branch_id=helper_branch.branch_id),
+            _result(
+                branch_id=helper_branch.branch_id,
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                    message="unknown 'simp'",
+                ),
+            ),
+        )
+        helper = result.obligation_graph.by_id("sample.helper1")
+        root = result.obligation_graph.by_id("sample")
+        self.assertEqual(helper.status, ObligationStatus.BLOCKED)
+        self.assertEqual(root.status, ObligationStatus.BLOCKED)
+
+    def test_block_does_not_touch_verified_siblings(self) -> None:
+        workspace = self._decomposed()
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        # First accept the helper, then block... there is nothing left to block
+        # against, so instead verify an ACCEPTED obligation survives a block on
+        # an unrelated sibling obligation: accept helper, then re-add a second
+        # helper and block it — the accepted helper must stay ACCEPTED.
+        workspace = apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=helper_branch.branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement helper",
+            ),
+            StructuredActionResult(
+                branch_id=helper_branch.branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text="trivial",
+                source="lemma helper1 : True := by trivial",
+                attempt_index=0,
+            ),
+        )
+        # helper1 is now ACCEPTED; the root still depends on it. Blocking the
+        # root directly must not flip the accepted helper to BLOCKED.
+        from agent.search.structured.reducer.core import _block_obligation
+
+        root = workspace.obligation_graph.by_id("sample")
+        workspace = _block_obligation(workspace, root.obligation_id)
+        helper = workspace.obligation_graph.by_id("sample.helper1")
+        self.assertEqual(helper.status, ObligationStatus.ACCEPTED)
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            ObligationStatus.BLOCKED,
+        )
+
+    def test_block_branch_path_does_not_block_obligation(self) -> None:
+        # The no_actions path (block_branch) only retires a branch; it must not
+        # route through transitive obligation propagation. A single-root
+        # block_branch leaves the obligation OPEN.
+        from agent.search.structured.branch_ops import block_branch
+
+        workspace = _seed_workspace()
+        workspace = block_branch(workspace, "root-branch")
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            ObligationStatus.OPEN,
+        )
+        self.assertEqual(
+            workspace.branches[0].status, BranchStatus.BLOCKED
+        )
+
+    def test_block_is_immutable(self) -> None:
+        workspace = self._decomposed()
+        original_root_status = workspace.obligation_graph.by_id("sample").status
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        apply(
+            workspace,
+            _capability_action(branch_id=helper_branch.branch_id),
+            _result(
+                branch_id=helper_branch.branch_id,
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                ),
+            ),
+        )
+        self.assertEqual(
+            workspace.obligation_graph.by_id("sample").status,
+            original_root_status,
+        )
+
+
+class ReducerDormantRecoveryTests(unittest.TestCase):
+    """Phase 7.7: DORMANT branches revive when new evidence unblocks them."""
+
+    def _decomposed(self):
+        workspace = _seed_workspace()
+        return apply_decompose(
+            workspace,
+            _decompose_action(),
+            children=[
+                DecomposeChildSpec(
+                    child_id="sample.helper1",
+                    statement="lemma helper1 : True := by trivial",
+                )
+            ],
+            parent_branch_id="root-branch",
+        )
+
+    def test_accepting_helper_revives_dormant_parent_branch(self) -> None:
+        workspace = self._decomposed()
+        # Pin the new parent branch DORMANT (simulating a stall before helper1
+        # was available), then accept helper1. The DORMANT parent should revive
+        # to ACTIVE because its dependency just closed.
+        parent_branch = next(
+            b
+            for b in workspace.branches
+            if b.obligation_id == "sample"
+            and b.status == BranchStatus.ACTIVE
+        )
+        dormant_parent = replace(parent_branch, status=BranchStatus.DORMANT)
+        workspace = workspace.successor(
+            branches=tuple(
+                dormant_parent if b.branch_id == parent_branch.branch_id else b
+                for b in workspace.branches
+            )
+        )
+        helper_branch = next(
+            b for b in workspace.branches if b.obligation_id == "sample.helper1"
+        )
+        workspace = apply(
+            workspace,
+            SearchAction(
+                kind=SearchActionKind.IMPLEMENT,
+                target_branch_id=helper_branch.branch_id,
+                allowed_mutations=IMPLEMENT_MUTATIONS,
+                rationale="implement helper",
+            ),
+            StructuredActionResult(
+                branch_id=helper_branch.branch_id,
+                check_result=_accepted_check(),
+                safety_verdict=SafetyVerdict(accepted=True),
+                proof_text="trivial",
+                source="lemma helper1 : True := by trivial",
+                attempt_index=0,
+            ),
+        )
+        revived = next(
+            b for b in workspace.branches if b.branch_id == parent_branch.branch_id
+        )
+        self.assertEqual(revived.status, BranchStatus.ACTIVE)
+
+    def test_available_capability_revives_dormant_same_obligation(self) -> None:
+        workspace = _seed_workspace()
+        dormant = replace(workspace.branches[0], status=BranchStatus.DORMANT)
+        workspace = workspace.successor(branches=(dormant,))
+        # A capability audit on the same obligation that reports the resource
+        # *available* revives the dormant branch.
+        workspace = apply(
+            workspace,
+            _capability_action(branch_id="root-branch"),
+            _result(
+                branch_id="root-branch",
+                check_result=_check_result(
+                    accepted=True,
+                    category=DiagnosticCategory.PROOF_ACCEPTED,
+                    message="capability available",
+                ),
+            ),
+        )
+        self.assertEqual(
+            workspace.branches[0].status, BranchStatus.ACTIVE
+        )
+
+    def test_missing_capability_does_not_revive(self) -> None:
+        workspace = _seed_workspace()
+        dormant = replace(workspace.branches[0], status=BranchStatus.DORMANT)
+        workspace = workspace.successor(branches=(dormant,))
+        workspace = apply(
+            workspace,
+            _capability_action(branch_id="root-branch"),
+            _result(
+                branch_id="root-branch",
+                check_result=_check_result(
+                    accepted=False,
+                    category=DiagnosticCategory.UNKNOWN_IDENTIFIER,
+                ),
+            ),
+        )
+        # Missing capability is not evidence that unsticks anything; the branch
+        # goes BLOCKED, not revived.
+        self.assertEqual(
+            workspace.branches[0].status, BranchStatus.BLOCKED
+        )
+
+    def test_no_dormant_branch_is_noop(self) -> None:
+        # When nothing is dormant, accept/audit return the workspace without a
+        # spurious version bump beyond the transition itself. (Here we just
+        # assert revival is a no-op helper.)
+        from agent.search.structured.reducer.core import _reactivate_dormant
+
+        workspace = _seed_workspace()
+        same = _reactivate_dormant(workspace, trigger_obligation_id="sample")
+        self.assertEqual(same, workspace)
+
+
 if __name__ == "__main__":
     unittest.main()

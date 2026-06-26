@@ -295,6 +295,20 @@ class ProofWorkspaceTests(unittest.TestCase):
         self.assertEqual(restored.obligation_graph.root().obligation_id, "root")
         self.assertEqual(restored.specification.statement_nl, "show True")
 
+    def test_round_trip_preserves_partial_status(self) -> None:
+        # Phase 7.7: PARTIAL is a first-class terminal status and must survive
+        # serialization (the run finalizer sets it; the trace reloads it).
+        root = _obligation(obligation_id="root")
+        graph = ObligationGraph(obligations=(root,), root_obligation_id="root")
+        workspace = ProofWorkspace(
+            workspace_id="run-1",
+            obligation_graph=graph,
+            root_obligation_ids=("root",),
+            status=WorkspaceStatus.PARTIAL,
+        )
+        restored = workspace_from_dict(workspace.to_dict())
+        self.assertEqual(restored.status, WorkspaceStatus.PARTIAL)
+
     def test_round_trip_preserves_branches(self) -> None:
         root = _obligation(obligation_id="root")
         graph = ObligationGraph(obligations=(root,), root_obligation_id="root")

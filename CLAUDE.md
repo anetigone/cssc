@@ -66,6 +66,11 @@
   - 7.4：`reducer.apply_decompose` 执行 DECOMPOSE（结构性转移，no check）；frontier readiness gate（依赖满足才可调度）；artifact kind（root PROOF_BODY 填 hole、helper DECLARATION 独立声明）+ `_inject_helpers`；`VerifiedFact.declaration_id/artifact_source`；safety 改子串匹配。
   - 7.5：projection `AcceptedFactSlot/DependencyFact.declaration_id` 按名引用 helper；`no_ready_work` + active BLOCKED obligation 升级 `stop_reason="blocked"`。
   - 7.6：`proposal/core.py` 加 `ProposeArgumentPayload`/`RefineArgumentPayload`/`ChangeRepresentationPayload`（+ `ArgumentStepSpec`/`AlignmentSpec`），解锁三种 kind；`reducer` 三个纯结构入口 `apply_argument`/`apply_change_representation`/`apply_failure_hypotheses`（pre-commit 校验候选 branch，失败 no-op）；controller 分流 + `_run_argument`/`_run_change_representation` + `_fold_failure_hypotheses`（generator 在 `FAILURE_HYPOTHESES_KEY` 携带，不新增模型调用）+ `_select_test_action`（低成本优先）。minimal 不 import structured 包，零成本。
+- **Phase 7.7** ✅ 已完成：partial results、transitive BLOCKED 传播、evidence-driven DORMANT 恢复。完整说明看 [agents.md](agents.md) 对应段，要点：
+  - `WorkspaceStatus` 加 `PARTIAL`；`run_state.py:finalize_workspace_status` 确定性终态 finalizer（`accepted`→ACCEPTED / 无活路线且 root 非 accepted→BLOCKED / 存在非根 accepted→PARTIAL / 否则保持 SEARCHING，单根 baseline 预算耗尽不误标 PARTIAL），`build_structured_result` 在派生 `ResultSummary` 前 `successor(status=...)`，accepted 路径幂等。
+  - `reducer/core.py:_block_obligation` 传递性 BLOCKED：helper capability 缺失置 BLOCKED 时，沿反向依赖边 BFS 把依赖闭包内仍 OPEN/IN_PROGRESS 的 obligation 同步 BLOCKED（同一 successor），已终态不动；`block_branch`（no_actions）不走此路径。
+  - `reducer/core.py:_reactivate_dormant` evidence-driven 恢复：在 `_accept`（fact accepted 后）与 `_apply_capability_audit`（capability 可用）触发，把 trigger obligation 或其依赖者的 DORMANT 分支翻回 ACTIVE；frontier 按 `_is_ready` 自动重入队，**不**因 frontier 空无条件唤醒；下次相同 goal 会再 stall 自我纠正。
+  - minimal 不 import structured 包，零成本。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 

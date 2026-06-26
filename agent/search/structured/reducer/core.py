@@ -58,6 +58,19 @@ On repeated stall (same goal fingerprints across attempts) the branch is
 retired to DORMANT; if a branch implementing for the first time keeps failing
 on the same goals, a REPAIR_IMPLEMENTATION child branch is spawned so the
 search can retry a different realization without overwriting the parent.
+
+Phase 7.7 sharpens two workspace-level consequences of these transitions:
+
+* a blocked helper now propagates transitively — every active obligation whose
+  dependency closure contains a blocked obligation is flipped to BLOCKED in the
+  same successor, so a dead helper makes its parents dead too rather than
+  leaving them reported as still-open;
+* DORMANT is no longer terminal. When new evidence lands (a dependency fact is
+  accepted, or a capability audit reports a usable resource) the stalled
+  branches that evidence may unstick are revived to ACTIVE. This is
+  evidence-driven, not frontier-driven: the frontier re-queues a revived branch
+  via its ACTIVE status, and an identical re-stall retires it again, so revival
+  cannot loop.
 """
 
 from __future__ import annotations
@@ -71,6 +84,7 @@ from agent.proof_system.workspace import (
     ArtifactKind,
     BranchStatus,
     LeanArtifact,
+    ObligationGraph,
     ObligationStatus,
     ProofBranch,
     ProofObligation,
@@ -195,7 +209,7 @@ def _accept(
     )
     new_branches = _replace_branch(workspace.branches, accepted_branch)
     workspace = workspace.successor(branches=new_branches)
-    return workspace.register_accepted_fact(
+    workspace = workspace.register_accepted_fact(
         branch.obligation_id,
         statement=artifact.source,
         source_attempt_index=result.attempt_index,
@@ -203,6 +217,14 @@ def _accept(
         safety_accepted=True,
         declaration_id=artifact.declaration_id,
         artifact_source=artifact.source,
+    )
+    # Evidence-driven DORMANT recovery: a newly-verified fact is the strongest
+    # signal that a stalled branch depending on this obligation may now succeed.
+    # Revive matching DORMANT branches so the frontier re-queues them. No-op
+    # when nothing is dormant (the single-root baseline always takes this path
+    # and returns the workspace unchanged).
+    return _reactivate_dormant(
+        workspace, trigger_obligation_id=branch.obligation_id
     )
 
 
@@ -285,7 +307,13 @@ def _apply_capability_audit(
 
     if not _capability_missing(result.check_result):
         new_branches = _replace_branch(workspace.branches, updated_branch)
-        return workspace.successor(branches=new_branches)
+        workspace = workspace.successor(branches=new_branches)
+        # A capability the audit reports as *available* is new evidence: a
+        # branch on the same obligation that had stalled for lack of it may now
+        # make progress. Revive such DORMANT branches (no-op if there are none).
+        return _reactivate_dormant(
+            workspace, trigger_obligation_id=branch.obligation_id
+        )
 
     blocked_branch = replace(updated_branch, status=BranchStatus.BLOCKED)
     new_branches = _replace_branch(workspace.branches, blocked_branch)
@@ -319,14 +347,120 @@ def _capability_observation(result: StructuredActionResult) -> Observation:
 def _block_obligation(
     workspace: ProofWorkspace, obligation_id: str
 ) -> ProofWorkspace:
-    """Flip an obligation to ``BLOCKED`` immutably (mirror of accept/register)."""
+    """Block an obligation and propagate the block to every dependent.
+
+    A helper going ``BLOCKED`` is a mechanical dead-end the search cannot
+    escape, and an obligation that depends on it can never be proved either.
+    So the block propagates transitively up the reverse dependency edges: any
+    active obligation whose dependency closure now contains a blocked
+    obligation is flipped to ``BLOCKED`` in the *same* successor. ``block_branch``
+    (the ``no_actions`` path) is intentionally not routed through here — it only
+    retires a branch, leaving the obligation open, because a generator producing
+    no candidates is a different gap than a missing capability.
+
+    This keeps the workspace status honest: a blocked helper makes its parents
+    blocked too, so the run finalizer can classify the run as ``BLOCKED`` rather
+    than reporting dead parents as still-open work.
+    """
     graph = workspace.obligation_graph
     obligation = graph.by_id(obligation_id)
     if obligation is None:
         return workspace
-    blocked = replace(obligation, status=ObligationStatus.BLOCKED)
-    new_graph = graph.with_obligation(blocked)
+    # Reverse adjacency: for each dependency, who depends on it? Edges in the
+    # graph run obligation -> dependency (parent -> helper), so the reverse map
+    # walks from a blocked helper back to every parent that needs it.
+    dependents: dict[str, list[str]] = {}
+    for active in graph.active():
+        for dependency_id in active.dependency_ids:
+            dependents.setdefault(dependency_id, []).append(
+                active.obligation_id
+            )
+    closure: set[str] = set()
+    frontier = [obligation_id]
+    while frontier:
+        current = frontier.pop()
+        if current in closure:
+            continue
+        closure.add(current)
+        frontier.extend(dependents.get(current, ()))
+    new_graph = graph
+    for blocked_id in closure:
+        current = new_graph.by_id(blocked_id)
+        if current is None:
+            continue
+        if current.status not in (
+            ObligationStatus.OPEN,
+            ObligationStatus.IN_PROGRESS,
+        ):
+            # Leave already-terminal obligations (ACCEPTED / BLOCKED /
+            # SUPERSEDED) untouched: a verified fact stays verified even if a
+            # sibling route dies, and superseded versions are provenance.
+            continue
+        new_graph = new_graph.with_obligation(
+            replace(current, status=ObligationStatus.BLOCKED)
+        )
     return workspace.successor(obligation_graph=new_graph)
+
+
+def _reactivate_dormant(
+    workspace: ProofWorkspace, *, trigger_obligation_id: str
+) -> ProofWorkspace:
+    """Revive DORMANT branches a new piece of evidence may unstick.
+
+    DORMANT is not terminal — it means a branch stalled on the same goals and
+    was set aside. When new evidence arrives (a dependency fact accepted, a
+    capability audit finding a usable resource), a previously-stalled branch on
+    the *same* obligation — or on an obligation that depends on the trigger —
+    deserves another attempt: the reason it stalled may now be resolved.
+
+    This is evidence-driven, not frontier-driven: it runs only at the moment a
+    fact is registered or a capability clears, never because the frontier ran
+    empty (that would just re-burn budget on the same stuck goals). Revival
+    flips the branch back to ``ACTIVE`` and touches nothing else — the frontier
+    re-queues it via its ``ACTIVE`` status on the next ``update``. If the next
+    attempt still hits identical goals, the stall counter resumes and the branch
+    goes DORMANT again, so revival cannot create an infinite loop.
+    """
+    graph = workspace.obligation_graph
+    # Branches eligible for revival: those pinning the trigger obligation, or
+    # any obligation whose dependency closure contains the trigger (a parent
+    # whose helper just got verified). Resolved by id so superseded versions do
+    # not falsely match.
+    dependent_ids: set[str] = {trigger_obligation_id}
+    for active in graph.active():
+        reachable = _dependency_closure(active.obligation_id, graph)
+        if trigger_obligation_id in reachable:
+            dependent_ids.add(active.obligation_id)
+    revived = False
+    new_branches = list(workspace.branches)
+    for index, branch in enumerate(new_branches):
+        if (
+            branch.status == BranchStatus.DORMANT
+            and branch.obligation_id in dependent_ids
+        ):
+            new_branches[index] = replace(branch, status=BranchStatus.ACTIVE)
+            revived = True
+    if not revived:
+        return workspace
+    return workspace.successor(branches=tuple(new_branches))
+
+
+def _dependency_closure(
+    obligation_id: str, graph: ObligationGraph
+) -> set[str]:
+    """Obligation ids reachable from ``obligation_id`` along dependency edges."""
+    visited: set[str] = set()
+    frontier = [obligation_id]
+    while frontier:
+        current_id = frontier.pop()
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+        current = graph.by_id(current_id)
+        if current is None:
+            continue
+        frontier.extend(current.dependency_ids)
+    return visited
 
 
 def _observations_for(result: StructuredActionResult) -> tuple[Observation, ...]:
