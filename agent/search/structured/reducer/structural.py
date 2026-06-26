@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Sequence
 
-from ...proof_system.workspace import (
+from ....proof_system.workspace import (
     AlignmentLink,
     AlignmentRelation,
     ArgumentGraph,
@@ -16,8 +16,8 @@ from ...proof_system.workspace import (
     SearchAction,
     SearchActionKind,
 )
-from ...proof_system.workspace.workspace import ProofWorkspace
-from .proposal import AlignmentSpec, ArgumentStepSpec
+from ....proof_system.workspace.workspace import ProofWorkspace
+from ..proposal import AlignmentSpec, ArgumentStepSpec
 
 
 def apply_argument(

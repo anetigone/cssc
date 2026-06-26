@@ -33,14 +33,14 @@ import logging
 from dataclasses import replace
 from typing import Any
 
-from ...proof_system.assembler import ArtifactAssembler
-from ...proof_system.base import (
+from ....proof_system.assembler import ArtifactAssembler
+from ....proof_system.base import (
     CandidateEdit,
     DiagnosticCategory,
     ProofSystemAdapter,
     ProofTask,
 )
-from ...proof_system.workspace import (
+from ....proof_system.workspace import (
     DEFAULT_ALLOWED_MUTATIONS,
     BranchStatus,
     ObligationStatus,
@@ -51,40 +51,40 @@ from ...proof_system.workspace import (
     WorkspaceStatus,
     initialize_from_task,
 )
-from ..action import ActionGenerationRequest, ActionGenerator
-from ..budget import BudgetConfig, BudgetManager
-from ..controller.types import (
+from ...action import ActionGenerationRequest, ActionGenerator
+from ...budget import BudgetConfig, BudgetManager
+from ...controller.types import (
     AttemptRecord,
     ControllerConfig,
     ControllerResult,
     Retriever,
 )
-from ..controller.context import maybe_retrieve, summarize_context
-from ..execution import ExecutionMode
-from ..metrics import attempt_metric
-from ..safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
-from ...agents.context import ContextSummarizer
-from ...runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
-from .branch_ops import (
+from ...controller.context import maybe_retrieve, summarize_context
+from ...execution import ExecutionMode
+from ...metrics import attempt_metric
+from ...safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
+from ....agents.context import ContextSummarizer
+from ....runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
+from ..branch_ops import (
     block_branch,
     branch_by_id,
     edit_with_structured_metadata,
     expand_candidate_branches,
 )
-from .controller_actions import StructuredControllerActionMixin
-from .controller_runtime import StructuredControllerRuntimeMixin
-from .finalize import assemble_and_finalize
-from .frontier import Frontier
-from .proposal import (
+from .actions import StructuredControllerActionMixin
+from .runtime import StructuredControllerRuntimeMixin
+from ..finalize import assemble_and_finalize
+from ..frontier import Frontier
+from ..proposal import (
     StructuredActionProposal,
     adapt_legacy_generator,
 )
-from .reducer import (
+from ..reducer import (
     StructuredActionResult,
     apply,
 )
-from .run_state import _StructuredRunState, build_structured_result
-from .solution_tracker import has_complete_solution
+from ..run_state import _StructuredRunState, build_structured_result
+from ..solution_tracker import has_complete_solution
 
 logger = logging.getLogger(__name__)
 

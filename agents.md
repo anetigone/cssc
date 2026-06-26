@@ -50,13 +50,21 @@ agent/
 │   │   ├── results.py   # 结果构造与 Phase 0 metrics
 │   │   ├── context.py   # 检索与上下文摘要
 │   │   └── utils.py     # _proof_phase / _edit_with_controller_metadata
-│   ├── structured/      # Phase 6 StructuredController（frontier/AND-OR 搜索）
-│   │   ├── frontier.py  # Frontier / FrontierNode 调度器（只读 workspace）
-│   │   ├── solution_tracker.py # has_complete_solution / select_solution
-│   │   ├── reducer.py   # apply 纯函数：不可变 workspace 转移
-│   │   ├── run_state.py # _StructuredRunState + build_structured_result
-│   │   ├── proposal.py  # Phase 7.2 StructuredActionProposal / payload union / legacy adapter
-│   │   └── controller.py# StructuredController（与 ProofController 同签名）
+│   ├── structured/           # Phase 6 StructuredController（frontier/AND-OR 搜索）
+│   │   ├── controller/       # StructuredController 包（__init__ 向后兼容 re-export）
+│   │   │   ├── core.py       # 主循环 / StructuredController
+│   │   │   ├── actions.py    # capability/decompose/argument/representation 执行器
+│   │   │   └── runtime.py    # 生成 / 渲染 / safety review 辅助
+│   │   ├── proposal/         # typed action proposal 包（__init__ 向后兼容 re-export）
+│   │   │   ├── core.py       # StructuredActionProposal / generator / legacy adapter
+│   │   │   └── types.py      # ActionPayload union / payload dataclasses
+│   │   ├── reducer/          # deterministic workspace transition 包（__init__ 向后兼容 re-export）
+│   │   │   ├── core.py       # apply / StructuredActionResult / accept / failure / capability audit
+│   │   │   ├── decompose.py  # DECOMPOSE 结构转移
+│   │   │   └── structural.py # argument / representation / failure hypothesis 转移
+│   │   ├── frontier.py       # Frontier / FrontierNode 调度器（只读 workspace）
+│   │   ├── run_state.py      # _StructuredRunState + build_structured_result
+│   │   └── solution_tracker.py # has_complete_solution / select_solution
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
 │   ├── factory.py       # 按执行模式构造 controller 的唯一选择点
 │   ├── budget.py        # 预算管理（checks / model calls / time）
@@ -93,7 +101,7 @@ agent/
 └── cli/                 # 命令行入口 app.py
 ```
 
-> `controller`、`workspace`、`tools` 已拆分为子模块包；每个包的 `__init__.py` 通过向后兼容的 re-export 保留原有公共 API，现有 `from agent.search.controller import ...`、`from agent.proof_system.workspace import ...`、`from agent.agents import ...` 等导入路径无需修改。
+> `controller`、`workspace`、`tools`、`structured` 已拆分为子模块包；每个包的 `__init__.py` 通过向后兼容的 re-export 保留原有公共 API，现有 `from agent.search.controller import ...`、`from agent.proof_system.workspace import ...`、`from agent.agents import ...`、`from agent.search.structured.controller import ...`、`from agent.search.structured.proposal import ...`、`from agent.search.structured.reducer import ...` 等导入路径无需修改。
 
 ## Agent 角色
 
@@ -154,7 +162,7 @@ agent/
 
 ## Phase 6 Frontier 与 AND-OR 搜索
 
-- 结构化执行器在 `agent/search/structured/` 子包（与 `controller/` 平行、**互不 import**，minimal 不承担 structured 成本）：`frontier.py`（`Frontier` 可变调度器 + `FrontierNode` frozen 节点；只读 workspace、从不 mutate；pop 用稳定 tuple 排序 `(stalled_streak, depth_from_root, attempt_count, branch_id)`，确定性、trace 可重放；`_stalled_streak` 纯函数从 `branch.observations` 派生 trailing 相同 goal 指纹的 attempt 总数，reducer 复用同一值）、`solution_tracker.py`（`has_complete_solution`/`select_solution` 纯函数；判定每个 active obligation 是否有 version 相容的 ACCEPTED+artifact branch，与 `ArtifactAssembler.assemble` 前置条件对齐，避免 tracker 与 assembler 对就绪状态不一致）、`reducer.py`（`apply(workspace, action, result)` 纯函数，绝不 mutate，全部走 `replace` + `workspace.successor`）、`run_state.py`（`_StructuredRunState` + `build_structured_result`，平行 `results.py`、复用 `summarize_run`/`new_sample_id`，不改 minimal 的 `results.py`）、`controller.py`（`StructuredController`）。
+- 结构化执行器在 `agent/search/structured/` 子包（与 `controller/` 平行、**互不 import**，minimal 不承担 structured 成本）：`frontier.py`（`Frontier` 可变调度器 + `FrontierNode` frozen 节点；只读 workspace、从不 mutate；pop 用稳定 tuple 排序 `(stalled_streak, depth_from_root, attempt_count, branch_id)`，确定性、trace 可重放；`_stalled_streak` 纯函数从 `branch.observations` 派生 trailing 相同 goal 指纹的 attempt 总数，reducer 复用同一值）、`solution_tracker.py`（`has_complete_solution`/`select_solution` 纯函数；判定每个 active obligation 是否有 version 相容的 ACCEPTED+artifact branch，与 `ArtifactAssembler.assemble` 前置条件对齐，避免 tracker 与 assembler 对就绪状态不一致）、`reducer/core.py`（`apply(workspace, action, result)` 纯函数，绝不 mutate，全部走 `replace` + `workspace.successor`）、`run_state.py`（`_StructuredRunState` + `build_structured_result`，平行 `results.py`、复用 `summarize_run`/`new_sample_id`，不改 minimal 的 `results.py`）、`controller/core.py`（`StructuredController`）。
 - `StructuredController` 与 `ProofController` **同构造签名**（factory 切换零成本），`run(task)` 跑 plan1.md §12 的 structured 循环：`frontier.pop → 确定性选 IMPLEMENT/REPAIR_IMPLEMENTATION`（用 `DEFAULT_ALLOWED_MUTATIONS` 包装，复用现有 `ActionGenerator` 产出 proof body，**不**新增 SearchAction 模型生成器、**不**改 prompt 协议）`→ render+check（复用 AttemptWorkspace.write_candidate + adapter.check）→ safety（仅 check accepted 时）→ reducer.apply 折叠进不可变 workspace → frontier.update → has_complete_solution 命中则 _assemble_and_finalize`。
 - 分支状态机全在 reducer：accepted+safety→`BranchStatus.ACCEPTED` + `register_accepted_fact`（obligation 同步 ACCEPTED）；check rejected→保持 ACTIVE、追加 `observations_from_check_result`、保留 `lean_artifact` 作 provenance（失败实现不否定数学策略）、更新 `last_action`；`stalled_streak >= STALL_THRESHOLD(3)`→DORMANT（终态，保证循环终止）；根策略 branch（无 parent）连续同 goal_fp 失败 `>= REPAIR_THRESHOLD(2)` 且尚未派生过子分支→派生 REPAIR 子 branch（新 `branch_id`、继承 argument/alignment/observations、`lean_artifact=None`，新尝试不覆盖旧分支）。
 - 复用共享预算/metrics/trace 出口：每个 IMPLEMENT attempt=1 model_call+1 check；最终 assemble 额外 reserve 1 check（assembler 接收 `budget_slice` 但不自 reserve，controller 显式 `reserve_check`）；`metadata["workspace"]=workspace.to_dict()` 经 `trace_store.workspace_payload` 透传；`_StructuredRunState` 只持有 attempts/attempt_metrics/safety_rejections（权威状态在 workspace），不复用 minimal 的 `_ControllerRunState`。
@@ -166,7 +174,7 @@ agent/
 - 新增纯函数结果契约聚合层 `agent/search/structured/summary.py`：`build_result_summary(workspace, *, assembly_result=None, selected_branch_ids=())` 从 workspace + 可选 `AssemblyResult` 派生 frozen `ResultSummary`（+ 各 `*_from_dict`），含 accepted/open/blocked obligations、selected branches + preserved alternatives、assembly outcome（executed/accepted/errors）、workspace validation report，以及 `blocked_branch_obligation_ids`——显式冻结当前「branch BLOCKED 但 obligation 仍 OPEN」的不一致现状（Phase 7.3 能力审计才同步把 obligation 置 BLOCKED）。
 - 零新依赖、不进 structured 包 `__all__`；minimal 路径不 import，不承担成本。
 - `build_structured_result`（`run_state.py`）加可选参数 `assembly_outcome`：非 None 时透传 `metadata["assembly"]`（含 errors，修复原 assembly 失败时 `AssemblyResult.errors` 被丢弃、只留 `stop_reason="assembly_failed"` 的问题）并填充 `metadata["result_summary"]`；minimal 的 `build_final_result` 不动，两个 key 均为 structured 独有。
-- `controller.py` 两处 `_assemble_and_finalize` 调用传 `assembly_outcome=assembly`（成功 / 失败两路径）；未进入 assembly 的终态（budget 耗尽、no_actions、tool_unavailable）保持 `assembly_outcome=None`，`ResultSummary.assembly.executed=False`。
+- `controller/core.py` 两处 `_assemble_and_finalize` 调用传 `assembly_outcome=assembly`（成功 / 失败两路径）；未进入 assembly 的终态（budget 耗尽、no_actions、tool_unavailable）保持 `assembly_outcome=None`，`ResultSummary.assembly.executed=False`。
 - `tests/test_structured_e2e.py` 四测：单根接受契约、两 helper+root 纯数据结构层（不跑 controller 多义务循环，那是 Phase 7.4）、capability 缺失→blocked 现状冻结、assembly 失败 errors 透传回归。
 
 ## Phase 7.1 workspace context projection
@@ -178,21 +186,21 @@ agent/
 
 ## Phase 7.2 typed structured action proposal
 
-- 新增 `agent/search/structured/proposal.py`：typed `StructuredActionProposal`（携带自描述 `SearchAction` + `ActionPayload` union）+ `StructuredActionGenerator` Protocol + `SUPPORTED_PROPOSAL_KINDS`。payload 全部 frozen + `to_dict`/`*_from_dict`：`ImplementPayload`（覆盖 IMPLEMENT + REPAIR，kind 区别在 `SearchAction` 上）、`DecomposePayload`（+ `DecomposeChildSpec`）、`CapabilityTestPayload`。
+- 新增 `agent/search/structured/proposal/core.py`（payload  dataclasses 在 `proposal/types.py`）：typed `StructuredActionProposal`（携带自描述 `SearchAction` + `ActionPayload` union）+ `StructuredActionGenerator` Protocol + `SUPPORTED_PROPOSAL_KINDS`。payload 全部 frozen + `to_dict`/`*_from_dict`：`ImplementPayload`（覆盖 IMPLEMENT + REPAIR，kind 区别在 `SearchAction` 上）、`DecomposePayload`（+ `DecomposeChildSpec`）、`CapabilityTestPayload`。
 - `validate()` 强制 kind/payload 一致并委托 `SearchAction.validate`；第一轮只开放 IMPLEMENT / REPAIR_IMPLEMENTATION / DECOMPOSE / RUN_CAPABILITY_TEST 四种 kind（其余 8 种后续 phase 开放）。零新依赖、不进 structured 包 `__all__`；minimal 路径不 import。
 - `adapt_legacy_generator` 把旧 `ActionGenerator`（返回 `ActionCandidate`）逐个包成 IMPLEMENT 提案（`ImplementPayload`），idempotent；adapter 不持有 branch 状态，kind 设为 IMPLEMENT 占位并打 `LEGACY_KIND_DEFERRED` 标记，由 controller 在候选分支物化后按 `branch.last_action` 终定（`_finalize_kind`），完全复刻旧 `_pick_action` 语义。baseline 可比性不变。
 - `StructuredController`：构造时 `adapt_legacy_generator` 归一化（检测 `_is_structured_generator` 标记避免重复包装，native generator 旁路）；删除 `_pick_action`，新增 `_finalize_kind`（deferred 提案终定 IMPLEMENT/REPAIR + rationale/作用域，native 提案直通）与 `_proposal_edit`（从 `ImplementPayload` 重建 `CandidateEdit`，`action` 取 `legacy_action`，默认 `model_complete`）。run 循环对非 implement kind 提案记录到 `state.skipped_proposals` 后 `continue`——这是 7.2 边界：DECOMPOSE / RUN_CAPABILITY_TEST 类型就位、可序列化、可校验，但不执行（执行器分别归 Phase 7.3 / 7.4）。legacy adapter 只产 implement，baseline 路径行为零变化。
 - `_StructuredRunState` 加 `skipped_proposals` 字段，经 `build_structured_result` 透传到 `metadata["skipped_proposals"]`，让 trace 看见 native generator 发出但未执行的提案。
-- 不变项：`action.py`（`ActionCandidate`/`ActionGenerator`/`StaticActionGenerator`）、`cli/generators.py`、`factory.py`、`workspace/action.py`、`reducer.py`/`frontier.py`/`branch_ops.py`（只读）/`finalize.py`/`projection.py`；minimal `ProofController` 不 import `proposal.py`，零成本。
+- 不变项：`action.py`（`ActionCandidate`/`ActionGenerator`/`StaticActionGenerator`）、`cli/generators.py`、`factory.py`、`workspace/action.py`、`reducer/core.py`/`frontier.py`/`branch_ops.py`（只读）/`finalize.py`/`projection.py`；minimal `ProofController` 不 import `proposal/core.py`，零成本。
 - 测试：新增 `tests/test_structured_proposal.py`（payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、adapter 正确性 + idempotent + native 旁路）；`tests/test_structured_controller.py` 三条兼容性用例不变，新增 legacy→implement/repair kind 终定 + native `StructuredActionGenerator` 旁路（`skipped_proposals` 为空）两测。
 
 ## Phase 7.3 Capability audit 闭环
 
 - 7.2 把 `RUN_CAPABILITY_TEST` 定为合法、可序列化、可校验的 proposal kind 但只记 `skipped_proposals` 跳过；7.3 真正执行它：`StructuredController._run_capability_audits` 在 IMPLEMENT 候选展开前逐个跑 capability proposal——把 `CapabilityTestPayload.signature` 作为 proof body 包进 `CandidateEdit`（`action="capability_test"`），复用 `_check`（`adapter.render_candidate` 替换 hole + `adapter.check`），每次 audit = 1 check、不另计 model_call（signature 由 generator 给定、不重新调模型）。结果经 reducer `apply` 折叠；DECOMPOSE 仍 skip（归 7.4）。audit 不跑 safety：`StructuredActionResult.safety_verdict=SafetyVerdict(accepted=False)` 占位，capability signature 接受 ≠ 命题成立。
-- reducer 新增第三转移分支 `_apply_capability_audit`（`reducer.py`）：从 `check_result.category` 派生一条 `Observation`（`source=ObservationSource.CAPABILITY_AUDIT`、`raw_evidence_ref="capability:<N>"`、message 区分 available / probe failed）追加到 branch.observations。缺失判据 `_capability_missing(check_result)` 只认 `UNKNOWN_IDENTIFIER` / `INVALID_REFERENCE` / `TOOL_UNAVAILABLE` 三个 category（环境资源不可用的事实），其他失败（unsolved goals / type mismatch）保守不阻塞——capability audit 只能阻塞路线，不能判命题错。缺失时 branch 置 `BLOCKED` **且** obligation 经 `_block_obligation`（`graph.with_obligation` + `workspace.successor`，复刻 `register_accepted_fact` 手法）同步置 `ObligationStatus.BLOCKED`；可用时 branch 保持 ACTIVE、不注册 verified fact。
+- reducer 新增第三转移分支 `_apply_capability_audit`（`reducer/core.py`）：从 `check_result.category` 派生一条 `Observation`（`source=ObservationSource.CAPABILITY_AUDIT`、`raw_evidence_ref="capability:<N>"`、message 区分 available / probe failed）追加到 branch.observations。缺失判据 `_capability_missing(check_result)` 只认 `UNKNOWN_IDENTIFIER` / `INVALID_REFERENCE` / `TOOL_UNAVAILABLE` 三个 category（环境资源不可用的事实），其他失败（unsolved goals / type mismatch）保守不阻塞——capability audit 只能阻塞路线，不能判命题错。缺失时 branch 置 `BLOCKED` **且** obligation 经 `_block_obligation`（`graph.with_obligation` + `workspace.successor`，复刻 `register_accepted_fact` 手法）同步置 `ObligationStatus.BLOCKED`；可用时 branch 保持 ACTIVE、不注册 verified fact。
 - 7.3 闭合 7.0 冻结的不一致：`ResultSummary.blocked_branch_obligation_ids`（`summary.py`）现在排除 obligation 已 BLOCKED 的条目，capability 缺失路径归零、`blocked_obligations` 填充；`no_actions` 路径（`block_branch` 只翻 branch）保持原样——缺候选 ≠ 机械能力缺失，那是另一种 gap，不在 7.3 范围。
 - frontier 不动：BLOCKED branch 经 `status != ACTIVE` 自动掉队，无 ACTIVE branch 时 `frontier.has_work()` 为 False 自然终止循环。
-- 不变项：`branch_ops.block_branch`（no_actions 仍只翻 branch）、`workspace/action.py`（`RUN_CAPABILITY_TEST` 作用域早已为空集）、`proposal.py`（kind/payload 协议不变）；minimal `ProofController` 不 import structured 包，零成本。
+- 不变项：`branch_ops.block_branch`（no_actions 仍只翻 branch）、`workspace/action.py`（`RUN_CAPABILITY_TEST` 作用域早已为空集）、`proposal/core.py`（kind/payload 协议不变）；minimal `ProofController` 不 import structured 包，零成本。
 - 测试：`tests/test_reducer.py` 新增 `ReducerCapabilityAuditTests`（缺失→branch+obligation BLOCKED、可用→ACTIVE 不注册 fact、非缺失失败不阻塞、不可变性 4 测）；`tests/test_structured_controller.py` 新增 native capability generator 缺失阻塞 + 可用保持 ACTIVE 两测；`tests/test_structured_e2e.py` 旧 `test_capability_missing_blocked_semantics` 改名 `test_no_actions_blocks_branch_leaving_obligation_open`（冻结 no_actions 残留 gap），新增 `test_capability_missing_blocks_obligation`（capability 闭环：branch+obligation 双 BLOCKED、gap 归零）。
 
 ## Phase 7.4 DECOMPOSE 执行器与依赖感知 frontier（多义务闭环）
@@ -205,7 +213,7 @@ agent/
 - controller `_render_target`：helper obligation 的 IMPLEMENT 候选按自己的 `lean_statement`（带 hole 模板）独立渲染 + check（而非塞进 root hole），保证真实 Lean 下 helper 被独立验证；root 仍填 task hole。`_StructuredRunState.decompose_records` 经 `build_structured_result` 透传到 `metadata["decompose_records"]`。
 - safety `StatementSafetyReviewer._statement_preservation_reason` 从 `startswith` 改为**子串存在**：多义务 assembly 在 root 之前注入 helper 声明，源文件不再以 root statement 开头；shortcut/axiom 扫描仍跑全文防 cheating。minimal 路径 prefix 在 offset 0，行为不变。
 - frontier drain 且无终态原因时 `stop_reason="no_ready_work"`；若存在 active BLOCKED obligation 升级为 `"blocked"`。
-- 不变项：`proposal.py`（kind/payload 协议不变）、`branch_ops`、`solution_tracker`/`summary`/`finalize`；minimal `ProofController` 不 import structured 包，零成本。
+- 不变项：`proposal/core.py`/`proposal/types.py`（kind/payload 协议不变）、`branch_ops`、`solution_tracker`/`summary`/`finalize`；minimal `ProofController` 不 import structured 包，零成本。
 - 测试：`tests/test_reducer.py` 新增 `ReducerDecomposeTests`（supersede+seed+validate、空 children no-op、stale 版本 no-op）+ `ReducerArtifactContractTests`（helper fact=渲染声明/root fact=proof body、artifact kind）；`tests/test_frontier.py` 新增 `FrontierReadinessGateTests`（parent 未 ready / helper accepted 后 ready / helper blocked 终止 / 单 root baseline）；`tests/test_assembler.py` 新增多义务注入 + 单 root 不变两测；`tests/test_safety.py` 新增前置 helper 声明不触发 statement_not_preserved；`tests/test_structured_controller.py` 旧 `test_non_executable_native_proposal_*` 改写为 `test_native_decompose_executes_and_structures_the_workspace`（7.4 执行语义），新增多义务端到端（decompose→helper accept→parent accept→assembly ok）+ helper blocked→`stop_reason="blocked"` 两测。
 
 ## Phase 7.5 helper 复用语义清理
@@ -217,7 +225,7 @@ agent/
 
 ## Phase 7.6 argument/representation 执行 + 竞争性失败假设
 
-- 三种 argument/representation kind 真正落地执行（之前只存在于 `action.py` 默认作用域表，proposal `validate()` 直接拒）。`proposal.py` 加 `ArgumentStepSpec`/`AlignmentSpec`（payload 层纯数据描述，不耦合 argument/alignment 模块）+ `ProposeArgumentPayload`/`RefineArgumentPayload`/`ChangeRepresentationPayload`（frozen + `to_dict`/`*_from_dict`），三个 discriminator 常量，扩 `ActionPayload` union 与 `SUPPORTED_PROPOSAL_KINDS`，`validate()` 加 kind→payload 一致校验，`structured_action_proposal_from_dict` 加分发分支。
+- 三种 argument/representation kind 真正落地执行（之前只存在于 `action.py` 默认作用域表，proposal `validate()` 直接拒）。`proposal/core.py` 加 `ArgumentStepSpec`/`AlignmentSpec`（payload 层纯数据描述，不耦合 argument/alignment 模块）+ `ProposeArgumentPayload`/`RefineArgumentPayload`/`ChangeRepresentationPayload`（frozen + `to_dict`/`*_from_dict`），三个 discriminator 常量，扩 `ActionPayload` union 与 `SUPPORTED_PROPOSAL_KINDS`，`validate()` 加 kind→payload 一致校验，`structured_action_proposal_from_dict` 加分发分支。
 - reducer 三个纯结构入口（与 `apply_decompose` 平行，无 `CheckResult`/safety/artifact）：`apply_argument`（PROPOSE 追加 step+alignment、REFINE 按 step_id 替换 claim+alignment；每个 step 必须有 alignment 的硬规则在**同一次转移**配对，pre-commit 校验候选 branch，失败 no-op，REFINE 全未命中现有 step 也 no-op）、`apply_change_representation`（父 branch SUPERSEDED + 派生 `<parent>.rep<n>` child，继承 observations、`lean_artifact=None`，整体替换 argument/alignment，pre-commit 校验 child）、`apply_failure_hypotheses`（逐个校验 evidence⊆observation_ids / affected⊆step_ids / proposed_tests.target==branch_id / hypothesis_id 不重复，**丢弃**非法 hypothesis，无合法则不产生 successor）。共享构造器 `_to_argument_step`/`_to_alignment_link`（UNALIGNED 强制三 target=None）/`_alignments_cover`/`_next_representation_branch_id`。
 - controller 主循环分流加 `argument_proposals`（PROPOSE/REFINE）+ `representation_proposals`（CHANGE_REPRESENTATION）两个桶，在 capability/decompose 之后、IMPLEMENT 之前处理，处理后 `continue` 刷新 frontier（仿 `_run_decompose`）；新增 `_run_argument`/`_run_change_representation` batch 执行器。**竞争性假设由 native generator 在后续 `generate()` 携带**（proposal metadata 的 `FAILURE_HYPOTHESES_KEY`，不新增独立模型调用，保持「每 IMPLEMENT attempt = 1 model_call + 1 check」预算），controller `_fold_failure_hypotheses` 在 `_generate` 后立即折叠到当前 branch（此时失败 observation 已在 branch 上）；`_select_test_action` 按 kind 成本（capability/decompose < argument/representation < implement）+ confidence 降序选一个 `proposed_tests`。
 - `run_state.py` `_StructuredRunState` 加 `argument_records`/`representation_records`，`build_structured_result` 透传 `metadata["argument_records"]`/`metadata["representation_records"]`；hypothesis 不单独记字段，随 `metadata["workspace"]`（branch.failure_hypotheses）进 trace。

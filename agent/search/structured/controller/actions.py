@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import logging
 
-from ...proof_system.base import CandidateEdit, DiagnosticCategory, ProofTask
-from ...proof_system.workspace import (
+from ....proof_system.base import CandidateEdit, DiagnosticCategory, ProofTask
+from ....proof_system.workspace import (
     BranchStatus,
     ProofBranch,
     ProofWorkspace,
     SearchAction,
     SearchActionKind,
 )
-from ..controller.types import AttemptRecord
-from ..metrics import attempt_metric
-from ..safety import SafetyVerdict
-from .branch_ops import branch_by_id
-from .proposal import (
+from ...controller.types import AttemptRecord
+from ...metrics import attempt_metric
+from ...safety import SafetyVerdict
+from ..branch_ops import branch_by_id
+from ..proposal import (
     FAILURE_HYPOTHESES_KEY,
     CapabilityTestPayload,
     ChangeRepresentationPayload,
@@ -25,7 +25,7 @@ from .proposal import (
     RefineArgumentPayload,
     StructuredActionProposal,
 )
-from .reducer import (
+from ..reducer import (
     StructuredActionResult,
     apply,
     apply_argument,
@@ -33,7 +33,7 @@ from .reducer import (
     apply_decompose,
     apply_failure_hypotheses,
 )
-from .run_state import _StructuredRunState
+from ..run_state import _StructuredRunState
 
 logger = logging.getLogger(__name__)
 

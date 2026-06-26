@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from ...agents.context import ContextSummarizer
-from ...proof_system.base import CandidateEdit, ProofTask
-from ...proof_system.workspace import (
+from ....agents.context import ContextSummarizer
+from ....proof_system.base import CandidateEdit, ProofTask
+from ....proof_system.workspace import (
     DEFAULT_ALLOWED_MUTATIONS,
     BranchStatus,
     ObligationStatus,
@@ -18,17 +18,17 @@ from ...proof_system.workspace import (
     WorkspaceStatus,
     initialize_from_task,
 )
-from ..action import ActionGenerationRequest
-from ..controller.context import summarize_context
-from ..safety import SafetyVerdict
-from .branch_ops import action_rationale, root_branch_id
-from .projection import build_context_projection
-from .proposal import (
+from ...action import ActionGenerationRequest
+from ...controller.context import summarize_context
+from ...safety import SafetyVerdict
+from ..branch_ops import action_rationale, root_branch_id
+from ..projection import build_context_projection
+from ..proposal import (
     LEGACY_ACTION_KEY,
     LEGACY_KIND_DEFERRED,
     StructuredActionProposal,
 )
-from .run_state import _StructuredRunState
+from ..run_state import _StructuredRunState
 
 
 class StructuredControllerRuntimeMixin:

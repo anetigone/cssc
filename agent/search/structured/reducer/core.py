@@ -66,8 +66,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from ...proof_system.base import CheckResult, DiagnosticCategory
-from ...proof_system.workspace import (
+from ....proof_system.base import CheckResult, DiagnosticCategory
+from ....proof_system.workspace import (
     ArtifactKind,
     BranchStatus,
     LeanArtifact,
@@ -77,23 +77,23 @@ from ...proof_system.workspace import (
     SearchAction,
     SearchActionKind,
 )
-from ...proof_system.workspace.observation import (
+from ....proof_system.workspace.observation import (
     Observation,
     ObservationSource,
     observations_from_check_result,
 )
-from ..safety import SafetyVerdict
-from .frontier import STALL_THRESHOLD, _stalled_streak
-from .proposal import DecomposeChildSpec
-from .reducer_decompose import apply_decompose
-from .reducer_structural import (
+from ...safety import SafetyVerdict
+from ..frontier import STALL_THRESHOLD, _stalled_streak
+from ..proposal import DecomposeChildSpec
+from .decompose import apply_decompose
+from .structural import (
     apply_argument,
     apply_change_representation,
     apply_failure_hypotheses,
 )
 
 if TYPE_CHECKING:
-    from ...proof_system.workspace import ProofWorkspace
+    from ....proof_system.workspace import ProofWorkspace
 
 #: Consecutive same-goal failures before a REPAIR child branch is spawned.
 #: Two identical-fingerprint failures suggest the realization is stuck but the
