@@ -6,7 +6,7 @@ import unittest
 from typing import Any, Mapping
 from unittest.mock import MagicMock, patch
 
-from agent.search.action import ActionGenerationRequest
+from agent.search.action import ActionGenerationError, ActionGenerationRequest
 from agent.agents import (
     ChatActionGenerator,
     ChatConfig,
@@ -15,7 +15,11 @@ from agent.agents import (
     ModelAdapterError,
 )
 from agent.agents.context import ChatContextSummarizer, SummarizationRequest
-from agent.agents.openai import UrllibChatTransport, chat_completions_url
+from agent.agents.openai import (
+    UrllibChatTransport,
+    chat_completions_url,
+    normalized_token_usage,
+)
 from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
 
 
@@ -52,6 +56,46 @@ class SequenceTransport(ChatTransport):
 
 
 class ChatActionGeneratorTests(unittest.TestCase):
+    def test_truncated_reasoning_only_response_is_generation_failure(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "internal reasoning",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 200,
+                    "total_tokens": 300,
+                    "completion_tokens_details": {"reasoning_tokens": 200},
+                },
+            }
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        with self.assertRaises(ActionGenerationError) as raised:
+            generator.generate(
+                ActionGenerationRequest(
+                    task=ProofTask(
+                        "sample", "theorem sample : True := by\n  {{proof}}"
+                    ),
+                    attempt_index=0,
+                )
+            )
+
+        self.assertEqual(raised.exception.reason, "model_output_truncated")
+        usage = raised.exception.metadata["token_usage"]
+        self.assertEqual(usage["input_tokens"], 100)
+        self.assertEqual(usage["output_tokens"], 0)
+        self.assertEqual(usage["reasoning_tokens"], 200)
+
     def test_generates_action_from_chat_completion_response(self) -> None:
         transport = RecordingTransport(
             {
@@ -98,6 +142,36 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertEqual(payload["model"], "model")
         self.assertIn("unsolved goals", payload["messages"][1]["content"])
         self.assertEqual(timeout, 12.0)
+
+    def test_reasoning_is_excluded_when_provider_reports_details(self) -> None:
+        usage = normalized_token_usage(
+            {
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 15,
+                    "total_tokens": 25,
+                    "completion_tokens_details": {"reasoning_tokens": 12},
+                }
+            }
+        )
+
+        self.assertEqual(usage["input_tokens"], 10)
+        self.assertEqual(usage["output_tokens"], 3)
+        self.assertEqual(usage["reasoning_tokens"], 12)
+
+    def test_provider_without_reasoning_details_keeps_completion_tokens(self) -> None:
+        usage = normalized_token_usage(
+            {
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 15,
+                    "total_tokens": 25,
+                }
+            }
+        )
+
+        self.assertEqual(usage["output_tokens"], 15)
+        self.assertEqual(usage["reasoning_tokens"], 0)
 
     def test_retry_prompt_contains_previous_proof_and_relevant_checker_errors(self) -> None:
         transport = RecordingTransport(

@@ -23,6 +23,70 @@ class ModelAdapterError(RuntimeError):
     """Raised when a model request cannot be completed or parsed."""
 
 
+def normalized_token_usage(response: Mapping[str, Any]) -> dict[str, int]:
+    """Normalize provider usage while excluding hidden reasoning from output cost.
+
+    OpenAI-compatible providers do not agree on whether they expose reasoning
+    details. When they do, ``completion_tokens`` normally includes those hidden
+    tokens; the comparable visible-output count is therefore completion minus
+    reasoning. Providers without reasoning details retain their reported
+    completion/output count unchanged.
+    """
+    usage = response.get("usage")
+    if not isinstance(usage, Mapping):
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "provider_completion_tokens": 0,
+            "provider_total_tokens": 0,
+        }
+
+    input_tokens = _usage_int(usage.get("prompt_tokens", usage.get("input_tokens")))
+    completion_tokens = _usage_int(
+        usage.get("completion_tokens", usage.get("output_tokens"))
+    )
+    details = usage.get("completion_tokens_details")
+    if not isinstance(details, Mapping):
+        details = usage.get("output_tokens_details")
+    reasoning_tokens = (
+        _usage_int(details.get("reasoning_tokens"))
+        if isinstance(details, Mapping)
+        else 0
+    )
+    # Be conservative with non-standard providers whose detail count is
+    # inconsistent with their completion total.
+    hidden_reasoning = min(reasoning_tokens, completion_tokens)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": completion_tokens - hidden_reasoning,
+        "reasoning_tokens": reasoning_tokens,
+        "provider_completion_tokens": completion_tokens,
+        "provider_total_tokens": _usage_int(usage.get("total_tokens")),
+    }
+
+
+def merge_token_usage(*usages: Mapping[str, Any]) -> dict[str, int]:
+    """Add normalized usage records across all requests in one tool loop."""
+    keys = (
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "provider_completion_tokens",
+        "provider_total_tokens",
+    )
+    return {
+        key: sum(_usage_int(usage.get(key)) for usage in usages)
+        for key in keys
+    }
+
+
+def _usage_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
 class ChatTransport(Protocol):
     """HTTP transport boundary for tests, smoke runs, and agent roles."""
 

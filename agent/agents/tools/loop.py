@@ -11,11 +11,14 @@ from ..openai import (
     ChatTransport,
     ModelAdapterError,
     chat_completions_url,
+    merge_token_usage,
+    normalized_token_usage,
 )
 from .base import Tool, ToolCall, ToolResult, extract_tool_calls
 
 
 logger = logging.getLogger(__name__)
+AGENT_TOKEN_USAGE_KEY = "_agent_token_usage"
 
 
 def run_tool_loop(
@@ -41,7 +44,7 @@ def run_tool_loop(
     if not tools:
         payload = dict(base_payload)
         payload["n"] = final_n
-        return transport.post_json(
+        response = transport.post_json(
             chat_completions_url(config.base_url),
             headers={
                 "Authorization": f"Bearer {config.api_key}",
@@ -50,9 +53,11 @@ def run_tool_loop(
             payload=payload,
             timeout_seconds=config.timeout_seconds,
         )
+        return _with_usage(response, (normalized_token_usage(response),))
 
     tool_rounds = 0
     seen_tool_calls: set[tuple[str, str]] = set()
+    request_usages: list[dict[str, int]] = []
     while tool_rounds < max_rounds:
         payload = dict(base_payload)
         payload["n"] = 1
@@ -67,12 +72,13 @@ def run_tool_loop(
             payload=payload,
             timeout_seconds=config.timeout_seconds,
         )
+        request_usages.append(normalized_token_usage(response))
         message = _first_message(response)
         calls = extract_tool_calls(message)
         if not calls:
             content = message.get("content")
             if final_n == 1 and isinstance(content, str) and content.strip():
-                return response
+                return _with_usage(response, request_usages)
             break
         tool_rounds += 1
         logger.info(
@@ -135,7 +141,7 @@ def run_tool_loop(
 
     final_payload = dict(base_payload)
     final_payload["n"] = final_n
-    return transport.post_json(
+    response = transport.post_json(
         chat_completions_url(config.base_url),
         headers={
             "Authorization": f"Bearer {config.api_key}",
@@ -144,6 +150,17 @@ def run_tool_loop(
         payload=final_payload,
         timeout_seconds=config.timeout_seconds,
     )
+    request_usages.append(normalized_token_usage(response))
+    return _with_usage(response, request_usages)
+
+
+def _with_usage(
+    response: Mapping[str, Any],
+    request_usages: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    enriched = dict(response)
+    enriched[AGENT_TOKEN_USAGE_KEY] = merge_token_usage(*request_usages)
+    return enriched
 
 
 def _first_message(response: Mapping[str, Any]) -> dict[str, Any]:

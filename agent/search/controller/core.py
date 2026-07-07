@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
-from ..action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from ..action import (
+    ActionCandidate,
+    ActionGenerationError,
+    ActionGenerationRequest,
+    ActionGenerator,
+)
 from ..budget import BudgetConfig, BudgetManager
 from .context import maybe_retrieve, summarize_context
 from ..memory import MemoryProcessor, MemoryUpdate
@@ -35,6 +40,23 @@ from ...runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
 
 
 logger = logging.getLogger(__name__)
+
+
+def _record_model_usage(
+    records: list[dict[str, int]],
+    actions: tuple[ActionCandidate, ...],
+) -> None:
+    if not actions:
+        return
+    usage = actions[0].metadata.get("token_usage")
+    if isinstance(usage, dict):
+        records.append(
+            {
+                key: value
+                for key, value in usage.items()
+                if isinstance(key, str) and isinstance(value, int)
+            }
+        )
 
 
 class ProofController:
@@ -97,7 +119,27 @@ class ProofController:
             self.budget.reserve_model_call()
 
             max_candidates = self.config.max_candidates_per_model_call
-            actions = self._generate_actions(state, task, max_candidates)
+            try:
+                actions = self._generate_actions(state, task, max_candidates)
+            except ActionGenerationError as exc:
+                failure = {
+                    "attempt_index": state.attempt_index,
+                    "reason": exc.reason,
+                    "message": str(exc),
+                    **exc.metadata,
+                }
+                state.generation_failures.append(failure)
+                usage = exc.metadata.get("token_usage")
+                if isinstance(usage, dict):
+                    state.model_usage.append(dict(usage))
+                state.stop_reason = f"generation:{exc.reason}"
+                logger.warning(
+                    "Controller generation failed: task_id=%s reason=%s",
+                    task.task_id,
+                    state.stop_reason,
+                )
+                break
+            _record_model_usage(state.model_usage, actions)
             if not actions:
                 state.stop_reason = "no_actions"
                 logger.info(
@@ -156,7 +198,6 @@ class ProofController:
             len(actions),
         )
         return actions
-
     def _build_generation_request(
         self,
         state: _ControllerRunState,

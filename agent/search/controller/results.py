@@ -36,6 +36,8 @@ def result_metadata(
         "proof_memory": memory_to_dict(state.memory),
         "safety_rejections": tuple(state.safety_rejections),
         "safety_reviewer": type(safety_reviewer).__name__,
+        "model_usage": tuple(state.model_usage),
+        "generation_failures": tuple(state.generation_failures),
     }
 
 
@@ -60,6 +62,12 @@ def run_metrics(
         budget_model_calls_used=snapshot.model_calls_used,
         budget_exhausted_reason=snapshot.exhausted_reason,
         execution_mode=execution_mode,
+        model_input_tokens=sum(
+            usage.get("input_tokens", 0) for usage in state.model_usage
+        ),
+        model_output_tokens=sum(
+            usage.get("output_tokens", 0) for usage in state.model_usage
+        ),
     )
 
 

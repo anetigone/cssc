@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from agent.search.action import ActionCandidate, ActionGenerationRequest
+from agent.search.action import (
+    ActionCandidate,
+    ActionGenerationError,
+    ActionGenerationRequest,
+)
 from agent.search.budget import BudgetConfig
 from agent.search.controller import ControllerConfig, ProofController
 from agent.search.safety import SafetyVerdict
@@ -286,6 +290,41 @@ class ProofControllerTests(unittest.TestCase):
         self.assertEqual(result.stop_reason, "no_actions")
         self.assertEqual(result.budget.model_calls_used, 1)
         self.assertEqual(result.budget.checks_used, 0)
+
+    def test_generation_failure_is_not_reported_as_no_actions(self) -> None:
+        class TruncatedGenerator:
+            def generate(self, request):
+                raise ActionGenerationError(
+                    "model_output_truncated",
+                    "reasoning consumed the response budget",
+                    metadata={
+                        "token_usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 0,
+                            "reasoning_tokens": 20,
+                        }
+                    },
+                )
+
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=TruncatedGenerator(),
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=2, max_model_calls=2),
+            )
+            result = controller.run(task)
+
+        self.assertEqual(
+            result.stop_reason, "generation:model_output_truncated"
+        )
+        self.assertEqual(result.metrics.model_input_tokens, 10)
+        self.assertEqual(result.metrics.model_output_tokens, 0)
+        self.assertEqual(
+            result.metadata["generation_failures"][0]["reason"],
+            "model_output_truncated",
+        )
 
     def test_caps_feedback_history(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")

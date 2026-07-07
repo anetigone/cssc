@@ -41,6 +41,8 @@ class _StructuredRunState:
     decompose_records: list[dict[str, Any]] = field(default_factory=list)
     argument_records: list[dict[str, Any]] = field(default_factory=list)
     representation_records: list[dict[str, Any]] = field(default_factory=list)
+    model_usage: list[dict[str, int]] = field(default_factory=list)
+    generation_failures: list[dict[str, Any]] = field(default_factory=list)
 
 
 _SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
@@ -116,6 +118,12 @@ def build_structured_result(
         budget_model_calls_used=snapshot.model_calls_used,
         budget_exhausted_reason=snapshot.exhausted_reason,
         execution_mode=execution_mode,
+        model_input_tokens=sum(
+            usage.get("input_tokens", 0) for usage in state.model_usage
+        ),
+        model_output_tokens=sum(
+            usage.get("output_tokens", 0) for usage in state.model_usage
+        ),
     )
     accepted_attempt = (
         state.attempts[-1] if accepted and state.attempts else None
@@ -139,6 +147,8 @@ def build_structured_result(
         "decompose_records": tuple(state.decompose_records),
         "argument_records": tuple(state.argument_records),
         "representation_records": tuple(state.representation_records),
+        "model_usage": tuple(state.model_usage),
+        "generation_failures": tuple(state.generation_failures),
         "result_summary": build_result_summary(
             workspace, assembly_result=assembly_outcome
         ).to_dict(),

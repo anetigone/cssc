@@ -99,6 +99,10 @@ class RunMetrics:
     # Common observation field shared by both execution modes so cross-mode
     # comparison is possible without deriving progress, stall or pass@k here.
     execution_mode: ExecutionMode = ExecutionMode.MINIMAL
+    # Comparable cost counters. Hidden provider reasoning is deliberately not
+    # folded into model_output_tokens.
+    model_input_tokens: int = 0
+    model_output_tokens: int = 0
 
 
 def summarize_run(
@@ -112,6 +116,8 @@ def summarize_run(
     budget_model_calls_used: int,
     budget_exhausted_reason: str | None,
     execution_mode: ExecutionMode = ExecutionMode.MINIMAL,
+    model_input_tokens: int = 0,
+    model_output_tokens: int = 0,
 ) -> RunMetrics:
     """Assemble one run's raw observations."""
     return RunMetrics(
@@ -124,6 +130,8 @@ def summarize_run(
         budget_model_calls_used=budget_model_calls_used,
         budget_exhausted_reason=budget_exhausted_reason,
         execution_mode=execution_mode,
+        model_input_tokens=model_input_tokens,
+        model_output_tokens=model_output_tokens,
     )
 
 
@@ -139,6 +147,8 @@ def run_metrics_payload(metrics: RunMetrics) -> dict[str, Any]:
         "budget_checks_used": metrics.budget_checks_used,
         "budget_model_calls_used": metrics.budget_model_calls_used,
         "budget_exhausted_reason": metrics.budget_exhausted_reason,
+        "model_input_tokens": metrics.model_input_tokens,
+        "model_output_tokens": metrics.model_output_tokens,
         "attempts": [_attempt_metric_payload(metric) for metric in metrics.attempts],
     }
 

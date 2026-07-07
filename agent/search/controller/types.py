@@ -103,5 +103,9 @@ class _ControllerRunState:
     memory: ProofMemory = field(default_factory=empty_memory)
     # Accepted candidates that the safety reviewer rejected, with reasons.
     safety_rejections: list[dict[str, Any]] = field(default_factory=list)
+    # One normalized usage record per model-generation call. Hidden reasoning
+    # remains diagnostic data and is excluded from run-level output tokens.
+    model_usage: list[dict[str, int]] = field(default_factory=list)
+    generation_failures: list[dict[str, Any]] = field(default_factory=list)
     # Unique per controller run so trace events from repeated runs never collide.
     sample_id: str = field(default_factory=new_sample_id)

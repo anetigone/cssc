@@ -117,6 +117,60 @@ class ChatDriverTests(unittest.TestCase):
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_1")
         self.assertNotIn("tools", transport.calls[2])
 
+    def test_complete_aggregates_visible_usage_across_tool_loop(self) -> None:
+        tool = FunctionTool(
+            name="echo",
+            description="Echo.",
+            parameters={"type": "object", "properties": {}},
+            _execute=lambda args: json.dumps(args),
+        )
+        transport = RecordingTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "echo",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 6,
+                        "completion_tokens_details": {"reasoning_tokens": 4},
+                    },
+                },
+                {
+                    "choices": [{"message": {"content": "done"}}],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 3},
+                },
+            ]
+        )
+        driver = ChatDriver(
+            ChatConfig(api_key="k", model="m"),
+            transport=transport,
+            tools=[tool],
+            max_tool_rounds=2,
+        )
+
+        response = driver.complete([{"role": "user", "content": "hi"}])
+        usage = response["_agent_token_usage"]
+
+        self.assertEqual(usage["input_tokens"], 30)
+        self.assertEqual(usage["output_tokens"], 5)
+        self.assertEqual(usage["reasoning_tokens"], 4)
+
     def test_complete_reuses_tool_capable_response_when_it_is_already_final(self) -> None:
         tool = FunctionTool(
             name="echo",

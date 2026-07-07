@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, Mapping, Sequence
 
 from ..proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
-from ..search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator
+from ..search.action import (
+    ActionCandidate,
+    ActionGenerationError,
+    ActionGenerationRequest,
+    ActionGenerator,
+)
 from .chat_driver import ChatDriver
 from .context import SummarizationResult
 from ..search.memory import ProofMemory, memory_to_prompt
@@ -22,6 +26,7 @@ from .openai import (
     choice_content,
 )
 from .tools import Tool
+from .tools.loop import AGENT_TOKEN_USAGE_KEY
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +92,8 @@ class ChatActionGenerator(ActionGenerator):
             logger.error("Model response missing choices list: model=%s", self.config.model)
             raise ModelAdapterError("Model response is missing a choices list.")
 
+        token_usage = response.get(AGENT_TOKEN_USAGE_KEY)
+        usage_metadata = dict(token_usage) if isinstance(token_usage, Mapping) else {}
         candidates: list[ActionCandidate] = []
         for index, choice in enumerate(choices[: request.max_candidates]):
             if not isinstance(choice, Mapping):
@@ -110,6 +117,7 @@ class ChatActionGenerator(ActionGenerator):
                         "choice_index": index,
                         "finish_reason": choice.get("finish_reason"),
                         "removed_exploration_commands": removed_commands,
+                        "token_usage": usage_metadata,
                     },
                 )
             )
@@ -120,11 +128,33 @@ class ChatActionGenerator(ActionGenerator):
             len(candidates),
         )
         if not candidates:
+            finish_reasons = tuple(
+                str(choice.get("finish_reason", ""))
+                for choice in choices
+                if isinstance(choice, Mapping)
+            )
+            reason = (
+                "model_output_truncated"
+                if "length" in finish_reasons
+                else "empty_model_output"
+            )
             logger.warning(
-                "Model response produced no proof candidates: model=%s task_id=%s response=%s",
+                "Model response produced no proof candidates: model=%s task_id=%s "
+                "reason=%s finish_reasons=%s token_usage=%s",
                 self.config.model,
                 request.task.task_id,
-                json.dumps(response, ensure_ascii=False, default=str),
+                reason,
+                finish_reasons,
+                usage_metadata,
+            )
+            raise ActionGenerationError(
+                reason,
+                f"Model produced no usable proof candidate ({reason}).",
+                metadata={
+                    "model": self.config.model,
+                    "finish_reasons": finish_reasons,
+                    "token_usage": usage_metadata,
+                },
             )
         return tuple(candidates)
 

@@ -2,7 +2,13 @@
 
 import logging
 
-from .search.action import ActionCandidate, ActionGenerationRequest, ActionGenerator, StaticActionGenerator
+from .search.action import (
+    ActionCandidate,
+    ActionGenerationError,
+    ActionGenerationRequest,
+    ActionGenerator,
+    StaticActionGenerator,
+)
 from .search.budget import BudgetConfig, BudgetExhausted, BudgetManager, BudgetSnapshot
 from .search.controller import AttemptRecord, ControllerConfig, ControllerResult, ProofController
 from .search.execution import ExecutionMode
@@ -76,6 +82,7 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
     "ActionCandidate",
+    "ActionGenerationError",
     "ActionGenerationRequest",
     "ActionGenerator",
     "AgentRole",

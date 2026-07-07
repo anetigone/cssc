@@ -91,6 +91,8 @@ class RunMetricsTests(unittest.TestCase):
             budget_checks_used=2,
             budget_model_calls_used=1,
             budget_exhausted_reason="checks",
+            model_input_tokens=123,
+            model_output_tokens=7,
         )
 
         payload = run_metrics_payload(metrics)
@@ -98,6 +100,8 @@ class RunMetricsTests(unittest.TestCase):
         self.assertEqual(payload["sample_id"], "sample-1")
         self.assertEqual(payload["task_id"], "task-1")
         self.assertEqual(payload["attempt_count"], 0)
+        self.assertEqual(payload["model_input_tokens"], 123)
+        self.assertEqual(payload["model_output_tokens"], 7)
         self.assertNotIn("progressed", payload)
         self.assertNotIn("pass_at_k", payload)
         self.assertNotIn("repeated_goal_stalls", payload)

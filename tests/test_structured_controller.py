@@ -17,7 +17,11 @@ from agent.proof_system.base import (
     ProofTask,
 )
 from agent.runtime.workspace import AttemptWorkspace
-from agent.search.action import ActionCandidate, ActionGenerationRequest
+from agent.search.action import (
+    ActionCandidate,
+    ActionGenerationError,
+    ActionGenerationRequest,
+)
 from agent.search.budget import BudgetConfig
 from agent.search.controller import ControllerConfig
 from agent.search.execution import ExecutionMode
@@ -300,6 +304,34 @@ class StructuredControllerTests(unittest.TestCase):
             result.metadata["workspace"]["branches"][0]["status"],
             "blocked",
         )
+
+    def test_generation_failure_keeps_branch_active_and_reports_cause(self) -> None:
+        class TruncatedGenerator:
+            def generate(self, request):
+                raise ActionGenerationError(
+                    "model_output_truncated",
+                    "reasoning consumed the response budget",
+                    metadata={
+                        "token_usage": {
+                            "input_tokens": 11,
+                            "output_tokens": 0,
+                            "reasoning_tokens": 21,
+                        }
+                    },
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, TruncatedGenerator())
+            result = controller.run(_task())
+
+        self.assertEqual(
+            result.stop_reason, "generation:model_output_truncated"
+        )
+        self.assertEqual(
+            result.metadata["workspace"]["branches"][0]["status"], "active"
+        )
+        self.assertEqual(result.metrics.model_input_tokens, 11)
+        self.assertEqual(result.metrics.model_output_tokens, 0)
 
     def test_assembly_reserves_its_own_check_budget(self) -> None:
         # max_checks=2: one attempt + the assembly recheck. The run must still

@@ -24,7 +24,11 @@ from agent.proof_system.workspace import (
     WorkspaceStatus,
     initialize_from_task,
 )
-from agent.search.action import ActionGenerationRequest, ActionGenerator
+from agent.search.action import (
+    ActionGenerationError,
+    ActionGenerationRequest,
+    ActionGenerator,
+)
 from agent.search.budget import BudgetConfig, BudgetManager
 from agent.search.controller.types import (
     AttemptRecord,
@@ -164,7 +168,32 @@ class StructuredController(
                 self.budget.snapshot().model_calls_used,
                 self.budget.snapshot().remaining_model_calls,
             )
-            proposals = self._generate(task, branch, workspace, state)
+            try:
+                proposals = self._generate(task, branch, workspace, state)
+            except ActionGenerationError as exc:
+                failure = {
+                    "attempt_index": state.attempt_index,
+                    "branch_id": branch.branch_id,
+                    "reason": exc.reason,
+                    "message": str(exc),
+                    **exc.metadata,
+                }
+                state.generation_failures.append(failure)
+                usage = exc.metadata.get("token_usage")
+                if isinstance(usage, dict):
+                    state.model_usage.append(dict(usage))
+                state.stop_reason = f"generation:{exc.reason}"
+                logger.warning(
+                    "Structured generation failed: task_id=%s branch=%s reason=%s",
+                    task.task_id,
+                    branch.branch_id,
+                    state.stop_reason,
+                )
+                break
+            if proposals:
+                usage = proposals[0].metadata.get("token_usage")
+                if isinstance(usage, dict):
+                    state.model_usage.append(dict(usage))
             if not proposals:
                 workspace = block_branch(workspace, branch.branch_id)
                 frontier.update(workspace, branch.branch_id, accepted=False)

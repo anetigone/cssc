@@ -368,4 +368,6 @@ python -m pytest tests/ -q
 - 真实 Lean checker 调用可能耗时较长，CLI/测试支持超时与重试。
 - 持久化 Lean server 完成信号不可靠时，会在 `--lean-server-fallback-seconds` 静默期后接受当前诊断，避免每次都回退到子进程。
 - `CheckResult.accepted` 表示 checker 的原始判断；controller 只有在后续 safety verdict 也通过时才返回 `ControllerResult.accepted=True`。
+- `ChatActionGenerator` 的截断或空模型输出属于 typed generation failure：`finish_reason="length"` 映射为 `generation:model_output_truncated`，不得折叠成 `no_actions` 或阻塞 structured branch；只有生成器正常返回空动作集合才使用 `no_actions`。
+- token 成本采用跨 provider 可比口径：`model_input_tokens` 统计 prompt/input，`model_output_tokens` 统计可见 completion/output；provider 明确报告的 hidden reasoning tokens 从 output 中扣除并只保留在 `metadata["model_usage"]` 诊断记录中。未报告 reasoning details 的模型直接使用其 completion/output tokens。tool loop 内各轮请求累计一次。
 - `.env` 只由脚本消费，不要直接读取其内容写入日志。

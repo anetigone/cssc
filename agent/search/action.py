@@ -8,6 +8,21 @@ from typing import Any, Protocol, Sequence
 from ..proof_system.base import CandidateEdit, ParsedFeedback, ProofTask
 
 
+class ActionGenerationError(RuntimeError):
+    """Typed failure to produce actions, distinct from a deliberate empty set."""
+
+    def __init__(
+        self,
+        reason: str,
+        message: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.metadata = dict(metadata or {})
+
+
 @dataclass(frozen=True)
 class ActionCandidate:
     """One model- or heuristic-proposed proof edit."""
