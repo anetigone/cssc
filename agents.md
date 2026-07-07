@@ -246,6 +246,12 @@ agent/
 - 不变项：`branch.py`/`obligation.py`/`graph.py`/`action.py`/`hypothesis.py`/`proposal/*`/`projection*`/`frontier.py`/`finalize.py`/`solution_tracker.py`/`summary.py`/`branch_ops.py` 只读引用；minimal `ProofController` 不 import structured 包，零成本。
 - 测试：`tests/test_reducer.py` 加 `ReducerTransitiveBlockTests`（helper block→依赖链 parent 同步 BLOCKED、已验证 sibling 不受影响、`block_branch` 路径不传播、不可变）+ `ReducerDormantRecoveryTests`（accept helper 复活 DORMANT parent、capability 可用复活、missing 不复活、无 DORMANT no-op）；新增 `tests/test_structured_run_state.py`（finalizer 五态：accepted / 单根 OPEN 耗尽→SEARCHING / 非根 accepted→PARTIAL / 全 blocked→BLOCKED / open+verified helper→PARTIAL）；`tests/test_workspace.py` 加 `PARTIAL` 序列化往返；`tests/test_structured_controller.py` 的 blocked-helper 测试加断言 root obligation 传递性 BLOCKED + `workspace_status="blocked"`。
 
+## Phase 7.8 真实复杂任务与消融（**未做**）
+
+- 这是 proof-system-redesign 的收尾实证对比：用同一组复杂 Lean 任务跑各档配置（minimal / structured 去掉某些能力），度量结构化层相对 minimal baseline 的净收益（plan1.md §15 的消融原则）。
+- **依赖真实 Lean toolchain（慢、需非沙箱）+ 真实 model 调用（有 token 成本）**，不进 CI、手动跑。
+- 完整方案（任务集、消融档位、跑批脚本、对比指标口径、报告产出、提交粒度）见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)。在落地前，本文不在此维护 7.8 的代码结构细节——它不引入新代码模块，只复用现有 structured 执行器 + trace 指标出口。
+
 ## `ChatDriver` 抽象
 
 `ChatDriver` 是各 agent 共享的 chat-completion 驱动，职责单一：

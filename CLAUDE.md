@@ -22,55 +22,26 @@
 
 ## 二、阶段路线图（proof-system-redesign）
 
-完整设计见 [tmp/plan1.md](tmp/plan1.md)。当前分支 `feature/proof-system-redesign`。
+完整设计见 [tmp/plan1.md](tmp/plan1.md)，**每个 Phase 的落地细节、改动文件、复用点、不变项、对应测试全在 [agents.md](agents.md)** —— 本节只给一行里程碑，便于快速定位当前进度，不重复 agents.md 的内容。当前分支 `feature/proof-system-redesign`。
 
-- **Phase 0** ✅ 已完成：固定 baseline 与评测口径（`agent/search/metrics.py`、trace、fixtures）。
-- **Phase 1** ✅ 已完成：强化 Minimal Refinement Core
-  - 结构化 goal state：`agent/proof_system/base.py:GoalState`、`agent/proof_system/lean_feedback.py:extract_goal_states`
-  - self-managed memory：`agent/search/memory.py`（`ProofMemory` / `MemoryProcessor`）
-  - controller + prompt 接入 memory：`agent/search/controller/core.py`、`agent/agents/proof.py`
-  - trace 记录 memory/goal_state：`agent/search/metrics.py`、`agent/runtime/trace_store.py`
-  - SafetyReviewer：`agent/search/safety.py`（确定性 statement-preservation + anti-cheating）
-- **Phase 2** ✅ 已完成：执行模式参数 `ExecutionMode.MINIMAL/STRUCTURED` + `--execution-mode` CLI + 共同观测。**明确禁止运行时自动切换模式。**
-- **Phase 3** ✅ 已完成：ProofWorkspace 与 Obligation DAG
-  - 结构化状态原语：`agent/proof_system/workspace.py`（`ProofObligation`/`ObligationGraph`/`ProofWorkspace`/`FormalSpecification`/`VerifiedFact`，frozen + 序列化）
-  - DAG 合法性、版本规则（`new_version`/SUPERSEDED）、`initialize_from_task`、`decompose`、`register_accepted_fact`
-  - final-assembly 整体复检：`agent/proof_system/assembler.py:ArtifactAssembler`
-  - trace 集成：`workspace_payload` 透传 `metadata["workspace"]`；minimal 零成本
-  - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR 是 Phase 6）
-- **Phase 4** ✅ 已完成：ProofBranch / ArgumentStep / Alignment / Observation
-  - 数学论证层原语在 `agent/proof_system/workspace/` 子包：`argument.py`（`ArgumentStep`/`ArgumentGraph`）、`artifact.py`（`LeanArtifact` 从 `assembler.py` 迁入并扩展）、`alignment.py`（`AlignmentLink`/`AlignmentRelation`）、`observation.py`（`Observation`/`ObservationSource` + 确定性 checker 提取器）、`branch.py`（`ProofBranch`/`BranchStatus`）
-  - `ArgumentGraph.validate()` 确定性 DAG 校验；`observations_from_check_result` 把非 accepted 检查结果转成中立 Observation；无法对齐显式记 `UNALIGNED`
-  - `ProofWorkspace` 接入 `branches: tuple[ProofBranch, ...]` + 序列化；`base.py:ProgressSignal` 补 `to_dict`/`from_dict`
-  - `build_controller` 对 STRUCTURED 仍抛错（动作协议是 Phase 5、frontier 是 Phase 6）；minimal 路径不 import workspace 包
-- **Phase 5** ✅ 已完成：统一 ProofAgent 动作与失败假设
-  - 动作协议原语在 `agent/proof_system/workspace/` 子包：`action.py`（`SearchAction`/`SearchActionKind`/`MutationKind` + `DEFAULT_ALLOWED_MUTATIONS` 默认作用域表）、`hypothesis.py`（`FailureHypothesis`/`FailureKind`），frozen + 序列化。
-  - 每个动作显式声明 `allowed_mutations`；只读默认作用域允许 argument/implement 同步维护 alignment；`SearchAction.validate()` 确定性校验 target_branch_id、rationale、allowed_mutations（允许 narrow、禁止 broaden，跨界须另起新动作）、target_step_ids 唯一性，返回 `SearchActionReport` 不抛。
-  - `FailureHypothesis` 承载多个竞争性失败假设；`ProofBranch.last_action` / `failure_hypotheses` 将动作和假设纳入权威 workspace 与 trace，并校验 evidence/step/branch 引用；`FailureKind` 仅含 6 个模型竞争语义类别（不含基础设施错误）。
-  - `build_controller` 对 STRUCTURED 仍抛错（frontier/AND-OR driver 是 Phase 6）；minimal 路径不 import workspace 包。
-- **Phase 6** ✅ 已完成：Frontier 与 AND-OR 搜索（结构化执行器落地）
-  - 结构化执行器在 `agent/search/structured/` 子包（与 `controller/` 平行、互不 import）：`frontier.py`（`Frontier`/`FrontierNode`，可变调度器只读 workspace、确定性 tuple 排序、`_stalled_streak` 纯函数派生）、`solution_tracker.py`（`has_complete_solution`/`select_solution` 纯函数，与 assembler 前置条件对齐）、`reducer/core.py`（`apply` 纯函数，绝不 mutate；accepted→ACCEPTED+register_accepted_fact，rejected→追加 observation 保留 artifact provenance，stall 阈值→DORMANT，根策略连续失败→派生 REPAIR 子 branch）、`run_state.py`（`_StructuredRunState` + `build_structured_result`，平行 `results.py`、复用 `summarize_run`）、`controller/core.py`（`StructuredController`，与 `ProofController` 同构造签名）
-  - `StructuredController.run` 跑 plan1.md §12 的 structured 循环：`frontier.pop → 确定性选 IMPLEMENT/REPAIR_IMPLEMENTATION`（`DEFAULT_ALLOWED_MUTATIONS` 包装，复用现有 `ActionGenerator` 产出 proof body，不引入新模型协议）`→ render+check（复用 AttemptWorkspace/adapter.check）→ safety（仅 accepted）→ reducer.apply → frontier.update → has_complete_solution → assemble 终检`
-  - 复用共享预算/metrics/trace 出口：每个 attempt=1 model_call+1 check，assemble 额外 reserve 1 check；`metadata["workspace"]` 透传序列化 workspace；minimal 路径零成本（factory lazy import，minimal 不 import structured 包）
-  - `factory.build_controller` 解锁 `STRUCTURED` 返回 `StructuredController`；`StructuredModeUnavailableError` 类保留（向后兼容 import + CLI 防御性 except + 未知 mode 兜底）；mode-mismatch 检查对两分支都跑
-  - 第一版只驱动单 root obligation（OR 搜索 + 分支状态机），retriever/context_summarizer 已接入但仍是 minimal 风格摘要（不是 plan1 §10 的 workspace 投影），不 decompose、不自动恢复 DORMANT——structured 上下文投影、DECOMPOSE、能力审计是 Phase 7
-- **Phase 7.0/7.1/7.2** ✅ 已完成：端到端契约冻结、workspace context projection、typed structured action proposal
-  - 7.0：纯函数结果契约聚合层 `agent/search/structured/summary.py`（`build_result_summary` → frozen `ResultSummary`，含 accepted/open/blocked obligations、selected branches、assembly outcome、workspace validation report、`blocked_branch_obligation_ids`）；`build_structured_result` 加 `assembly_outcome` 透传 `metadata["assembly"]`（含 errors）+ `metadata["result_summary"]`；`tests/test_structured_e2e.py` 冻结契约。
-  - 7.1：纯函数投影 `agent/search/structured/projection.py`（`build_context_projection` → frozen `StructuredContextProjection`，projection 成为 prompt/summarizer 单一数据源）；`ChatActionGenerator._append_structured_projection` 渲染；minimal 永不设该键零成本。
-  - 7.2：typed `StructuredActionProposal`（`agent/search/structured/proposal/core.py`，`SearchAction` + `ActionPayload` union：`ImplementPayload`/`DecomposePayload`/`CapabilityTestPayload`）+ `StructuredActionGenerator` Protocol；`adapt_legacy_generator` 把旧 `ActionGenerator` 包成 IMPLEMENT 提案（baseline 可比性不变），controller 用 `_finalize_kind` 复刻旧 `_pick_action` 语义。**第一轮只开放 IMPLEMENT/REPAIR（执行）、DECOMPOSE/RUN_CAPABILITY_TEST（仅类型+序列化+校验，不执行→归 7.3/7.4）**；minimal 不 import。
-- **Phase 7.3** ✅ 已完成：capability audit 闭环 + obligation BLOCKED 同步
-  - controller `_run_capability_audits` 真正执行 `RUN_CAPABILITY_TEST`：在 IMPLEMENT 候选展开前把 `CapabilityTestPayload.signature` 包进 `CandidateEdit`（`action="capability_test"`）复用 `_check`（render+adapter.check），每次 audit=1 check、不另计 model_call；audit 不跑 safety（`safety_verdict=accepted=False` 占位，capability 接受 ≠ 命题成立）。DECOMPOSE 仍 skip（归 7.4）。
-  - reducer 第三转移分支 `_apply_capability_audit`：从 check category 派生 `CAPABILITY_AUDIT` Observation；缺失判据 `_capability_missing` 只认 `UNKNOWN_IDENTIFIER`/`INVALID_REFERENCE`/`TOOL_UNAVAILABLE`（其他失败保守不阻塞——audit 只能阻塞路线、不能判命题错），缺失则 branch 置 BLOCKED **且** `_block_obligation` 把 obligation 同步置 `ObligationStatus.BLOCKED`（复刻 `register_accepted_fact` 手法），可用则保持 ACTIVE、不注册 fact。
-  - 闭合 7.0 冻结的不一致：`ResultSummary.blocked_branch_obligation_ids` 排除 obligation 已 BLOCKED 的条目，capability 缺失路径归零、`blocked_obligations` 填充；`no_actions` 路径（`block_branch` 只翻 branch）保持原样（缺候选 ≠ 机械能力缺失，是另一种 gap）。frontier 不动，BLOCKED branch 经 `status != ACTIVE` 自动掉队。minimal 不 import structured 包，零成本。
-- **Phase 7.4/7.5/7.6** ✅ 已完成：DECOMPOSE 执行器+依赖感知 frontier+多义务 assembly、helper 复用语义清理、argument/representation 执行+竞争性失败假设层。完整说明看 [agents.md](agents.md) 对应段，要点：
-  - 7.4：`reducer.apply_decompose` 执行 DECOMPOSE（结构性转移，no check）；frontier readiness gate（依赖满足才可调度）；artifact kind（root PROOF_BODY 填 hole、helper DECLARATION 独立声明）+ `_inject_helpers`；`VerifiedFact.declaration_id/artifact_source`；safety 改子串匹配。
-  - 7.5：projection `AcceptedFactSlot/DependencyFact.declaration_id` 按名引用 helper；`no_ready_work` + active BLOCKED obligation 升级 `stop_reason="blocked"`。
-  - 7.6：`proposal/core.py` 加 `ProposeArgumentPayload`/`RefineArgumentPayload`/`ChangeRepresentationPayload`（+ `ArgumentStepSpec`/`AlignmentSpec`），解锁三种 kind；`reducer` 三个纯结构入口 `apply_argument`/`apply_change_representation`/`apply_failure_hypotheses`（pre-commit 校验候选 branch，失败 no-op）；controller 分流 + `_run_argument`/`_run_change_representation` + `_fold_failure_hypotheses`（generator 在 `FAILURE_HYPOTHESES_KEY` 携带，不新增模型调用）+ `_select_test_action`（低成本优先）。minimal 不 import structured 包，零成本。
-- **Phase 7.7** ✅ 已完成：partial results、transitive BLOCKED 传播、evidence-driven DORMANT 恢复。完整说明看 [agents.md](agents.md) 对应段，要点：
-  - `WorkspaceStatus` 加 `PARTIAL`；`run_state.py:finalize_workspace_status` 确定性终态 finalizer（`accepted`→ACCEPTED / 无活路线且 root 非 accepted→BLOCKED / 存在非根 accepted→PARTIAL / 否则保持 SEARCHING，单根 baseline 预算耗尽不误标 PARTIAL），`build_structured_result` 在派生 `ResultSummary` 前 `successor(status=...)`，accepted 路径幂等。
-  - `reducer/core.py:_block_obligation` 传递性 BLOCKED：helper capability 缺失置 BLOCKED 时，沿反向依赖边 BFS 把依赖闭包内仍 OPEN/IN_PROGRESS 的 obligation 同步 BLOCKED（同一 successor），已终态不动；`block_branch`（no_actions）不走此路径。
-  - `reducer/core.py:_reactivate_dormant` evidence-driven 恢复：在 `_accept`（fact accepted 后）与 `_apply_capability_audit`（capability 可用）触发，把 trigger obligation 或其依赖者的 DORMANT 分支翻回 ACTIVE；frontier 按 `_is_ready` 自动重入队，**不**因 frontier 空无条件唤醒；下次相同 goal 会再 stall 自我纠正。
-  - minimal 不 import structured 包，零成本。
+> 阅读约定：改 structured 相关代码前，先看 [agents.md](agents.md) 对应 Phase 段的「不变项」（明确列出哪些模块该 phase 不动、minimal 路径不 import），这是避免越界改动和误判 minimal 成本的关键。
+
+- **Phase 0** ✅：固定 baseline 与评测口径（`agent/search/metrics.py`、trace、fixtures）。
+- **Phase 1** ✅：Minimal Refinement Core——结构化 goal state、self-managed `ProofMemory`、确定性 `StatementSafetyReviewer`、memory/goal_state 进 trace。
+- **Phase 2** ✅：`ExecutionMode.MINIMAL/STRUCTURED` 参数 + `--execution-mode` CLI + 共同观测。**禁止运行时自动切换模式。**
+- **Phase 3** ✅：`ProofWorkspace`/`ObligationGraph`/`VerifiedFact` + DAG 校验/版本规则 + `ArtifactAssembler` 整体复检；minimal 不 import workspace 包，零成本。
+- **Phase 4** ✅：`ProofBranch`/`ArgumentStep`/`AlignmentLink`/`Observation` 数学论证层原语 + 确定性 checker→Observation 提取器。
+- **Phase 5** ✅：`SearchAction`（`allowed_mutations` 作用域校验）+ `FailureHypothesis`（6 类竞争性语义假设）纳入权威 workspace。
+- **Phase 6** ✅：`StructuredController` + frontier（确定性 tuple 排序）+ reducer（纯函数转移）+ AND-OR 骨架；factory 解锁 `STRUCTURED`。
+- **Phase 7.0** ✅：端到端契约冻结——`build_result_summary`（frozen `ResultSummary`）+ `assembly_outcome`/`result_summary` 透传。
+- **Phase 7.1** ✅：workspace context projection（`build_context_projection`）成为 prompt/summarizer 单一数据源。
+- **Phase 7.2** ✅：typed `StructuredActionProposal` + `adapt_legacy_generator`；第一轮只执行 IMPLEMENT/REPAIR，DECOMPOSE/CAPABILITY 仅类型+序列化。
+- **Phase 7.3** ✅：capability audit 真正执行 + obligation BLOCKED 同步（`_apply_capability_audit` + `_block_obligation`）。
+- **Phase 7.4** ✅：`apply_decompose` 执行器 + frontier readiness gate + artifact kind（root PROOF_BODY / helper DECLARATION）+ 多义务 assembly。
+- **Phase 7.5** ✅：helper 复用语义清理（`declaration_id` 按名引用 helper）+ `no_ready_work`→`stop_reason="blocked"`。
+- **Phase 7.6** ✅：`PROPOSE/REFINE_ARGUMENT` + `CHANGE_REPRESENTATION` 执行 + 竞争性 `FailureHypothesis` 层（`_select_test_action` 低成本优先）。
+- **Phase 7.7** ✅：`WorkspaceStatus.PARTIAL` + 终态 finalizer + 传递性 BLOCKED 传播 + evidence-driven DORMANT 恢复。
+- **Phase 7.8** ⬜ **未做**：真实复杂任务 + minimal-vs-structured 消融对比（依赖真实 Lean + 真实 model，手动跑、不进 CI）。方案见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)，不引入新代码模块。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 
