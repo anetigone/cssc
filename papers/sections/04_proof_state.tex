@@ -1,0 +1,106 @@
+\section{A Structured State for Budget Decisions}
+
+\subsection{One Proof Agent, Two Execution Regimes}
+
+The system exposes two explicit execution modes. The \emph{minimal} mode is a
+linear refinement loop:
+\[
+\textsc{Propose}\rightarrow\textsc{Check}\rightarrow
+\textsc{Remember}\rightarrow\textsc{Refine}.
+\]
+It carries compact memory of established facts, failed approaches, Lean API
+lessons, and open goals. This mode is both a practical solver for local
+theorems and the paper's main agentic baseline.
+
+The \emph{structured} mode is the substrate for budget-aware control. It uses
+the same proof model, checker, retrieval interface, and safety review, but
+represents several live obligations and alternatives explicitly. A run chooses
+one mode at startup; it never silently falls back from structured search to
+the minimal loop. This keeps measurements interpretable.
+
+We deliberately use one model role, the \emph{Proof Agent}. Mathematical
+planning, Lean implementation, and error interpretation remain in the same
+reasoning context because a Lean error can expose a missing mathematical step,
+a library mismatch, a poor representation, or a merely local tactic defect.
+The controller schedules computations but does not assign failures to a chain
+of role-specialized agents.
+
+\subsection{Proof Workspace}
+
+A workspace \(W\) is an immutable, versioned state with five principal layers.
+
+\paragraph{Formal specification.}
+The original problem, fixed Lean statement, imports, and proof hole define the
+statement that all accepted candidates must preserve.
+
+\paragraph{Obligation graph.}
+Proof obligations are nodes in a directed acyclic graph. An edge
+\(o\rightarrow d\) states that obligation \(o\) requires dependency \(d\).
+All dependencies of the root must be accepted, so the graph expresses the AND
+structure of a complex proof. A statement, assumption, or dependency change
+creates a new obligation version; old versions remain as provenance but cannot
+be used as current facts.
+
+\paragraph{Proof branches.}
+Each obligation may have several branches representing alternative arguments
+or Lean realizations, giving OR structure. A branch stores its parent, argument
+steps, Lean artifact, alignment links, observations, failure hypotheses, last
+action, progress signal, and status. A failed Lean implementation does not
+automatically refute the mathematical strategy that produced it.
+
+\paragraph{Evidence and verified facts.}
+Checker diagnostics become append-only observations with source spans,
+declaration identifiers, goal fingerprints, and raw trace references.
+Accepted facts are registered only after both Lean checking and safety review,
+and they retain the obligation version and artifact provenance. Capability
+audits record narrower mechanical facts such as whether an identifier exists
+or a minimal signature elaborates; they do not prove the target theorem.
+
+\paragraph{Argument--Lean alignment.}
+Natural-language argument steps link to Lean declarations, source spans, or
+goals with one of three relations: implemented, partial, or unaligned. This
+alignment lets the controller distinguish a local implementation repair from
+an action that changes mathematical content. When evidence is insufficient,
+the state records uncertainty instead of inventing a unique cause.
+
+\subsection{Typed Actions and Deterministic Reduction}
+
+Every proposed action contains a kind, target branch, affected argument steps,
+rationale, and an upper bound on allowed mutations. For example, an
+implementation repair may change a Lean artifact and its alignment but may not
+silently revise the theorem assumptions. Structural actions such as
+decomposition and representation change have separate payloads and transition
+rules.
+
+Tool outcomes are folded into the workspace by deterministic reducers. An
+accepted implementation stores an artifact and verified fact; a rejected
+candidate appends checker observations; decomposition supersedes the old parent
+version and creates helper obligations; a missing mechanical capability blocks
+the affected dependency closure; and new verified evidence may reactivate a
+dormant branch. Because reducers create successors rather than mutating old
+states, every policy decision can be replayed from the trace.
+
+\subsection{Dependency-Aware Frontier and Assembly}
+
+A branch is schedulable only if it is active, its obligation is open, and all
+of that obligation's dependencies are accepted. Readiness is a gate rather
+than a small priority penalty: repeatedly selecting an unready parent wastes
+budget without changing the proof state. Within the ready set, the frontier
+uses a stable baseline order before the budget-aware score is applied.
+
+When every active obligation has a compatible accepted branch, a solution
+tracker selects one artifact per obligation. Helper declarations are injected
+before the root theorem and the entire source is checked again. The controller
+reserves one verifier call for this final assembly. A local collection of
+accepted artifacts is not reported as a solved theorem unless the integrated
+file passes both the checker and statement-preservation/anti-cheating review.
+
+\subsection{Context Projection}
+
+The full workspace may be larger than a useful prompt. For a chosen branch we
+project the root goal, current obligation and version, dependency closure,
+accepted facts, aligned argument steps, deduplicated recent observations,
+failure hypotheses, and compact sibling summaries. This projection is the
+single source of prompt context; a separate summarizer may compress it but may
+not create a parallel set of ``facts.'' The projection cost itself is included
+in input-token accounting.

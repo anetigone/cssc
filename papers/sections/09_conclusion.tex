@@ -1,0 +1,18 @@
+\section{Conclusion}
+
+LLM theorem proving is not only a generation problem; under realistic
+constraints it is also a problem of choosing which computation is worth
+paying for. We presented \system, a budget-aware controller that allocates
+resources across generation, repair, retrieval, capability tests,
+decomposition, representation change, and model escalation. Its structured
+workspace gives those decisions stable semantics by representing AND
+dependencies, OR alternatives, checker evidence, aligned arguments, and
+versioned verified facts in one replayable state.
+
+The proposed evaluation places this controller between two revealing
+comparators: a strong minimal refinement loop and a structured but
+budget-agnostic search policy. This design tests the actual claim of the paper:
+not that more structure or more search is automatically better, but that
+verifier-grounded allocation can convert a fixed inference budget into more
+accepted proofs. \todo{Close with the measured main result and the budget
+regime in which it holds.}

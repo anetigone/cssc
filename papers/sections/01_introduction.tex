@@ -1,0 +1,85 @@
+\section{Introduction}
+
+Formal theorem proving is an unusually clean setting for studying test-time
+control. A language model may propose an invalid proof, but a proof assistant
+such as Lean 4 can reject it with exact diagnostics or certify it with a small
+trusted kernel \cite{demoura2021lean4}. This verifier makes repeated search
+productive: failed candidates expose syntax errors, missing identifiers, type
+mismatches, and unsolved goals that can guide a later attempt. It also makes
+brute-force scaling tempting. A system can sample hundreds or thousands of
+proofs, retain the first one that checks, and report a high pass rate while
+hiding a large inference bill.
+
+This paper asks a different question:
+
+\begin{quote}
+\emph{Given a fixed test-time budget, which proof-search computation should an
+agent perform next?}
+\end{quote}
+
+The answer is not always ``generate another proof.'' Depending on the current
+state, the next unit of budget may be better spent repairing a nearly valid
+candidate, retrieving an exact theorem signature, testing whether an assumed
+library capability exists, decomposing a hard theorem, changing its
+representation, escalating to a stronger model, or abandoning a stalled
+branch. These choices have different costs and create different kinds of
+future opportunity. A controller should therefore optimize the expected gain
+from a computation, not merely count how many attempts remain.
+
+Budget-aware control is difficult because ordinary proof-agent traces are a
+poor search state. A flat list of prompts and compiler messages does not say
+which helper lemma blocks the main theorem, whether two failures belong to the
+same mathematical strategy, which facts have actually been verified, or
+whether a local repair silently changed the intended statement. Without these
+distinctions, estimates of progress and action value are unstable: the
+controller may repeatedly expand an unready parent goal, discard a sound
+strategy after one bad Lean implementation, or spend a strong-model call to
+rediscover an already verified fact.
+
+We address this problem with \system, a cost-sensitive controller built over a
+structured proof workspace. The workspace represents proof obligations as an
+AND dependency graph and alternative strategies or implementations as OR
+branches. It stores mathematical argument steps, Lean artifacts, their
+alignment, checker observations, competing failure hypotheses, and versioned
+verified facts in one immutable state. Typed actions declare what they may
+change, and deterministic reducers apply their outcomes. The language model
+remains a single proof agent: mathematical reasoning and Lean repair share the
+same projected context instead of being split across role-specialized agents
+that must hand off lossy summaries.
+
+This representation supports a budget-aware policy over both branches and
+actions. The policy combines estimated immediate success, verifier-derived
+residual progress, the value of unlocking downstream obligations, and the
+information gained about competing failure hypotheses, normalized by expected
+incremental cost. Remaining budget changes the exploration--completion
+trade-off: early search can preserve alternatives, whereas late search
+reserves resources for high-confidence completion and final assembly. Hard
+resource constraints are enforced independently of the score.
+
+We compare the proposed controller with a deliberately strong minimal
+baseline. The baseline runs a compact loop of
+\emph{propose, check, remember, refine}; it uses the same model access,
+retrieval tools, checker, safety review, and total budget, but pays no
+structured-search overhead. This comparison is central to the paper. The
+structured controller is useful only if better allocation on difficult tasks
+outweighs its additional state and prompting cost.
+
+Our contributions are:
+
+\begin{itemize}
+    \item We formulate LLM-guided formal proof search as a multi-resource,
+    budget-constrained metareasoning problem in which proof actions are costly
+    computations with verifier-observable outcomes.
+    \item We introduce a unified structured state for budget decisions,
+    combining versioned obligation dependencies, alternative proof branches,
+    argument--Lean alignment, checker evidence, and verified facts without
+    splitting proof responsibility across multiple agents.
+    \item We propose a budget-conditioned controller that selects branches,
+    action types, and model tiers by estimated verifier-grounded utility per
+    incremental cost while preserving a final-check reserve.
+    \item We derive local decision rules for candidate ordering, cheap-first
+    search, diagnostic-conditioned repair, and residual progress scoring.
+    \item We design a matched-budget evaluation against minimal refinement,
+    fixed escalation, parallel sampling, and budget-agnostic structured
+    search, together with ablations that isolate where structured state helps.
+\end{itemize}

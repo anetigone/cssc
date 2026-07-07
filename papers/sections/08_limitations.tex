@@ -1,0 +1,31 @@
+\section{Limitations and Broader Considerations}
+
+Our theoretical results are local and conditional. Ordering by
+success-per-cost is optimal only under the stated sequential model; real proof
+actions have dependent outcomes, can reveal information, and can change the
+future action space. The controller's richer score is therefore a policy class
+to evaluate, not a proof of global optimality.
+
+Verifier-derived progress is more objective than unconstrained model
+self-evaluation but is not synonymous with distance to a proof. A candidate
+with fewer goals may have replaced an easy goal with a much harder one, and a
+decomposition may create formally valid but strategically useless helpers.
+Calibration must be checked across task domains and model families.
+
+Structured search has overhead. It uses longer prompts, executes control logic,
+and may spend early budget constructing obligations that a direct model could
+solve immediately. This is why minimal refinement is retained as a first-class
+baseline and why we report task-stratified crossover behavior rather than
+claiming that structured mode should be universal.
+
+The current system targets Lean 4. The proof-system adapter is narrow enough to
+make another backend plausible, but obligation semantics, diagnostics, tactic
+granularity, and checker cost differ across assistants. Results should not be
+generalized to Isabelle, Rocq, or Metamath without new experiments.
+
+Finally, a checker-accepted proof certifies the formal statement, not the
+faithfulness of an automatically formalized statement to the user's intent.
+The primary experiments fix formal statements, and the end-to-end setting
+reports formalization separately. Statement preservation and anti-cheating
+checks prevent several mechanical shortcuts, but they do not replace human
+review of high-stakes specifications.

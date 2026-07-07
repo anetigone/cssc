@@ -1,0 +1,64 @@
+\section{Related Work}
+
+\paragraph{Neural and LLM-guided theorem proving.}
+Early generative provers demonstrated that language models can synthesize
+machine-checkable proofs \cite{polu2020gptf}. In Lean, LeanDojo and ReProver
+made retrieval-augmented proof search reproducible at scale
+\cite{yang2023leandojo}, while Lean Copilot integrated learned suggestions,
+goal completion, and premise selection into Lean workflows
+\cite{song2024leancopilot}. Large-scale systems such as DeepSeek-Prover and its
+successors improve proving through synthetic data, reinforcement learning,
+subgoal decomposition, and high test-time sampling
+\cite{xin2024deepseekprover,ren2025deepseekprov_v2}. Goedel-Prover and
+Goedel-Prover-V2 similarly combine data synthesis and verifier-guided
+self-correction \cite{lin2025goedel,lin2025goedelv2}. These works establish the
+capability of the underlying provers. Our focus is complementary: how to
+allocate a fixed inference budget among heterogeneous proof actions and
+branches.
+
+\paragraph{Verifier-guided agents and decomposition.}
+Compiler feedback can make iterative proof generation substantially more
+sample-efficient than independent generation. APOLLO combines Lean feedback,
+proof repair, subgoal isolation, and automated solvers under a limited sampling
+budget \cite{ospanov2025apollo}. A Minimal Agent shows that iterative
+refinement, compact context management, and library search form a strong
+baseline even without an elaborate agent hierarchy
+\cite{requena2026minimal}. Compile to Compress uses structured compiler failure
+modes for local refinement and value-guided search
+\cite{li2026compile}. Goedel-Architect constructs and refines dependency
+blueprints of definitions and lemmas \cite{chung2026architect}. These systems
+motivate our use of verifier feedback and explicit dependencies. \system
+differs in making the resource-allocation policy itself the object of study and
+in keeping decomposition, repair, capability tests, representation changes,
+and model escalation inside one typed action space.
+
+\paragraph{Proof progress and cost-aware routing.}
+HyperTree Proof Search uses learned search to improve neural theorem proving
+\cite{lample2022hypertree}, and LeanProgress studies proof-progress prediction
+as a search signal \cite{george2026leanprogress}. The closest concurrent work
+routes an agent between continuing a target and restarting from a new
+decomposition using predicted success and cost
+\cite{rognvaldsson2026costquality}. Our controller generalizes this control
+problem along three axes: a multi-resource rather than single compute budget, a
+larger set of local and structural actions, and an explicit AND/OR workspace
+from which downstream unlock value and partial completion can be measured.
+
+\paragraph{Budget-aware test-time search.}
+Outside theorem proving, Budget-Aware Value Tree Search conditions node
+selection on remaining resources and uses residual rather than absolute value
+estimation \cite{li2026bavt}. Budget-Guided MCTS changes its search behavior as
+a fixed token budget is depleted \cite{miyamoto2026bgmcts}. We adapt these
+ideas to a setting with a symbolic verifier. Lean feedback supplies typed
+failure evidence, stable goal fingerprints, accepted intermediate facts, and
+exact terminal correctness; the controller can therefore ground value in
+state transitions that are unavailable in open-ended reasoning tasks.
+
+\paragraph{Benchmarks.}
+miniF2F provides cross-system Olympiad-style formal statements
+\cite{zheng2021minif2f}; ProofNet pairs natural-language mathematics with Lean
+statements and proofs \cite{azerbayev2023proofnet}; and PutnamBench targets
+substantially harder undergraduate mathematics
+\cite{tsoukalas2024putnambench}. We use fixed formal statements for the primary
+controller comparison so that autoformalization errors do not confound search
+allocation, then report a separate end-to-end setting with natural-language
+inputs.

@@ -1,0 +1,124 @@
+\section{Budget-Aware Structured Control}
+
+\subsection{Decision State}
+
+At a decision point, the controller receives
+\[
+  z_t=(W_t,\mathbf{b}_t,\mathcal{H}_t),
+\]
+where \(W_t\) is the workspace, \(\mathbf{b}_t\) is the remaining resource
+vector, and \(\mathcal{H}_t\) contains cost and outcome statistics available
+from training or held-out traces. It first filters infeasible actions, including
+any action that would consume the verifier call reserved for final assembly.
+It then jointly ranks ready branches and applicable actions.
+
+\subsection{Action Utility}
+
+For state \(s\), branch \(n\), and action \(a\), we estimate:
+
+\begin{itemize}
+    \item \(\hat p_{\mathrm{succ}}\): probability that the action immediately
+    yields an accepted artifact;
+    \item \(\widehat{\Delta}\): expected verifier-grounded residual progress;
+    \item \(U\): downstream unlock value, computed from obligations that would
+    become ready if the target were accepted;
+    \item \(I\): expected information gain over explicit competing failure
+    hypotheses;
+    \item \(R\): repetition and risk penalties, including unchanged goal
+    fingerprints and mutation-scope risk;
+    \item \(\hat c\): expected incremental scalarized cost.
+\end{itemize}
+
+The base score is
+\[
+  Q(s,n,a)=
+  \frac{
+    \alpha \hat p_{\mathrm{succ}}
+    +\beta \widehat{\Delta}
+    +\eta U
+    +\kappa I
+    -\rho R
+  }{\epsilon+\hat c}.
+\]
+All terms are logged separately; the combined score is not treated as a
+semantic truth. A heuristic controller can instantiate these terms from
+diagnostic categories and graph structure, while a learned variant estimates
+them from held-out traces. The main comparison must use no test-task outcomes
+to fit either version.
+
+\subsection{Conditioning on Remaining Budget}
+
+Let \(r\in[0,1]\) be a normalized remaining-budget ratio after reserving final
+assembly. We use a budget-conditioned concentration exponent
+\[
+  \gamma(r)=\gamma_{\max}
+  -(\gamma_{\max}-\gamma_{\min})r,
+\]
+so abundant budget yields a flatter ranking and scarce budget concentrates
+probability mass on high-value actions. The final priority is
+\[
+  \operatorname{Priority}(s,n,a)
+  =\operatorname{sign}(Q)\lvert Q\rvert^{\gamma(r)}
+  \cdot G(a,r),
+\]
+where \(G\) is an action-type gate. Early in a run, \(G\) permits
+decomposition, capability tests, and representation changes that may create
+future options. Near exhaustion it favors completion and repair on branches
+with short estimated cost-to-proof, and suppresses structural actions whose
+children cannot be completed within the residual budget.
+
+For a vector budget there is no unique remaining fraction. We use the minimum
+normalized slack over hard resources,
+\[
+  r=\min_j \frac{b_j-b^{\mathrm{reserve}}_j}{B_j},
+\]
+and reject actions that violate any component. We additionally report
+alternative scalarizations as a robustness analysis.
+
+\subsection{Diagnostic-Conditioned Actions}
+
+Lean diagnostics change the conditional value of computation. Parser and local
+type errors often favor repair; unknown identifiers favor retrieval or a
+capability test; repeated unchanged goals lower the value of another identical
+implementation attempt; and a sound-looking argument with persistent
+implementation failures may favor a representation change. These rules
+initialize the heuristic policy and define features for the learned policy.
+They do not turn diagnostics into infallible mathematical diagnoses.
+
+Competing failure hypotheses make information-seeking actions explicit. If a
+cheap signature test can distinguish ``missing theorem'' from ``incorrect
+argument,'' its value includes the avoided cost of pursuing the wrong route.
+Infrastructure failures, by contrast, are handled by deterministic rules and
+are not presented to the model as mathematical hypotheses.
+
+\subsection{Two-Tier Model Escalation}
+
+The controller treats model tiers as actions with different cost and success
+models. A cheap model handles short implementation and repair attempts; a
+strong model is available for detailed proofs, decomposition, or strategy
+revision. Escalation is selected when its estimated success gain per cost
+exceeds cheap alternatives, not after a fixed number of failures. To prevent
+the learned score from starving the strong model until it is unusable, the
+policy can reserve a configurable strong-call budget and expose an ablation
+without that reserve.
+
+\subsection{Controller Loop}
+
+The structured loop is:
+
+\begin{enumerate}
+    \item initialize a workspace and seed all ready branches;
+    \item reserve resources required for final assembly;
+    \item enumerate type-valid actions on ready branches;
+    \item filter actions that violate hard budgets or workspace invariants;
+    \item score branch--action pairs using the remaining budget;
+    \item execute the highest-priority computation and charge its realized
+    cost;
+    \item deterministically reduce the result into a successor workspace;
+    \item if a complete compatible solution exists, assemble and recheck it;
+    otherwise continue until no useful feasible action remains.
+\end{enumerate}
+
+On termination, the system returns an accepted proof or a structured partial
+result containing accepted helpers, blocked/open obligations, preserved
+alternatives, raw checker observations, and exact resource usage.

@@ -1,0 +1,93 @@
+\section{Results}
+
+This section is a fillable results shell. The tables deliberately contain no
+synthetic measurements.
+
+\subsection{Main Fixed-Budget Comparison}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Policy & Pass@budget & Tokens/solved & Checks/solved & Cost/solved \\
+\midrule
+Direct strong & -- & -- & -- & -- \\
+Parallel sampling & -- & -- & -- & -- \\
+Minimal refinement & -- & -- & -- & -- \\
+Fixed escalation & -- & -- & -- & -- \\
+Structured, agnostic & -- & -- & -- & -- \\
+\system & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{Matched-budget aggregate results.
+\todo{Fill values, confidence intervals, and exact budget in the caption.}}
+\label{tab:main}
+\end{table}
+
+\todo{State the primary result in one sentence, followed by absolute values,
+confidence intervals, and the task count. Do not lead with relative percentage
+improvement alone.}
+
+\subsection{Performance Across Budgets}
+
+\todo{Add success--cost curves for tokens, verifier calls, and monetary cost.
+Report whether controller rankings change between low-, medium-, and
+high-budget regimes.}
+
+\subsection{Where Structured Control Helps}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Task stratum & Minimal & Structured agnostic & \system \\
+\midrule
+Local completion & -- & -- & -- \\
+Olympiad theorem & -- & -- & -- \\
+Multi-obligation development & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{Pass under matched budget by task structure.
+\todo{Add denominators and paired confidence intervals.}}
+\label{tab:strata}
+\end{table}
+
+\todo{Analyze the crossover point: the number of obligations, repeated-goal
+streak, or dependency depth after which structured overhead becomes worthwhile.
+Also report simple tasks where minimal refinement is strictly cheaper.}
+
+\subsection{Controller Ablations}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Variant & Pass@budget & Strong calls & Wasted checks \\
+\midrule
+Full \system & -- & -- & -- \\
+\quad no budget conditioning & -- & -- & -- \\
+\quad no structured projection & -- & -- & -- \\
+\quad no unlock value & -- & -- & -- \\
+\quad no diagnostic repair & -- & -- & -- \\
+\quad no capability audit & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{Ablations under the primary budget.
+\todo{Define ``wasted check'' before using the term in final text.}}
+\label{tab:ablations}
+\end{table}
+
+\todo{Connect each observed change to a logged decision mechanism. For example,
+show whether unlock value prevents attempts on low-impact leaves or merely
+correlates with easier goals.}
+
+\subsection{Decision and Failure Analysis}
+
+\todo{Report empirical success/progress per action type and diagnostic category;
+calibration of predicted utility; escalation timing; capability-audit precision;
+and representative traces. Include at least one failure where the controller
+spends budget poorly and one case where the structured state preserves a useful
+alternative that the linear baseline loses.}

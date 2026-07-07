@@ -1,0 +1,22 @@
+\begin{abstract}
+Large language models can generate formally checkable proofs, but strong
+performance often relies on large test-time budgets: many samples, repeated
+verifier calls, long contexts, or expensive model invocations. Existing proof
+agents usually treat the budget as a stopping condition rather than a signal
+that should shape search. We introduce \system, a budget-aware controller for
+LLM-guided theorem proving in Lean 4. The controller allocates model, token,
+verifier, retrieval, and wall-clock resources across proof generation, local
+repair, retrieval, capability tests, decomposition, representation changes,
+and model escalation. Its key substrate is a verifier-grounded structured
+state in which proof obligations form AND dependencies, alternative proof
+branches form OR choices, and every accepted fact is versioned and linked to
+checker evidence. This state makes it possible to estimate not only immediate
+success, but also residual proof progress, downstream unlock value, and the
+information gained by an action. We derive conditions under which cheap search
+should precede expensive generation and show that success probability per unit
+cost is the optimal ordering rule in a simple sequential model. We evaluate
+against direct generation, parallel sampling, fixed escalation, iterative
+refinement, and budget-agnostic structured search under matched budgets.
+\todo{Add the main solve-rate and cost reduction results after the evaluation
+is frozen.}
+\end{abstract}

@@ -1,0 +1,140 @@
+\section{Experimental Design}
+
+\subsection{Research Questions}
+
+We organize the evaluation around five questions:
+
+\begin{description}
+    \item[RQ1: Fixed-budget effectiveness.] Does budget-aware control solve
+    more tasks than competing policies under the same hard budget?
+    \item[RQ2: Efficiency.] For solved tasks, does it reduce tokens, verifier
+    calls, strong-model calls, wall time, or monetary cost?
+    \item[RQ3: State representation.] Does the structured workspace improve
+    allocation enough to offset its prompt and control overhead?
+    \item[RQ4: Decision quality.] Which actions benefit most from
+    diagnostic-conditioned repair, unlock value, information gain, and
+    remaining-budget conditioning?
+    \item[RQ5: Task regime.] On which task characteristics does minimal
+    refinement remain preferable, and when does structured control pay off?
+\end{description}
+
+\subsection{Tasks}
+
+The primary evaluation starts from fixed Lean 4 statements, imports, and proof
+holes. This isolates proof-search control from statement formalization. We plan
+three strata:
+
+\begin{enumerate}
+    \item local theorem completion sampled from
+    \todo{freeze the LeanDojo/Mathlib task subset and split};
+    \item Olympiad-style problems from miniF2F and harder problems from
+    PutnamBench \cite{zheng2021minif2f,tsoukalas2024putnambench};
+    \item multi-obligation developments with reusable helpers and explicit
+    dependency structure, constructed from
+    \todo{freeze the local complex-proof/OBST-style suite}.
+\end{enumerate}
+
+We report an auxiliary end-to-end experiment from natural-language problems
+using ProofNet-style pairs \cite{azerbayev2023proofnet}. Formalization calls
+are charged to the budget and formalization failures are reported separately.
+Ground-truth proofs are inaccessible to generation, retrieval, and prompt
+construction.
+
+\subsection{Compared Policies}
+
+All policies use the same model endpoints, prompts where applicable, retriever,
+Lean checker, safety review, and maximum resources.
+
+\begin{enumerate}
+    \item \textbf{Direct strong}: one or more independent strong-model
+    whole-proof generations.
+    \item \textbf{Parallel sampling}: independent candidates allocated across
+    the full budget, with no feedback reuse.
+    \item \textbf{Minimal refinement}: propose--check--remember--refine with
+    compact memory.
+    \item \textbf{Fixed escalation}: minimal refinement with a strong-model
+    call after \(N\) failed cheap attempts.
+    \item \textbf{Structured, budget agnostic}: the same workspace and action
+    set, but a fixed frontier/action priority independent of remaining budget.
+    \item \system: the proposed budget-conditioned controller.
+\end{enumerate}
+
+Where code and task compatibility permit, we also compare with the
+continue-versus-redecompose cost-aware router
+\cite{rognvaldsson2026costquality}. Otherwise we report it as the closest
+conceptual method and avoid a non-equivalent numerical comparison.
+
+\subsection{Budgets and Models}
+
+We evaluate a grid rather than one operating point:
+\[
+\begin{split}
+c_{\mathrm{check}} &\in \{\todo{8, 16, 32}\},\\
+c_{\mathrm{tokens}} &\in \{\todo{16k, 32k, 64k}\},\\
+c_{\mathrm{strong}} &\in \{\todo{0, 1, 2}\}.
+\end{split}
+\]
+Each run also has a wall-clock limit and per-check timeout.
+\todo{Freeze the cheap model, version, and decoding setup.}
+\todo{Freeze the strong model, version, and decoding setup.}
+Model versions, temperatures, maximum output
+tokens, tool permissions, and prices are frozen before evaluation. Hidden
+provider reasoning tokens are reported separately when exposed and are never
+silently merged with visible output tokens.
+
+\subsection{Metrics}
+
+The primary metric is \emph{pass under budget}: the fraction of tasks with a
+fully assembled, checker-accepted, safety-accepted proof. We plot success
+against each resource and report area under the success--cost curve. Secondary
+metrics include:
+
+\begin{itemize}
+    \item input/output tokens, checks, wall time, and monetary cost per solved
+    task;
+    \item strong-model calls per solved task and their conditional success;
+    \item time and cost to first accepted proof;
+    \item repeated-goal attempts and spending on branches that never contribute
+    to the final solution;
+    \item accepted helper obligations and partial-result value on unsolved
+    multi-obligation tasks;
+    \item action calibration: empirical success/progress by predicted score
+    decile.
+\end{itemize}
+
+We use paired bootstrap confidence intervals across tasks and paired tests on
+per-task success. Results aggregate at least \todo{number} independent seeds
+for stochastic generation. Failures are stratified by checker category,
+budget-exhaustion reason, task difficulty, decomposition depth, and number of
+obligations.
+
+\subsection{Ablations}
+
+Starting from \system, we remove one component at a time:
+
+\begin{itemize}
+    \item no remaining-budget conditioning;
+    \item flat attempt history instead of structured projection;
+    \item no unlock value;
+    \item no information-gain actions or failure hypotheses;
+    \item no diagnostic-conditioned repair;
+    \item no capability audit;
+    \item no model-tier escalation;
+    \item no final-assembly reserve;
+    \item heuristic versus trace-fitted value and cost estimates.
+\end{itemize}
+
+The most important ablation is minimal refinement versus structured,
+budget-agnostic search versus structured, budget-aware search. It separates the
+benefit of iterative feedback, the benefit of state structure, and the benefit
+of cost-sensitive allocation.
+
+\subsection{Reproducibility and Leakage Controls}
+
+Every run receives a unique sample identifier and records raw candidate text,
+checker category, complete goal fingerprints, structured goal states, action
+kind, branch and obligation versions, model/token usage, checks, elapsed time,
+stop reason, and the final workspace. Dataset provenance and retrieval scope
+are frozen per task. Prompt caches may reduce serving cost in deployment, but
+the main results charge logical model usage before cache discounts so systems
+with different prompt overlap remain comparable.
