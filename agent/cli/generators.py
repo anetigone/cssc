@@ -56,6 +56,14 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
         return StaticActionGenerator(candidates)
     if args.use_model is not False:
         _ensure_env_loaded(args)
+        if getattr(args, "execution_mode", "minimal") == "structured":
+            from agent.agents.structured import ChatStructuredActionGenerator
+
+            return ChatStructuredActionGenerator(
+                _model_config(args, role="proof"),
+                tools=_proof_tools(args, project_root),
+                max_tool_rounds=1,
+            )
         return ChatActionGenerator(
             _model_config(args, role="proof"),
             tools=_proof_tools(args, project_root),

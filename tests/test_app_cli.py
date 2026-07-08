@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from argparse import Namespace
@@ -63,6 +64,21 @@ class SolveLeanTaskCliTests(unittest.TestCase):
         generator = build_action_generator(args)
 
         self.assertIsInstance(generator, StaticActionGenerator)
+
+    def test_structured_mode_uses_native_structured_generator(self) -> None:
+        args = _args(
+            use_model=True,
+            execution_mode="structured",
+        )
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "key", "OPENAI_MODEL": "model"}),
+            patch("agent.cli.generators._ensure_env_loaded"),
+            patch("agent.cli.generators._proof_tools", return_value=()),
+        ):
+            generator = build_action_generator(args)
+
+        self.assertTrue(getattr(generator, "_is_structured_generator", False))
+        self.assertEqual(generator.__class__.__name__, "ChatStructuredActionGenerator")
 
     def test_model_generator_loads_env_only_when_file_exists(self) -> None:
         args = _args(use_model=True, env_file="missing.env")
@@ -603,7 +619,14 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertEqual(solve_args.execution_mode, "minimal")
         self.assertEqual(prove_args.execution_mode, "minimal")
 
-        structured = parser.parse_args(["prove", "Basic.lean", "--execution-mode", "structured"])
+        structured = parser.parse_args(
+            [
+                "prove",
+                "Basic.lean",
+                "--execution-mode",
+                "structured",
+            ]
+        )
         self.assertEqual(structured.execution_mode, "structured")
 
     def test_parser_rejects_unknown_execution_mode(self) -> None:

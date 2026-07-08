@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import http.client
+import json
 import unittest
 from typing import Any, Mapping
 from unittest.mock import MagicMock, patch
@@ -20,7 +21,14 @@ from agent.agents.openai import (
     chat_completions_url,
     normalized_token_usage,
 )
+from agent.agents.structured import ChatStructuredActionGenerator
 from agent.proof_system.base import DiagnosticCategory, ParsedFeedback, ProofTask
+from agent.proof_system.workspace import SearchActionKind
+from agent.search.structured.proposal import (
+    CapabilityTestPayload,
+    DecomposePayload,
+    ImplementPayload,
+)
 
 
 class RecordingTransport(ChatTransport):
@@ -775,6 +783,150 @@ class ChatActionGeneratorTests(unittest.TestCase):
                     payload={"model": "m"},
                     timeout_seconds=10,
                 )
+
+
+class ChatStructuredActionGeneratorTests(unittest.TestCase):
+    def test_generates_typed_proposals_from_json_response(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "proposals": [
+                                        {
+                                            "kind": "run_capability_test",
+                                            "rationale": "probe missing lemma",
+                                            "requirement": "WidgetGood",
+                                            "signature": "#check WidgetGood",
+                                        },
+                                        {
+                                            "kind": "decompose",
+                                            "rationale": "split helpers",
+                                            "strategy": "prove helper first",
+                                            "children": [
+                                                {
+                                                    "child_id": "helper",
+                                                    "statement": "lemma helper : True := by\n  {{proof}}",
+                                                }
+                                            ],
+                                        },
+                                        {
+                                            "kind": "implement",
+                                            "rationale": "close directly",
+                                            "proof_text": "trivial",
+                                        },
+                                    ]
+                                }
+                            )
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            }
+        )
+        generator = ChatStructuredActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        proposals = generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=0,
+                max_candidates=3,
+                metadata={"branch_id": "sample:root"},
+            )
+        )
+
+        self.assertEqual(
+            [proposal.action.kind for proposal in proposals],
+            [
+                SearchActionKind.RUN_CAPABILITY_TEST,
+                SearchActionKind.DECOMPOSE,
+                SearchActionKind.IMPLEMENT,
+            ],
+        )
+        self.assertIsInstance(proposals[0].payload, CapabilityTestPayload)
+        self.assertIsInstance(proposals[1].payload, DecomposePayload)
+        self.assertIsInstance(proposals[2].payload, ImplementPayload)
+        self.assertEqual(proposals[0].action.target_branch_id, "sample:root")
+        self.assertEqual(proposals[2].payload.proof_text, "trivial")  # type: ignore[union-attr]
+        self.assertEqual(proposals[0].metadata["token_usage"]["input_tokens"], 10)
+
+        prompt = transport.calls[0][2]["messages"][0]["content"]
+        self.assertIn("Return only JSON", prompt)
+        self.assertIn("run_capability_test", prompt)
+        self.assertIn("decompose", prompt)
+
+    def test_accepts_full_proposal_shape_and_fills_default_scope(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "action": {
+                                        "kind": "implement",
+                                        "rationale": "direct proof",
+                                    },
+                                    "payload": {"proof_text": "trivial"},
+                                }
+                            )
+                        },
+                    }
+                ]
+            }
+        )
+        generator = ChatStructuredActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        proposals = generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=0,
+                metadata={"branch_id": "sample:root"},
+            )
+        )
+
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0].action.kind, SearchActionKind.IMPLEMENT)
+        self.assertEqual(proposals[0].action.target_branch_id, "sample:root")
+        self.assertTrue(proposals[0].action.allowed_mutations)
+
+    def test_invalid_structured_output_is_generation_failure(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "not json"},
+                    }
+                ]
+            }
+        )
+        generator = ChatStructuredActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        with self.assertRaises(ActionGenerationError) as raised:
+            generator.generate(
+                ActionGenerationRequest(
+                    task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                    attempt_index=0,
+                    metadata={"branch_id": "sample:root"},
+                )
+            )
+
+        self.assertEqual(raised.exception.reason, "invalid_structured_output")
 
 
 if __name__ == "__main__":
