@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -11,6 +12,10 @@ from .types import ProofTask, TaskInputKind
 
 
 DEFAULT_HOLE_MARKER = "{{proof}}"
+_DECLARATION_RE = re.compile(
+    r"\b(?:theorem|lemma|def|example)\s+([A-Za-z_][A-Za-z0-9_'.]*)",
+    re.MULTILINE,
+)
 
 
 class TaskBuildError(ValueError):
@@ -168,7 +173,7 @@ class LeanTaskBuilder:
             return []
 
         path = Path(source_path).resolve() if source_path is not None else None
-        base_id = task_id_prefix or (path.stem if path else "lean_task")
+        safe_base_id = _safe_task_id(task_id_prefix or (path.stem if path else "lean_task"))
         imports = _extract_imports(source)
         split_name = split or self.config.default_split
 
@@ -181,13 +186,22 @@ class LeanTaskBuilder:
                 active_marker=self.config.hole_marker,
                 inactive_fill=self.config.inactive_hole_fill,
             )
+            task_name = _occurrence_task_name(
+                source,
+                base_id=safe_base_id,
+                occurrence=occurrence,
+                occurrence_count=len(occurrences),
+                index=index,
+            )
+            task_id = task_name
             metadata = {
                 **self.config.metadata_defaults,
                 "proof_system": "lean4",
                 "source_file": str(path) if path else None,
                 "split": split_name,
+                "task_name": task_name,
                 "hole_kind": occurrence.kind,
-                "hole_id": f"{_safe_task_id(base_id)}:{occurrence.line}:{occurrence.column}:{index}",
+                "hole_id": task_id,
                 "hole_index": index,
                 "hole_line": occurrence.line,
                 "hole_column": occurrence.column,
@@ -204,7 +218,6 @@ class LeanTaskBuilder:
                 "multiple_marker_extraction": self.config.allow_multiple_marker_tasks,
                 "multiple_sorry_extraction": self.config.allow_multiple_sorry_tasks,
             }
-            task_id = f"{_safe_task_id(base_id)}:{occurrence.line}:{occurrence.column}:{index}"
             tasks.append(
                 ProofTask(
                     task_id=task_id,
@@ -359,8 +372,31 @@ def _path_stem_id(path: Path) -> str:
     return "_".join(without_suffix.parts)
 
 
+def _occurrence_task_name(
+    source: str,
+    *,
+    base_id: str,
+    occurrence: HoleOccurrence,
+    occurrence_count: int,
+    index: int,
+) -> str:
+    if occurrence_count == 1:
+        return base_id
+    declaration = _nearest_declaration_name(source, occurrence.start)
+    if declaration:
+        return f"{base_id}.{_safe_task_id(declaration)}"
+    return f"{base_id}.h{index}"
+
+
+def _nearest_declaration_name(source: str, offset: int) -> str | None:
+    nearest: str | None = None
+    for match in _DECLARATION_RE.finditer(source[:offset]):
+        nearest = match.group(1)
+    return nearest
+
+
 def _safe_task_id(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", ":"} else "_" for ch in value)
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in value)
     return cleaned or "lean_task"
 
 

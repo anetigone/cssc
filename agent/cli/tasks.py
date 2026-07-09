@@ -60,7 +60,7 @@ def select_task(
 ) -> ProofTask:
     if task_id is not None:
         for task in tasks:
-            if task.task_id == task_id:
+            if task.task_id == task_id or task.metadata.get("task_name") == task_id:
                 return task
         raise ValueError(f"Task id not found: {task_id}")
     if task_index < 0 or task_index >= len(tasks):

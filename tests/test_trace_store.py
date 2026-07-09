@@ -52,7 +52,7 @@ class TraceStoreTests(unittest.TestCase):
 
         self.assertNotIn("workspace", events[0])
 
-    def test_structured_run_summary_carries_workspace(self) -> None:
+    def test_structured_trace_writes_workspace_snapshot_event(self) -> None:
         from agent.proof_system.workspace import initialize_from_task
 
         task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}\n")
@@ -62,14 +62,18 @@ class TraceStoreTests(unittest.TestCase):
 
         events = list(result_events(result))
 
-        self.assertEqual(events[0]["workspace"]["workspace_id"], "sample")
-        self.assertEqual(events[0]["workspace"]["version"], 1)
+        self.assertNotIn("workspace", events[0])
+        self.assertNotIn("workspace", events[0]["metadata"])
+        self.assertEqual(events[0]["workspace_event"], "workspace_snapshot")
+        self.assertEqual(events[1]["event"], "workspace_snapshot")
+        self.assertEqual(events[1]["workspace"]["workspace_id"], "sample")
+        self.assertEqual(events[1]["workspace"]["version"], 1)
         self.assertEqual(
-            events[0]["workspace"]["obligation_graph"]["root_obligation_id"],
+            events[1]["workspace"]["obligation_graph"]["root_obligation_id"],
             "sample",
         )
         # The serialized dict also survives a JSON round-trip.
-        json.loads(json.dumps(events[0]["workspace"]))
+        json.loads(json.dumps(events[1]["workspace"]))
 
     def test_attempt_trace_carries_structured_goal_state(self) -> None:
         result = _sample_result()

@@ -48,6 +48,17 @@ class SolveLeanTaskCliTests(unittest.TestCase):
 
         self.assertEqual(selected, tasks[0])
 
+    def test_select_task_by_readable_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Basic.lean"
+            path.write_text("theorem sample : True := by\n  sorry\n", encoding="utf-8")
+            tasks = build_tasks(_args(source=str(path)))
+
+        selected = select_task(tasks, task_id="Basic")
+
+        self.assertEqual(selected, tasks[0])
+        self.assertEqual(selected.task_id, "Basic")
+
     def test_static_candidate_generator_reads_candidate_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             candidate_file = Path(tmp) / "candidate.lean"

@@ -367,6 +367,7 @@ class ProofControllerTests(unittest.TestCase):
         self.assertTrue(result.attempts[0].candidate_file.is_relative_to(archive.resolve()))
         self.assertEqual(result.attempts[0].check_result.candidate_file, result.attempts[0].candidate_file)
         self.assertFalse(adapter.checked_files[0].exists())
+        self.assertFalse(adapter.checked_files[0].parent.exists())
 
     def test_calls_context_summarizer_on_retry(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")

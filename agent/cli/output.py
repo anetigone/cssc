@@ -9,6 +9,7 @@ def task_summary(task: ProofTask, index: int) -> dict[str, object]:
     return {
         "index": index,
         "task_id": task.task_id,
+        "task_name": task.metadata.get("task_name"),
         "source_file": task.metadata.get("source_file"),
         "hole_kind": task.metadata.get("hole_kind"),
         "hole_line": task.metadata.get("hole_line"),
@@ -21,6 +22,7 @@ def result_payload(result: ControllerResult, *, include_candidate_file: bool = T
     payload: dict[str, object] = {
         "ok": result.accepted,
         "task_id": result.task.task_id,
+        "task_name": result.task.metadata.get("task_name"),
         "stop_reason": result.stop_reason,
         "attempts": len(result.attempts),
         "checks_used": result.budget.checks_used,

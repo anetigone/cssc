@@ -88,6 +88,7 @@ def result_events(
     """Convert a controller result into JSONL event dictionaries."""
 
     run_id = _run_id(result)
+    workspace = workspace_payload(result.metadata.get("workspace"))
     summary: dict[str, Any] = {
         "event": "run_summary",
         "run_id": run_id,
@@ -100,15 +101,21 @@ def result_events(
         ),
         "budget": _budget_payload(result.budget),
         "metrics": _metrics_payload(result.metrics),
-        "metadata": result.metadata,
+        "metadata": _summary_metadata(result.metadata),
     }
     # Structured-mode runs attach a serialized ProofWorkspace under
     # ``metadata["workspace"]``; minimal runs omit it. The payload is already a
     # plain dict, so the trace store stays unaware of the workspace types.
-    workspace = workspace_payload(result.metadata.get("workspace"))
     if workspace is not None:
-        summary["workspace"] = workspace
+        summary["workspace_event"] = "workspace_snapshot"
     yield summary
+    if workspace is not None:
+        yield {
+            "event": "workspace_snapshot",
+            "run_id": run_id,
+            "task_id": result.task.task_id,
+            "workspace": workspace,
+        }
     for attempt in result.attempts:
         yield {
             "event": "attempt",
@@ -155,6 +162,10 @@ def _metrics_payload(metrics: RunMetrics | None) -> dict[str, Any] | None:
     if metrics is None:
         return None
     return run_metrics_payload(metrics)
+
+
+def _summary_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in metadata.items() if key != "workspace"}
 
 
 def workspace_payload(workspace: Any) -> dict[str, Any] | None:

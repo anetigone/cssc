@@ -106,6 +106,10 @@ class EphemeralCheckWorkspace:
                     path.unlink(missing_ok=True)
                 except OSError:
                     logger.warning("Failed to remove checker candidate: path=%s", path, exc_info=True)
+                try:
+                    task_dir.rmdir()
+                except OSError:
+                    logger.debug("Checker task directory was not removed: path=%s", task_dir, exc_info=True)
 
 
 def _safe_name(value: str) -> str:

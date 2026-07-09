@@ -23,6 +23,9 @@ class LeanTaskBuilderTests(unittest.TestCase):
         self.assertEqual(task.metadata["split"], "test")
         self.assertEqual(task.metadata["source_imports"], ("Mathlib",))
         self.assertEqual(task.metadata["hole_kind"], "marker")
+        self.assertEqual(task.task_id, "Basic")
+        self.assertEqual(task.metadata["task_name"], "Basic")
+        self.assertEqual(task.metadata["hole_id"], task.task_id)
 
     def test_rejects_multiple_sorries_by_default(self) -> None:
         builder = LeanTaskBuilder()
@@ -48,6 +51,8 @@ class LeanTaskBuilderTests(unittest.TestCase):
         tasks = builder.build_from_source(source, task_id_prefix="basic")
 
         self.assertEqual(len(tasks), 2)
+        self.assertEqual([task.metadata["task_name"] for task in tasks], ["basic.one", "basic.two"])
+        self.assertEqual([task.task_id for task in tasks], ["basic.one", "basic.two"])
         self.assertEqual(tasks[0].metadata["hole_line"], 2)
         self.assertEqual(tasks[1].metadata["hole_line"], 5)
         self.assertIn("{{proof}}", tasks[0].source_template)
@@ -70,6 +75,8 @@ class LeanTaskBuilderTests(unittest.TestCase):
         tasks = builder.build_from_source(source, task_id_prefix="basic")
 
         self.assertEqual(len(tasks), 2)
+        self.assertEqual([task.metadata["task_name"] for task in tasks], ["basic.one", "basic.two"])
+        self.assertEqual([task.task_id for task in tasks], ["basic.one", "basic.two"])
         self.assertEqual(tasks[0].metadata["hole_line"], 2)
         self.assertEqual(tasks[1].metadata["hole_line"], 5)
         self.assertEqual(tasks[0].source_template.count("{{proof}}"), 1)
