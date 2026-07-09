@@ -164,7 +164,6 @@ class StructuredControllerActionMixin:
         edit: CandidateEdit,
         source: str,
         state: _StructuredRunState,
-        *,
         force_subprocess: bool = False,
     ) -> CheckResult:
         materialized = self.workspace.write_candidate(
@@ -183,11 +182,7 @@ class StructuredControllerActionMixin:
             self.budget.snapshot().remaining_checks,
             budget_slice.timeout_seconds,
         )
-        adapter = self.adapter
-        if force_subprocess:
-            subprocess_clone = getattr(adapter, "subprocess_clone", None)
-            if callable(subprocess_clone):
-                adapter = subprocess_clone()
+        adapter = self.adapter.subprocess_clone() if force_subprocess else self.adapter
         if self.check_workspace is None:
             return adapter.check(materialized.path, budget_slice)
         with self.check_workspace.materialize_candidate(

@@ -60,6 +60,9 @@ class StructuredFakeAdapter(ProofSystemAdapter):
     def render_candidate(self, task: ProofTask, edit: CandidateEdit) -> str:
         return task.source_template.replace(task.hole_marker, edit.text)
 
+    def subprocess_clone(self) -> "StructuredFakeAdapter":
+        return self
+
     def check(self, candidate_file: Path, budget_slice: BudgetSlice) -> CheckResult:
         self.checked_files.append(candidate_file)
         source = candidate_file.read_text(encoding="utf-8")
