@@ -74,6 +74,10 @@ class FrontierNode:
     #: 8.3). V1 used ``depth_from_root`` as a proxy; V2 uses the real count so
     #: the ordering is driven by the same hint projection as ``budget_hints``.
     unlock_value_rank: int = 0
+    #: Branch-local realised checks. Unlike ``attempt_count``, this excludes
+    #: evidence inherited from parent branches, so fresh repair / representation
+    #: forks are not treated as having already spent their parent's checks.
+    local_attempt_count: int = 0
 
 
 def _branch_goal_fingerprints(branch: ProofBranch) -> tuple[str, ...]:
@@ -200,25 +204,35 @@ def _has_accepted_neighbor(
     )
 
 
-def _branch_for_obligation(
+def _branches_for_obligation(
     obligation_id: str, workspace: ProofWorkspace
-) -> ProofBranch | None:
-    """The first branch working ``obligation_id``, if any.
+) -> tuple[ProofBranch, ...]:
+    """Current-version branches working ``obligation_id``.
 
     Hint derivation must not assume every obligation has a branch (a freshly
-    decomposed helper may be unworked). Missing branches simply take the
-    ``IMPLEMENT`` default for next-action cost and never count as stalled.
+    decomposed helper may be unworked). Prefer ACTIVE branches pinned to the
+    obligation's current version, because older SUPERSEDED / DORMANT branches
+    remain in the workspace as provenance and must not shape current hints.
     """
-    for branch in workspace.branches:
-        if branch.obligation_id == obligation_id:
-            return branch
-    return None
+    obligation = workspace.obligation_graph.by_id(obligation_id)
+    if obligation is None:
+        return ()
+    current = tuple(
+        branch
+        for branch in workspace.branches
+        if branch.obligation_id == obligation_id
+        and branch.obligation_version == obligation.version
+    )
+    active = tuple(branch for branch in current if branch.status == BranchStatus.ACTIVE)
+    return active or current
 
 
 def soft_envelope_for_obligation(
     obligation_id: str,
     workspace: ProofWorkspace,
     config: BudgetHintDefaults = BudgetHintDefaults(),
+    *,
+    branch: ProofBranch | None = None,
 ) -> tuple[int, int]:
     """Return ``(soft_checks, soft_model_calls)`` for one obligation.
 
@@ -236,10 +250,12 @@ def soft_envelope_for_obligation(
 
     is_root = obligation_id in workspace.root_obligation_ids
     unlock_value = _dependents_count(graph).get(obligation_id, 0)
-    branch = _branch_for_obligation(obligation_id, workspace)
-    is_capability = _next_action_is_capability(branch)
-    is_stalled = (
-        _stalled_streak(branch) >= config.stall_threshold if branch else False
+    branches = (branch,) if branch is not None else _branches_for_obligation(
+        obligation_id, workspace
+    )
+    is_capability = any(_next_action_is_capability(item) for item in branches)
+    is_stalled = bool(branches) and all(
+        _stalled_streak(item) >= config.stall_threshold for item in branches
     )
     has_accepted_neighbor = _has_accepted_neighbor(obligation_id, workspace)
 
@@ -272,7 +288,7 @@ def soft_envelope_for_obligation(
 
 def _node_for(branch: ProofBranch, workspace: ProofWorkspace) -> FrontierNode:
     soft_checks, soft_model_calls = soft_envelope_for_obligation(
-        branch.obligation_id, workspace
+        branch.obligation_id, workspace, branch=branch
     )
     unlock_value_rank = _dependents_count(workspace.obligation_graph).get(
         branch.obligation_id, 0
@@ -292,6 +308,7 @@ def _node_for(branch: ProofBranch, workspace: ProofWorkspace) -> FrontierNode:
         soft_checks=soft_checks,
         soft_model_calls=soft_model_calls,
         unlock_value_rank=unlock_value_rank,
+        local_attempt_count=_branch_local_attempt_count(branch, workspace),
     )
 
 
@@ -317,12 +334,28 @@ def _is_ready(branch: ProofBranch, workspace: ProofWorkspace) -> bool:
 
 def _attempt_count(branch: ProofBranch) -> int:
     """Number of distinct attempt evidence refs on this branch."""
-    refs = {
-        obs.raw_evidence_ref
-        for obs in branch.observations
-        if obs.raw_evidence_ref
+    return len(_observation_refs(branch))
+
+
+def _observation_refs(branch: ProofBranch) -> set[str]:
+    """Distinct evidence refs recorded on ``branch``."""
+    return {
+        obs.raw_evidence_ref for obs in branch.observations if obs.raw_evidence_ref
     }
-    return len(refs)
+
+
+def _branch_local_attempt_count(branch: ProofBranch, workspace: ProofWorkspace) -> int:
+    """Number of evidence refs introduced by this branch, excluding ancestors."""
+    ancestor_refs: set[str] = set()
+    by_id = {item.branch_id: item for item in workspace.branches}
+    current_id = branch.parent_branch_id
+    seen: set[str] = set()
+    while current_id is not None and current_id in by_id and current_id not in seen:
+        seen.add(current_id)
+        parent = by_id[current_id]
+        ancestor_refs.update(_observation_refs(parent))
+        current_id = parent.parent_branch_id
+    return len(_observation_refs(branch) - ancestor_refs)
 
 
 def _stalled_streak(branch: ProofBranch) -> int:
@@ -493,14 +526,14 @@ def _soft_budget_priority_key(
       (V1 used ``depth_from_root`` as a proxy), negated because a *higher* unlock
       value should pop *earlier* in an otherwise ascending tuple.
     """
-    overdraft_checks = max(0, node.attempt_count - node.soft_checks)
+    overdraft_checks = max(0, node.local_attempt_count - node.soft_checks)
     stalled_penalty = 1 if node.stalled_streak >= STALL_THRESHOLD else 0
     return (
         overdraft_checks,
         node.next_action_cost,
         stalled_penalty,
         -node.unlock_value_rank,
-        node.attempt_count,
+        node.local_attempt_count,
         node.depth_from_root,
         node.branch_id,
     )

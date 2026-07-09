@@ -21,9 +21,11 @@ from agent.proof_system.workspace.observation import (
 )
 from agent.search.structured.frontier import (
     STALL_THRESHOLD,
+    BudgetHintDefaults,
     Frontier,
     FrontierNode,
     FrontierPolicy,
+    soft_envelope_for_obligation,
 )
 
 
@@ -694,6 +696,60 @@ class FrontierPolicyTests(unittest.TestCase):
         while v2_frontier.has_work():
             ready.append(v2_frontier.pop().branch_id)
         self.assertEqual(ready, ["helper"])
+
+    def test_cost_aware_v2_overdraft_ignores_inherited_parent_attempts(self) -> None:
+        parent = _branch(
+            "aaa",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-b"),
+                _goal_obs(2, "fp-c"),
+            ),
+        )
+        repair = _branch(
+            "aaa.r0",
+            observations=parent.observations,
+            parent_branch_id="aaa",
+        )
+        peer = _branch("zzz", observations=(_goal_obs(3, "fp-z"),))
+        workspace = _workspace((parent, repair, peer))
+
+        v2_frontier = Frontier(policy=FrontierPolicy.COST_AWARE_V2)
+        v2_frontier.seed(workspace)
+        # The repair branch has inherited evidence for prompt context, but it
+        # has not spent any branch-local checks yet, so it should not be ranked
+        # as overdrafted behind the peer.
+        self.assertEqual(v2_frontier.pop().branch_id, "aaa.r0")
+
+    def test_soft_envelope_uses_current_active_branch_not_old_provenance(self) -> None:
+        stale = _branch(
+            "old",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-a"),
+                _goal_obs(2, "fp-a"),
+            ),
+            status=BranchStatus.SUPERSEDED,
+            obligation_version=1,
+        )
+        current = _branch("current", obligation_version=2)
+        workspace = _multi_obligation_workspace(
+            helper_status=ObligationStatus.ACCEPTED,
+            branches=(stale, current),
+        )
+
+        cfg = BudgetHintDefaults()
+        soft_checks, soft_model_calls = soft_envelope_for_obligation(
+            "sample", workspace, cfg
+        )
+        self.assertEqual(
+            soft_checks,
+            cfg.base_soft_checks + cfg.root_bonus_checks,
+        )
+        self.assertEqual(
+            soft_model_calls,
+            cfg.base_soft_model_calls + cfg.root_bonus_model_calls,
+        )
 
     def test_legacy_and_v1_orders_unchanged_by_v2_addition(self) -> None:
         # Regression guard: adding the COST_AWARE_V2 enum value must not perturb
