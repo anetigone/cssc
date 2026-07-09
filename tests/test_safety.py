@@ -36,6 +36,19 @@ class StatementSafetyReviewerTests(unittest.TestCase):
         self.assertTrue(verdict.accepted)
         self.assertEqual(verdict.reasons, ())
 
+    def test_accepts_clean_proof_with_leading_doc_comment(self) -> None:
+        template = (
+            "/-- A documented theorem. -/\n"
+            "theorem sample : True := by\n"
+            "  {{proof}}\n"
+        )
+        task = ProofTask("sample", template)
+        candidate = template.replace("{{proof}}", "trivial")
+
+        verdict = self.reviewer.accepts(task, candidate, _accepted_result())
+
+        self.assertTrue(verdict.accepted)
+
     def test_rejects_sorry(self) -> None:
         verdict = self.reviewer.accepts(_task(), _render("sorry"), _accepted_result())
 

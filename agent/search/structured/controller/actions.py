@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import replace
 
-from agent.proof_system.base import CandidateEdit, DiagnosticCategory, ProofTask
+from agent.proof_system.base import (
+    CandidateEdit,
+    CheckResult,
+    DiagnosticCategory,
+    ProofTask,
+)
 from agent.proof_system.workspace import (
     BranchStatus,
     ProofBranch,
@@ -36,6 +43,12 @@ from ..reducer import (
 from ..run_state import _StructuredRunState
 
 logger = logging.getLogger(__name__)
+
+_DECLARATION_BEFORE_HOLE_RE = re.compile(
+    r"^[ \t]*(?:private[ \t]+)?(?:noncomputable[ \t]+)?"
+    r"(?:theorem|lemma|def|example)[ \t]+",
+    re.MULTILINE,
+)
 
 
 class StructuredControllerActionMixin:
@@ -78,7 +91,8 @@ class StructuredControllerActionMixin:
                     "structured_branch_id": branch.branch_id,
                 },
             )
-            check_result = self._check(task, edit, state)
+            source = _capability_probe_source(task, payload.signature)
+            check_result = self._check_source(task, edit, source, state)
             record = AttemptRecord(
                 attempt_index=state.attempt_index,
                 candidate_id=edit.action,
@@ -141,6 +155,40 @@ class StructuredControllerActionMixin:
                 )
                 return workspace, True
         return workspace, False
+
+    def _check_source(
+        self,
+        task: ProofTask,
+        edit: CandidateEdit,
+        source: str,
+        state: _StructuredRunState,
+    ) -> CheckResult:
+        materialized = self.workspace.write_candidate(
+            task,
+            edit,
+            source,
+            extension=self.config.candidate_extension,
+        )
+        budget_slice = self.budget.reserve_check()
+        logger.debug(
+            "Structured checker reserved for source: task_id=%s candidate_id=%s "
+            "checks_used=%d remaining_checks=%s timeout=%s",
+            task.task_id,
+            materialized.candidate_id,
+            self.budget.snapshot().checks_used,
+            self.budget.snapshot().remaining_checks,
+            budget_slice.timeout_seconds,
+        )
+        if self.check_workspace is None:
+            return self.adapter.check(materialized.path, budget_slice)
+        with self.check_workspace.materialize_candidate(
+            task,
+            candidate_id=materialized.candidate_id,
+            source=source,
+            extension=self.config.candidate_extension,
+        ) as check_candidate:
+            check_result = self.adapter.check(check_candidate.path, budget_slice)
+        return replace(check_result, candidate_file=materialized.path)
 
     def _run_decompose(
         self,
@@ -364,3 +412,24 @@ def _record_skipped(
             "rationale": proposal.action.rationale,
         }
     )
+
+
+def _capability_probe_source(task: ProofTask, signature: str) -> str:
+    """Build a standalone Lean probe in the task's surrounding context."""
+    marker_index = task.source_template.find(task.hole_marker)
+    prefix = (
+        task.source_template
+        if marker_index < 0
+        else task.source_template[:marker_index]
+    )
+    declaration_start = None
+    for match in _DECLARATION_BEFORE_HOLE_RE.finditer(prefix):
+        declaration_start = match.start()
+    context = prefix[:declaration_start] if declaration_start is not None else prefix
+    parts: list[str] = []
+    if task.imports:
+        parts.append("\n".join(f"import {module}" for module in task.imports))
+    if context.strip():
+        parts.append(context.rstrip())
+    parts.append(signature.strip())
+    return "\n\n".join(part for part in parts if part).rstrip() + "\n"

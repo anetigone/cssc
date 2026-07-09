@@ -681,11 +681,13 @@ class StructuredControllerTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as tmp:
+            adapter = MissingCapabilityAdapter()
             result = self._controller(
                 tmp,
                 CapabilityProbeGenerator(),  # type: ignore[arg-type]
-                adapter=MissingCapabilityAdapter(),
+                adapter=adapter,
             ).run(_task())
+            checked_source = adapter.checked_files[0].read_text(encoding="utf-8")
 
         self.assertFalse(result.accepted)
         # The capability attempt was recorded (1 check), no IMPLEMENT followed.
@@ -704,6 +706,8 @@ class StructuredControllerTests(unittest.TestCase):
             summary["blocked_obligations"][0]["obligation_id"], "sample"
         )
         self.assertEqual(summary["blocked_branch_obligation_ids"], [])
+        self.assertIn("by simp", checked_source)
+        self.assertNotIn("theorem sample", checked_source)
 
     def test_blocked_helper_obligation_yields_blocked_stop_reason(self) -> None:
         # Phase 7.5: when a decomposed helper is blocked (capability missing),

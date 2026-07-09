@@ -117,12 +117,13 @@ class StatementSafetyReviewer:
         (``import`` / ``open`` / ``set_option``) and the root, so those preamble
         lines are checked separately at the start of the candidate.
         """
-        hole_index = task.source_template.find(task.hole_marker)
+        task_source = _strip_lean_comments_and_strings(task.source_template)
+        hole_index = task_source.find(task.hole_marker)
         if hole_index < 0:
             # No hole marker: the whole template is the fixed prefix.
-            prefix = task.source_template
+            prefix = task_source
         else:
-            prefix = task.source_template[:hole_index]
+            prefix = task_source[:hole_index]
         prefix = prefix.rstrip()
         if not prefix:
             return None
