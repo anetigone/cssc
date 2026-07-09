@@ -62,7 +62,10 @@ agent/
 │   │   │   ├── core.py       # apply / StructuredActionResult / accept / failure / capability audit
 │   │   │   ├── decompose.py  # DECOMPOSE 结构转移
 │   │   │   └── structural.py # argument / representation / failure hypothesis 转移
-│   │   ├── frontier.py       # Frontier / FrontierNode 调度器（只读 workspace）
+│   │   ├── frontier.py       # Frontier 调度器 + 兼容 re-export
+│   │   ├── frontier_types.py # FrontierPolicy / FrontierNode / PriorityExplanation / soft-budget config
+│   │   ├── frontier_signals.py # readiness / stalled / soft envelope / node projection 纯函数
+│   │   ├── frontier_priority.py # legacy / cost-aware / value-per-cost priority keys
 │   │   ├── run_state.py      # _StructuredRunState + build_structured_result
 │   │   └── solution_tracker.py # has_complete_solution / select_solution
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
@@ -367,7 +370,7 @@ python -m pytest tests/ -q
 - `tests/test_branch.py`：ProofBranch 嵌套序列化与状态枚举。
 - `tests/test_search_action.py`：SearchAction 序列化、默认作用域表完整性、narrow/broaden 校验。
 - `tests/test_hypothesis.py`：FailureHypothesis 序列化、confidence/evidence 校验、嵌套 proposed_tests 聚合。
-- `tests/test_frontier.py`：Frontier seed/pop 排序确定性、stalled_streak 派生、retired 分支不重新入队、REPAIR 子分支优先级；Phase 7.4 readiness gate（parent 未 ready / helper accepted 后 ready / helper blocked 终止 / 单 root baseline）。
+- `tests/test_frontier.py`：Frontier seed/pop 排序确定性、stalled_streak 派生、retired 分支不重新入队、REPAIR 子分支优先级；Phase 7.4 readiness gate（parent 未 ready / helper accepted 后 ready / helper blocked 终止 / 单 root baseline）；frontier 拆分后 `frontier.py` 保持兼容 re-export，核心类型/信号/priority key 分在 `frontier_types.py` / `frontier_signals.py` / `frontier_priority.py`。
 - `tests/test_solution_tracker.py`：has_complete_solution / select_solution 的 version 相容、artifact 必需、stale 版本拒绝、多 accepted 取最小 branch_id。
 - `tests/test_reducer.py`：apply 不可变转移、accepted/failure/safety 三态、DORMANT 与 REPAIR 子分支派生、原 workspace 不被 mutate；Phase 7.3 capability audit 三态；Phase 7.4 `apply_decompose`（supersede+seed+validate、no-op 守卫）+ artifact contract（helper/root fact statement 与 kind）；Phase 7.6 `apply_argument`（PROPOSE/REFINE 同转移 step+alignment、缺 alignment no-op、REFINE 未知 id no-op、不可变）/`apply_change_representation`（父 SUPERSEDED+`.rep0` child、继承 observations、id 确定性）/`apply_failure_hypotheses`（非法 evidence/错误 branch test/重复 id 丢弃）；Phase 7.7 `ReducerTransitiveBlockTests`（helper block→依赖链 parent 同步 BLOCKED、已验证 sibling 不受影响、`block_branch` 不传播、不可变）/`ReducerDormantRecoveryTests`（accept helper 复活 DORMANT parent、capability 可用复活、missing 不复活、无 DORMANT no-op）。
 - `tests/test_assembler.py`：final-assembly 整体复检与 blocked 语义；Phase 7.4 多义务 helper 注入 + 单 root 不变。

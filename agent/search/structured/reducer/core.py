@@ -24,7 +24,8 @@ from agent.proof_system.workspace.observation import (
     observations_from_check_result,
 )
 from agent.search.safety import SafetyVerdict
-from ..frontier import STALL_THRESHOLD, _stalled_streak
+from ..frontier import STALL_THRESHOLD
+from ..frontier_signals import stalled_streak as _stalled_streak
 from ..proposal import DecomposeChildSpec
 from .decompose import apply_decompose
 from .structural import (
