@@ -317,6 +317,21 @@ class LeanAdapter(ProofSystemAdapter):
             self._server.close()
             self._server = None
 
+    def subprocess_clone(self) -> "LeanAdapter":
+        """Return an equivalent adapter that uses the subprocess checker."""
+
+        return LeanAdapter(
+            project_root=self.project_root,
+            prefer_lake=self.prefer_lake,
+            disallow_sorry=self.disallow_sorry,
+            lean_executable=self._command_builder.lean_executable,
+            lake_executable=self._command_builder.lake_executable,
+            use_server=False,
+            server_startup_timeout_seconds=self.server_startup_timeout_seconds,
+            server_timeout_retries=self.server_timeout_retries,
+            server_fallback_seconds=self.server_fallback_seconds,
+        )
+
     def _check_with_server(
         self,
         candidate_file: Path,

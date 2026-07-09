@@ -92,7 +92,9 @@ class StructuredControllerActionMixin:
                 },
             )
             source = _capability_probe_source(task, payload.signature)
-            check_result = self._check_source(task, edit, source, state)
+            check_result = self._check_source(
+                task, edit, source, state, force_subprocess=True
+            )
             record = AttemptRecord(
                 attempt_index=state.attempt_index,
                 candidate_id=edit.action,
@@ -162,6 +164,8 @@ class StructuredControllerActionMixin:
         edit: CandidateEdit,
         source: str,
         state: _StructuredRunState,
+        *,
+        force_subprocess: bool = False,
     ) -> CheckResult:
         materialized = self.workspace.write_candidate(
             task,
@@ -179,15 +183,20 @@ class StructuredControllerActionMixin:
             self.budget.snapshot().remaining_checks,
             budget_slice.timeout_seconds,
         )
+        adapter = self.adapter
+        if force_subprocess:
+            subprocess_clone = getattr(adapter, "subprocess_clone", None)
+            if callable(subprocess_clone):
+                adapter = subprocess_clone()
         if self.check_workspace is None:
-            return self.adapter.check(materialized.path, budget_slice)
+            return adapter.check(materialized.path, budget_slice)
         with self.check_workspace.materialize_candidate(
             task,
             candidate_id=materialized.candidate_id,
             source=source,
             extension=self.config.candidate_extension,
         ) as check_candidate:
-            check_result = self.adapter.check(check_candidate.path, budget_slice)
+            check_result = adapter.check(check_candidate.path, budget_slice)
         return replace(check_result, candidate_file=materialized.path)
 
     def _run_decompose(
@@ -431,5 +440,16 @@ def _capability_probe_source(task: ProofTask, signature: str) -> str:
         parts.append("\n".join(f"import {module}" for module in task.imports))
     if context.strip():
         parts.append(context.rstrip())
-    parts.append(signature.strip())
+    parts.append(_capability_probe_command(signature))
     return "\n\n".join(part for part in parts if part).rstrip() + "\n"
+
+
+def _capability_probe_command(signature: str) -> str:
+    stripped = signature.strip()
+    match = re.fullmatch(r"#check\s+(.+)", stripped, flags=re.DOTALL)
+    if match:
+        return (
+            "set_option autoImplicit false\n"
+            f"def __cssc_capability_probe__ := {match.group(1).strip()}"
+        )
+    return stripped

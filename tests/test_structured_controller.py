@@ -27,10 +27,24 @@ from agent.search.controller import ControllerConfig
 from agent.search.execution import ExecutionMode
 from agent.search.safety import SafetyVerdict
 from agent.search.structured import StructuredController
+from agent.search.structured.controller.actions import _capability_probe_source
 
 
 def _task() -> ProofTask:
     return ProofTask("sample", "theorem sample : True := by\n  {{proof}}\n")
+
+
+def _l3_task() -> ProofTask:
+    return ProofTask(
+        "l3",
+        "namespace AblationL3\n\n"
+        "axiom widget : Type\n"
+        "axiom good : widget -> Prop\n"
+        "axiom target : widget\n\n"
+        "theorem missing_widget_capability : good target := by\n"
+        "  {{proof}}\n\n"
+        "end AblationL3\n",
+    )
 
 
 class StructuredFakeAdapter(ProofSystemAdapter):
@@ -356,6 +370,16 @@ class StructuredControllerTests(unittest.TestCase):
                     workspace=AttemptWorkspace(tmp),
                     config=ControllerConfig(execution_mode=ExecutionMode.MINIMAL),
                 )
+
+    def test_capability_probe_rewrites_hash_check_to_elaboration(self) -> None:
+        source = _capability_probe_source(_l3_task(), "#check widgetGood target")
+
+        self.assertIn("namespace AblationL3", source)
+        self.assertIn("axiom good : widget -> Prop", source)
+        self.assertIn("set_option autoImplicit false", source)
+        self.assertIn("def __cssc_capability_probe__ := widgetGood target", source)
+        self.assertNotIn("#check", source)
+        self.assertNotIn("theorem missing_widget_capability", source)
 
     def test_legacy_generator_finalizes_kind(self) -> None:
         # A legacy ActionGenerator (ActionCandidate) is adapted; the controller
