@@ -129,6 +129,9 @@ class StructuredController(
             and self.budget.can_call_model()
         ):
             node = frontier.pop()
+            # Phase 8.4: drain the per-pop explanation this pop just produced so
+            # the trace records why the branch was scheduled.
+            state.priority_explanations.extend(frontier.explanations()[len(state.priority_explanations):])
             branch = branch_by_id(workspace, node.branch_id)
             if branch is None or branch.status != BranchStatus.ACTIVE:
                 logger.debug(

@@ -247,6 +247,44 @@ class StructuredControllerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 controller.run(_task())
 
+    def test_value_per_cost_frontier_policy_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="value_per_cost_v1",
+            )
+            result = controller.run(_task())
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.metadata["frontier_policy"], "value_per_cost_v1")
+
+    def test_priority_explanations_present_on_legacy_path(self) -> None:
+        # The trace records a priority explanation on every pop regardless of
+        # policy, so even the default legacy run surfaces them with the legacy
+        # policy tag and the full explanation field set.
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, QueueGenerator([["trivial"]]))
+            result = controller.run(_task())
+
+        explanations = result.metadata["priority_explanations"]
+        self.assertIsInstance(explanations, tuple)
+        self.assertTrue(explanations)
+        required = {
+            "branch_id",
+            "policy",
+            "expected_incremental_cost",
+            "unlock_value",
+            "progress_likelihood",
+            "information_gain",
+            "final_key_or_score",
+        }
+        for expl in explanations:
+            self.assertEqual(set(expl), required)
+            self.assertEqual(expl["policy"], "legacy")
+            self.assertIsInstance(expl["final_key_or_score"], tuple)
+            for part in expl["final_key_or_score"]:
+                self.assertIsInstance(part, int)
+
     def test_generation_metadata_carries_context_projection(self) -> None:
         generator = QueueGenerator([["trivial"]])
         with tempfile.TemporaryDirectory() as tmp:

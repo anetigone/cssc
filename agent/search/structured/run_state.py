@@ -49,6 +49,10 @@ class _StructuredRunState:
     representation_records: list[dict[str, Any]] = field(default_factory=list)
     model_usage: list[dict[str, Any]] = field(default_factory=list)
     generation_failures: list[dict[str, Any]] = field(default_factory=list)
+    # Phase 8.4: per-pop frontier priority explanations, in pop order. Captured
+    # by the controller from ``Frontier.explanations()`` so the trace records
+    # why each branch was scheduled regardless of policy.
+    priority_explanations: list = field(default_factory=list)
 
 
 _SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
@@ -149,6 +153,9 @@ def build_structured_result(
     metadata: dict[str, Any] = {
         "workspace": workspace.to_dict(),
         "frontier_policy": frontier_policy,
+        "priority_explanations": tuple(
+            expl.to_dict() for expl in state.priority_explanations
+        ),
         "safety_rejections": tuple(state.safety_rejections),
         "safety_reviewer": type(safety_reviewer).__name__,
         "skipped_proposals": tuple(state.skipped_proposals),
