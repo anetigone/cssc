@@ -10,6 +10,11 @@ from agent.proof_system.workspace import (
     ProofObligation,
     initialize_from_task,
 )
+from agent.proof_system.workspace.action import SearchAction, SearchActionKind
+from agent.proof_system.workspace.hypothesis import (
+    FailureHypothesis,
+    FailureKind,
+)
 from agent.proof_system.workspace.observation import (
     Observation,
     ObservationSource,
@@ -18,6 +23,7 @@ from agent.search.structured.frontier import (
     STALL_THRESHOLD,
     Frontier,
     FrontierNode,
+    FrontierPolicy,
 )
 
 
@@ -405,6 +411,171 @@ class FrontierReadinessGateTests(unittest.TestCase):
         frontier.seed(_workspace((_branch("root"),)))
         self.assertTrue(frontier.has_work())
         self.assertEqual(frontier.pop().branch_id, "root")
+
+
+def _capability_test_action(branch_id: str) -> SearchAction:
+    return SearchAction(
+        kind=SearchActionKind.RUN_CAPABILITY_TEST,
+        target_branch_id=branch_id,
+        rationale="probe capability",
+    )
+
+
+def _branch_with_capability_test(branch_id: str) -> ProofBranch:
+    """A branch whose failure hypotheses propose a capability test.
+
+    Such a branch is expected to run a cheap probe next (1 check, 0 model
+    calls) under the cost-aware policy, ranking ahead of an equal branch that
+    will implement (1 check + 1 model call).
+    """
+    hypothesis = FailureHypothesis(
+        hypothesis_id=f"{branch_id}-h",
+        kind=FailureKind.CAPABILITY_MISSING,
+        confidence=0.5,
+        evidence_ids=("evidence-0",),
+        proposed_tests=(_capability_test_action(branch_id),),
+    )
+    return ProofBranch(
+        branch_id=branch_id,
+        obligation_id="sample",
+        obligation_version=1,
+        parent_branch_id=None,
+        observations=(_goal_obs(0, "fp-a"),),
+        status=BranchStatus.ACTIVE,
+        failure_hypotheses=(hypothesis,),
+    )
+
+
+class FrontierPolicyTests(unittest.TestCase):
+    """Phase 8.2: opt-in cost-aware frontier, legacy default unchanged."""
+
+    def test_default_policy_is_legacy(self) -> None:
+        self.assertIs(Frontier().policy, FrontierPolicy.LEGACY)
+
+    def test_policy_values(self) -> None:
+        self.assertEqual(
+            {p.value for p in FrontierPolicy}, {"legacy", "cost_aware_v1"}
+        )
+
+    def test_legacy_default_orders_identical_to_explicit_legacy(self) -> None:
+        # Two roots, same depth/attempts, differ only by branch_id: legacy key
+        # is a pure branch_id tie-break regardless of how the frontier is built.
+        workspace = _workspace((_branch("bbb"), _branch("aaa")))
+        default_order = _drain(Frontier(), workspace)
+        explicit_order = _drain(
+            Frontier(policy=FrontierPolicy.LEGACY), workspace
+        )
+        self.assertEqual(default_order, ["aaa", "bbb"])
+        self.assertEqual(default_order, explicit_order)
+
+    def test_cost_aware_prefers_cheap_capability_probe(self) -> None:
+        # Two ready branches tie on every legacy field, so legacy order is a
+        # pure branch_id tie-break. The branch that will implement ("aaa",
+        # dearer next action) sorts first under legacy. Cost-aware overrides the
+        # tie-break to rank the cheap capability-probe branch ("zzz") first.
+        cheap = _branch_with_capability_test("zzz")
+        dear = _branch("aaa")
+        workspace = _workspace((cheap, dear))
+
+        legacy_order = _drain(Frontier(), workspace)
+        cost_aware_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace
+        )
+
+        # Legacy tie-breaks purely on branch_id.
+        self.assertEqual(legacy_order, ["aaa", "zzz"])
+        # Cost-aware ranks the cheap-next-action branch first.
+        self.assertEqual(cost_aware_order, ["zzz", "aaa"])
+
+    def test_cost_aware_prefers_shallower_branch_at_equal_cost(self) -> None:
+        # Root and child both implement (no proposed tests), so cost ties.
+        # Cost-aware, like legacy, ranks the shallower root first.
+        root = _branch("root")
+        child = _branch("child", parent_branch_id="root")
+        workspace = _workspace((child, root))
+
+        cost_aware_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace
+        )
+        self.assertEqual(cost_aware_order, ["root", "child"])
+
+    def test_cost_aware_ignores_subthreshold_stall_below_cost_tie(self) -> None:
+        # Cost-aware collapses the stalled signal to a 0/1 penalty at the
+        # threshold, so sub-threshold streak differences do not reorder at equal
+        # cost. Legacy uses the raw streak as its leading key, so it ranks the
+        # lower-streak branch first.
+        lower_streak = _branch(
+            "zzz",  # alphabetically later
+            observations=(_goal_obs(0, "fp-a"), _goal_obs(1, "fp-b")),
+        )
+        higher_streak = _branch(
+            "aaa",  # alphabetically earlier, streak 2 (still < STALL_THRESHOLD)
+            observations=(_goal_obs(0, "fp-a"), _goal_obs(1, "fp-a")),
+        )
+        workspace = _workspace((lower_streak, higher_streak))
+
+        legacy_order = _drain(Frontier(), workspace)
+        cost_aware_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace
+        )
+        # Legacy: lower streak (1) beats higher streak (2).
+        self.assertEqual(legacy_order, ["zzz", "aaa"])
+        # Cost-aware: both sub-threshold -> equal penalty -> branch_id tie-break.
+        self.assertEqual(cost_aware_order, ["aaa", "zzz"])
+
+    def test_cost_aware_penalizes_branch_past_stall_threshold(self) -> None:
+        # Once a branch exceeds the stall threshold the cost-aware penalty
+        # kicks in and it loses to a progressing peer even when its branch_id
+        # would otherwise win.
+        progressing = _branch("zzz", observations=(_goal_obs(0, "fp-a"),))
+        stalled = _branch(
+            "aaa",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-a"),
+                _goal_obs(2, "fp-a"),
+            ),
+        )
+        workspace = _workspace((progressing, stalled))
+        cost_aware_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace
+        )
+        self.assertEqual(cost_aware_order, ["zzz", "aaa"])
+
+    def test_cost_aware_branch_id_is_final_tiebreaker(self) -> None:
+        # Two roots identical on every cost-aware field tie-break on branch_id.
+        workspace = _workspace((_branch("zzz"), _branch("aaa")))
+        cost_aware_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace
+        )
+        self.assertEqual(cost_aware_order, ["aaa", "zzz"])
+
+    def test_cost_aware_keeps_readiness_as_gate(self) -> None:
+        # A parent whose helper is still OPEN is not ready, so cost-aware
+        # ordering never surfaces it -- readiness filters before reorder.
+        helper = _branch("helper", obligation_id="sample.helper")
+        parent = _branch(
+            "parent",
+            obligation_id="sample",
+            obligation_version=2,
+        )
+        workspace = _multi_obligation_workspace(
+            helper_status=ObligationStatus.OPEN, branches=(helper, parent)
+        )
+        cost_aware_frontier = Frontier(policy=FrontierPolicy.COST_AWARE_V1)
+        cost_aware_frontier.seed(workspace)
+        ready = []
+        while cost_aware_frontier.has_work():
+            ready.append(cost_aware_frontier.pop().branch_id)
+        self.assertEqual(ready, ["helper"])
+
+
+def _drain(frontier: Frontier, workspace) -> list[str]:
+    frontier.seed(workspace)
+    order: list[str] = []
+    while frontier.has_work():
+        order.append(frontier.pop().branch_id)
+    return order
 
 
 if __name__ == "__main__":

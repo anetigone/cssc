@@ -148,6 +148,7 @@ class StructuredControllerTests(unittest.TestCase):
         max_candidates: int = 1,
         retriever: Any = None,
         context_summarizer: Any = None,
+        frontier_policy: str = "legacy",
     ) -> StructuredController:
         return StructuredController(
             adapter=adapter or StructuredFakeAdapter(),
@@ -157,6 +158,7 @@ class StructuredControllerTests(unittest.TestCase):
             config=ControllerConfig(
                 execution_mode=ExecutionMode.STRUCTURED,
                 max_candidates_per_model_call=max_candidates,
+                frontier_policy=frontier_policy,
             ),
             safety_reviewer=safety_reviewer,
             retriever=retriever,
@@ -179,6 +181,33 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertTrue(any(b["status"] == "accepted" for b in workspace["branches"]))
         # Assembly consumed one extra check on top of the single attempt.
         self.assertEqual(result.metrics.budget_checks_used, 2)
+
+    def test_default_frontier_policy_recorded_as_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, QueueGenerator([["trivial"]]))
+            result = controller.run(_task())
+        self.assertEqual(result.metadata["frontier_policy"], "legacy")
+
+    def test_cost_aware_frontier_policy_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="cost_aware_v1",
+            )
+            result = controller.run(_task())
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.metadata["frontier_policy"], "cost_aware_v1")
+
+    def test_unknown_frontier_policy_hard_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="bogus",
+            )
+            with self.assertRaises(ValueError):
+                controller.run(_task())
 
     def test_generation_metadata_carries_context_projection(self) -> None:
         generator = QueueGenerator([["trivial"]])

@@ -51,7 +51,7 @@ from ..branch_ops import (
 from .actions import StructuredControllerActionMixin
 from .runtime import StructuredControllerRuntimeMixin
 from ..finalize import assemble_and_finalize
-from ..frontier import Frontier
+from ..frontier import Frontier, FrontierPolicy
 from ..proposal import (
     StructuredActionProposal,
     adapt_legacy_generator,
@@ -103,9 +103,16 @@ class StructuredController(
 
     def run(self, task: ProofTask) -> ControllerResult:
         logger.info("Structured controller run started: task_id=%s", task.task_id)
+        try:
+            frontier_policy = FrontierPolicy(self.config.frontier_policy)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown frontier_policy={self.config.frontier_policy!r}; "
+                f"expected one of {[p.value for p in FrontierPolicy]}"
+            ) from exc
         workspace = self._initial_workspace(task)
         state = _StructuredRunState()
-        frontier = Frontier()
+        frontier = Frontier(policy=frontier_policy)
         frontier.seed(workspace)
         logger.debug(
             "Structured frontier seeded: task_id=%s has_work=%s checks_available=%s "
@@ -459,6 +466,7 @@ class StructuredController(
                         check_workspace=self.check_workspace,
                         safety_reviewer=self.safety_reviewer,
                         execution_mode=ExecutionMode.STRUCTURED,
+                        frontier_policy=frontier_policy.value,
                     )
 
             frontier.update(
@@ -512,6 +520,7 @@ class StructuredController(
             execution_mode=ExecutionMode.STRUCTURED,
             budget=self.budget,
             safety_reviewer=self.safety_reviewer,
+            frontier_policy=frontier_policy.value,
         )
         logger.info(
             "Structured controller run finished: task_id=%s accepted=%s stop_reason=%s "

@@ -92,6 +92,7 @@ def build_structured_result(
     budget: BudgetManager,
     safety_reviewer: SafetyReviewer,
     assembly_outcome: AssemblyResult | None = None,
+    frontier_policy: str = "legacy",
 ) -> ControllerResult:
     """Construct the :class:`ControllerResult` for one structured run.
 
@@ -143,6 +144,7 @@ def build_structured_result(
     workspace = workspace.successor(status=final_status)
     metadata: dict[str, Any] = {
         "workspace": workspace.to_dict(),
+        "frontier_policy": frontier_policy,
         "safety_rejections": tuple(state.safety_rejections),
         "safety_reviewer": type(safety_reviewer).__name__,
         "skipped_proposals": tuple(state.skipped_proposals),

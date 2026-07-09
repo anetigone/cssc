@@ -252,12 +252,12 @@ agent/
 - **依赖真实 Lean toolchain（慢、需非沙箱）+ 真实 model 调用（有 token 成本）**，不进 CI、手动跑。
 - 完整方案（任务集、消融档位、跑批脚本、对比指标口径、报告产出、提交粒度）见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)。7.8 不引入新代码模块，只复用现有 structured 执行器 + trace 指标出口。
 
-## Phase 8 成本感知搜索（**未做**）
+## Phase 8 成本感知搜索（**进行中**）
 
 - 这是 structured 基础设施稳定后的下一阶段优化：先冻结统一 `CostVector` 与 branch/obligation 成本归因，再以 opt-in `FrontierPolicy` 引入确定性 cost-aware 排序，最后才做软预算、价值/成本混合评分和真实任务消融。
 - 完整方案见 [tmp/phase8_plan.md](tmp/phase8_plan.md)。Phase 8 的核心边界是：成本感知只优化 structured 的调度顺序和预算分配，不改变 checker/safety/reducer/assembly 语义；预算不足只能导致 `PARTIAL` / `BLOCKED` / 预算耗尽类 stop reason，不能把未验证路线标成数学失败。
-- 8.0/8.1 必须只观测不改行为：`agent/search/cost.py` 提供共享成本向量，`agent/search/structured/costing.py` 从 trace/workspace 派生 structured 成本摘要；minimal 可记录 run-level cost，但不 import structured 成本归因模块。
-- 8.2 的 cost-aware frontier 必须 opt-in，默认 `legacy` 排序保持不变；readiness 仍是 gate，不是排序权重，`branch_id` 保留为最终 tie-breaker 以保证 trace 可回放。
+- 8.0 ✅ / 8.1 ✅ 只观测不改行为：`agent/search/cost.py` 提供共享成本向量，`agent/search/structured/costing.py` 从 trace/workspace 派生 structured 成本摘要；minimal 可记录 run-level cost，但不 import structured 成本归因模块。
+- 8.2 ✅ cost-aware frontier opt-in：`FrontierPolicy`（默认 `LEGACY`）+ `Frontier(policy=...)` + `_cost_aware_priority_key`（`expected_incremental_cost, stalled_penalty, unlock_value_rank=depth, attempt_count, depth_from_root, branch_id`），由 `ControllerConfig.frontier_policy`（字符串，structured 校验未知值硬失败）+ `--frontier-policy` CLI 驱动；`metadata["frontier_policy"]` 透传所有 result 路径（`run_state.build_structured_result` + `finalize.assemble_and_finalize`）。默认 legacy 排序逐字节不变，readiness 仍是 gate，`branch_id` 最终 tie-breaker，minimal 不 import frontier policy。
 - 8.3+ 的软预算和 value-per-cost 策略只能降权或调度借用，不能跳过 final assembly、不能削弱 statement-preservation、不能因为“太贵”直接接受或否定一个分支。
 
 ## `ChatDriver` 抽象
@@ -375,7 +375,7 @@ python -m pytest tests/ -q
 - `tests/test_structured_projection.py`：Phase 7.1 workspace context projection；Phase 7.5 helper fact `declaration_id` 透传 + 往返。
 - `tests/test_structured_proposal.py`：Phase 7.2 typed structured action proposal——payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、legacy adapter 正确性/idempotent/native 旁路；Phase 7.6 argument/representation payload 往返 + kind/payload 一致 + 跨 kind 拒绝。
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查；Phase 7.4 前置 helper 声明不触发 statement_not_preserved。
-- Phase 8 计划测试：`tests/test_cost.py` 覆盖 `CostVector` 序列化/聚合/metrics 派生；`tests/test_structured_costing.py` 覆盖 branch/obligation direct/transitive 成本归因；`tests/test_frontier.py` 扩展 opt-in cost-aware policy 排序与 legacy 行为不变。
+- Phase 8 计划测试：`tests/test_cost.py` 覆盖 `CostVector` 序列化/聚合/metrics 派生；`tests/test_structured_costing.py` 覆盖 branch/obligation direct/transitive 成本归因；`tests/test_frontier.py` 已扩展 `FrontierPolicyTests`（默认 legacy + 显式 legacy 逐字节一致、cost-aware 偏好廉价 next-action / 阈值 stalled penalty / 子阈值 streak 折叠 / shallower 优先 / `branch_id` tie-break / readiness gate 仍先过滤）；`tests/test_structured_controller.py` 覆盖 `metadata["frontier_policy"]` 透传（legacy 默认 / cost_aware_v1 / 未知值硬失败）。
 
 ## 注意事项
 

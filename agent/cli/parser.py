@@ -155,6 +155,13 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
         default="minimal",
         help="执行模式，默认 minimal；structured 在 Phase 3 前不可用。",
     )
+    group.add_argument(
+        "--frontier-policy",
+        choices=("legacy", "cost_aware_v1"),
+        default="legacy",
+        help="Structured frontier 排序策略（Phase 8.2），默认 legacy；"
+        "minimal 模式忽略此参数。仅影响调度顺序，不改变证明语义。",
+    )
     group.add_argument("--enable-retrieval", action="store_true")
     group.add_argument("--retrieval-source", action="append", default=[])
     group.add_argument("--max-retrieval-results", type=int, default=5)
