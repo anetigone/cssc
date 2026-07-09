@@ -377,9 +377,8 @@ class SerializationAndEdgeCasesTests(unittest.TestCase):
         self.assertEqual(summary["run"]["model_calls"], 1)
 
     def test_blocked_after_empty_proposals_branch_reports_zero(self) -> None:
-        # A branch blocked after empty proposals (no model_usage appended, no
-        # attempt recorded) honestly reports model_calls=0 / checks=0; the
-        # reserved-but-unused call is captured at run level instead.
+        # A branch blocked after empty proposals has no checked attempt, but the
+        # controller still reserved one generator call for that branch.
         workspace = _seed().successor(
             branches=(_branch("sample.b1", "sample", status=BranchStatus.BLOCKED),)
         )
@@ -392,10 +391,13 @@ class SerializationAndEdgeCasesTests(unittest.TestCase):
             exhausted_reason=None,
         )
         summary = _summary(
-            workspace, run_metrics=_run_metrics(model_calls=1), snapshot=snapshot
+            workspace,
+            model_usage=(_usage("sample.b1", "sample"),),
+            run_metrics=_run_metrics(model_calls=1),
+            snapshot=snapshot,
         )
         branch = _by_branch(summary, "sample.b1")
-        self.assertEqual(branch.direct_cost.model_calls, 0)
+        self.assertEqual(branch.direct_cost.model_calls, 1)
         self.assertEqual(branch.direct_cost.checks, 0)
         self.assertEqual(summary["run"]["model_calls"], 1)
 

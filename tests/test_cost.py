@@ -135,8 +135,8 @@ class DeriveFromAttemptTests(unittest.TestCase):
             elapsed_seconds=0.25,
         )
         cost = cost_vector_from_attempt(attempt)
-        # Attempts carry no run-level token or call counters.
-        self.assertEqual(cost, CostVector(elapsed_ms=250))
+        # Attempts carry no run-level token or model-call counters.
+        self.assertEqual(cost, CostVector(checks=1, elapsed_ms=250))
 
 
 if __name__ == "__main__":

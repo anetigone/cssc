@@ -180,13 +180,14 @@ class StructuredController(
                 }
                 state.generation_failures.append(failure)
                 usage = exc.metadata.get("token_usage")
-                if isinstance(usage, dict):
-                    usage = dict(usage)
-                    # Tag the iteration's generator call to the popped branch so
-                    # Phase 8.1 costing can attribute tokens per branch.
-                    usage["structured_branch_id"] = branch.branch_id
-                    usage["structured_obligation_id"] = branch.obligation_id
-                    state.model_usage.append(usage)
+                usage_entry = dict(usage) if isinstance(usage, dict) else {}
+                usage_entry.setdefault("input_tokens", 0)
+                usage_entry.setdefault("output_tokens", 0)
+                # This is a call ledger as well as token diagnostics: reserve_model_call()
+                # succeeded above even when the provider reports no token usage.
+                usage_entry["structured_branch_id"] = branch.branch_id
+                usage_entry["structured_obligation_id"] = branch.obligation_id
+                state.model_usage.append(usage_entry)
                 state.stop_reason = f"generation:{exc.reason}"
                 logger.warning(
                     "Structured generation failed: task_id=%s branch=%s reason=%s",
@@ -195,15 +196,15 @@ class StructuredController(
                     state.stop_reason,
                 )
                 break
-            if proposals:
-                usage = proposals[0].metadata.get("token_usage")
-                if isinstance(usage, dict):
-                    usage = dict(usage)
-                    # Tag the iteration's generator call to the popped branch so
-                    # Phase 8.1 costing can attribute tokens per branch.
-                    usage["structured_branch_id"] = branch.branch_id
-                    usage["structured_obligation_id"] = branch.obligation_id
-                    state.model_usage.append(usage)
+            usage = proposals[0].metadata.get("token_usage") if proposals else None
+            usage_entry = dict(usage) if isinstance(usage, dict) else {}
+            usage_entry.setdefault("input_tokens", 0)
+            usage_entry.setdefault("output_tokens", 0)
+            # This is a call ledger as well as token diagnostics: reserve_model_call()
+            # succeeded above even when the provider reports no token usage.
+            usage_entry["structured_branch_id"] = branch.branch_id
+            usage_entry["structured_obligation_id"] = branch.obligation_id
+            state.model_usage.append(usage_entry)
             if not proposals:
                 workspace = block_branch(workspace, branch.branch_id)
                 frontier.update(workspace, branch.branch_id, accepted=False)

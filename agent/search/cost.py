@@ -105,7 +105,8 @@ def cost_vector_from_metrics_and_budget(
 def cost_vector_from_attempt(attempt: AttemptMetric) -> CostVector:
     """Derive the per-attempt cost vector.
 
-    Attempts carry no token or call counters (those are run-level), so only the
-    check wall-clock is populated. Kept here for Phase 8.1 branch attribution.
+    Each attempt is one checked candidate. Attempts carry no token or model-call
+    counters (those are run-level), so only the check count and wall-clock are
+    populated.
     """
-    return CostVector(elapsed_ms=round(attempt.elapsed_seconds * 1000))
+    return CostVector(checks=1, elapsed_ms=round(attempt.elapsed_seconds * 1000))
