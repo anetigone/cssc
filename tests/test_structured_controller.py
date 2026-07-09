@@ -199,6 +199,44 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         self.assertEqual(result.metadata["frontier_policy"], "cost_aware_v1")
 
+    def test_cost_aware_v2_frontier_policy_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="cost_aware_v2",
+            )
+            result = controller.run(_task())
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.metadata["frontier_policy"], "cost_aware_v2")
+
+    def test_budget_hints_present_in_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="cost_aware_v2",
+            )
+            result = controller.run(_task())
+
+        hints = result.metadata["budget_hints"]
+        self.assertIsInstance(hints, tuple)
+        self.assertTrue(hints)
+        required = {
+            "obligation_id",
+            "soft_model_calls",
+            "soft_checks",
+            "borrowed_model_calls",
+            "borrowed_checks",
+        }
+        for hint in hints:
+            self.assertEqual(set(hint), required)
+        # A single-root accepted run: the root hint borrows nothing (its direct
+        # spend is within the envelope) and is non-negative throughout.
+        root_hint = next(h for h in hints if h["obligation_id"] == "sample")
+        self.assertGreaterEqual(root_hint["soft_checks"], 0)
+        self.assertGreaterEqual(root_hint["borrowed_checks"], 0)
+
     def test_unknown_frontier_policy_hard_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = self._controller(

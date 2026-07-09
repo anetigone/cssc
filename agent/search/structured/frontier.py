@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
 from agent.proof_system.workspace import BranchStatus, ObligationStatus, SearchActionKind
 
+from .costing import _obligation_closure
+
 if TYPE_CHECKING:
-    from agent.proof_system.workspace import ProofBranch, ProofWorkspace
+    from agent.proof_system.workspace import ObligationGraph, ProofBranch, ProofWorkspace
 
 
 STALL_THRESHOLD = 3
@@ -36,12 +39,16 @@ class FrontierPolicy(str, Enum):
     ``LEGACY`` is the default and must stay byte-for-byte stable so existing
     structured traces replay identically. ``COST_AWARE_V1`` reorders the ready
     set (readiness is still a gate, never a weight) using a deterministic tuple
-    described in ``tmp/phase8_plan.md`` §3. Minimal mode never imports this
-    enum.
+    described in ``tmp/phase8_plan.md`` §3. ``COST_AWARE_V2`` (Phase 8.3) layers
+    a soft-budget overdraft signal on top of V1's cost ordering: a branch that
+    has spent past its per-obligation soft envelope is deprioritised, while the
+    inherited V1 dimensions (cheap action, non-stalled, high unlock value)
+    break ties among non-overdraft peers. Minimal mode never imports this enum.
     """
 
     LEGACY = "legacy"
     COST_AWARE_V1 = "cost_aware_v1"
+    COST_AWARE_V2 = "cost_aware_v2"
 
 
 @dataclass(frozen=True)
@@ -55,9 +62,18 @@ class FrontierNode:
     last_goal_fingerprints: tuple[str, ...]
     stalled_streak: int
     #: Static estimate of the next action's incremental cost (Phase 8.2). Only
-    #: consulted by the cost-aware key; legacy key ignores it so legacy nodes
+    #: consulted by the cost-aware keys; legacy key ignores it so legacy nodes
     #: order identically whether or not it is populated.
     next_action_cost: int = 0
+    #: Soft-budget envelope for this branch's obligation (Phase 8.3). Only the
+    #: ``cost_aware_v2`` key reads them; legacy/v1 keys ignore the fields, so
+    #: they default to zero and never perturb earlier orderings.
+    soft_checks: int = 0
+    soft_model_calls: int = 0
+    #: True unlock value (active dependents count) for this obligation (Phase
+    #: 8.3). V1 used ``depth_from_root`` as a proxy; V2 uses the real count so
+    #: the ordering is driven by the same hint projection as ``budget_hints``.
+    unlock_value_rank: int = 0
 
 
 def _branch_goal_fingerprints(branch: ProofBranch) -> tuple[str, ...]:
@@ -110,7 +126,161 @@ def _next_action_cost(branch: ProofBranch) -> int:
     return _ACTION_INCREMENTAL_COST[SearchActionKind.IMPLEMENT]
 
 
+@dataclass(frozen=True)
+class BudgetHintDefaults:
+    """Tuning knobs for the soft-budget envelope (Phase 8.3 §4).
+
+    All integer so the resulting envelopes are directly comparable in a
+    deterministic frontier key without any float arithmetic. Consumed by
+    :func:`soft_envelope_for_obligation` (and, via :mod:`budget_hints`, by the
+    result-level ``metadata["budget_hints"]`` projection) so V2 ordering and
+    the recorded hint share one source of truth.
+    """
+
+    base_soft_checks: int = 1
+    base_soft_model_calls: int = 1
+    # root / unlock value bonus (plan §4.1)
+    root_bonus_checks: int = 1
+    root_bonus_model_calls: int = 1
+    per_unlock_bonus_checks: int = 1
+    per_unlock_bonus_model_calls: int = 1
+    # capability audit is a cheap probe: 0 model calls (plan §4.2)
+    capability_soft_checks: int = 1
+    capability_soft_model_calls: int = 0
+    # a stalled branch is deprioritised via the key; its envelope collapses (§4.3)
+    stalled_soft_checks: int = 0
+    stalled_soft_model_calls: int = 0
+    # an obligation adjacent to an accepted helper keeps recovery budget (§4.4)
+    accepted_neighbor_bonus_checks: int = 1
+    accepted_neighbor_bonus_model_calls: int = 1
+    stall_threshold: int = STALL_THRESHOLD
+
+
+def _dependents_count(graph: ObligationGraph) -> dict[str, int]:
+    """Map obligation_id -> number of active obligations depending on it.
+
+    Edges run parent -> helper (``dependency_ids``), so a helper depended on by
+    many parents has a higher unlock value. The root obligation is not listed
+    as a dependency of anyone, so it earns its own bonus downstream.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for parent in graph.active():
+        for dependency_id in parent.dependency_ids:
+            counts[dependency_id] += 1
+    return dict(counts)
+
+
+def _next_action_is_capability(branch: ProofBranch | None) -> bool:
+    """True if the branch's next action is expected to be a capability probe.
+
+    Mirrors the static-cost read in :func:`_next_action_cost`: a pending
+    capability test ranks the next action as ``RUN_CAPABILITY_TEST``.
+    """
+    if branch is None:
+        return False
+    return _next_action_cost(branch) == _ACTION_INCREMENTAL_COST[
+        SearchActionKind.RUN_CAPABILITY_TEST
+    ]
+
+
+def _has_accepted_neighbor(
+    obligation_id: str, workspace: ProofWorkspace
+) -> bool:
+    """True if any accepted fact lives in ``obligation_id``'s dependency closure.
+
+    Closure edges run parent -> helper (reused from :mod:`costing`), so this
+    detects progress among the helpers this obligation ultimately depends on,
+    plus itself: a partial result nearby should keep recovery budget (§4.4).
+    """
+    if not workspace.accepted_facts:
+        return False
+    closure = _obligation_closure(obligation_id, workspace.obligation_graph)
+    return any(
+        fact.obligation_id in closure for fact in workspace.accepted_facts
+    )
+
+
+def _branch_for_obligation(
+    obligation_id: str, workspace: ProofWorkspace
+) -> ProofBranch | None:
+    """The first branch working ``obligation_id``, if any.
+
+    Hint derivation must not assume every obligation has a branch (a freshly
+    decomposed helper may be unworked). Missing branches simply take the
+    ``IMPLEMENT`` default for next-action cost and never count as stalled.
+    """
+    for branch in workspace.branches:
+        if branch.obligation_id == obligation_id:
+            return branch
+    return None
+
+
+def soft_envelope_for_obligation(
+    obligation_id: str,
+    workspace: ProofWorkspace,
+    config: BudgetHintDefaults = BudgetHintDefaults(),
+) -> tuple[int, int]:
+    """Return ``(soft_checks, soft_model_calls)`` for one obligation.
+
+    Pure projection over the public workspace surface. Capability / stalled
+    states *replace the base envelope* (an audit needs no model call; a stuck
+    branch is starved toward zero), while root / unlock / accepted-neighbour
+    states *add* to whatever base was chosen, so a stalled root is still ranked
+    ahead of its helpers rather than buried. Shared by the V2 ``FrontierNode``
+    derivation and the result-level :mod:`budget_hints` projection.
+    """
+    graph = workspace.obligation_graph
+    obligation = graph.by_id(obligation_id)
+    if obligation is None:
+        return (config.base_soft_checks, config.base_soft_model_calls)
+
+    is_root = obligation_id in workspace.root_obligation_ids
+    unlock_value = _dependents_count(graph).get(obligation_id, 0)
+    branch = _branch_for_obligation(obligation_id, workspace)
+    is_capability = _next_action_is_capability(branch)
+    is_stalled = (
+        _stalled_streak(branch) >= config.stall_threshold if branch else False
+    )
+    has_accepted_neighbor = _has_accepted_neighbor(obligation_id, workspace)
+
+    # Capability / stalled *replace the base envelope* (an audit needs no model
+    # call; a stuck branch is starved toward zero), but the additive structural
+    # bonuses (root priority, unlock value, accepted-neighbour recovery) still
+    # apply on top, so a stalled root is not buried beneath every helper.
+    if is_capability:
+        base_checks = config.capability_soft_checks
+        base_model_calls = config.capability_soft_model_calls
+    elif is_stalled:
+        base_checks = config.stalled_soft_checks
+        base_model_calls = config.stalled_soft_model_calls
+    else:
+        base_checks = config.base_soft_checks
+        base_model_calls = config.base_soft_model_calls
+
+    soft_checks = base_checks
+    soft_model_calls = base_model_calls
+    if is_root:
+        soft_checks += config.root_bonus_checks
+        soft_model_calls += config.root_bonus_model_calls
+    soft_checks += config.per_unlock_bonus_checks * unlock_value
+    soft_model_calls += config.per_unlock_bonus_model_calls * unlock_value
+    if has_accepted_neighbor:
+        soft_checks += config.accepted_neighbor_bonus_checks
+        soft_model_calls += config.accepted_neighbor_bonus_model_calls
+    return (soft_checks, soft_model_calls)
+
+
 def _node_for(branch: ProofBranch, workspace: ProofWorkspace) -> FrontierNode:
+    soft_checks, soft_model_calls = soft_envelope_for_obligation(
+        branch.obligation_id, workspace
+    )
+    unlock_value_rank = _dependents_count(workspace.obligation_graph).get(
+        branch.obligation_id, 0
+    )
+    if branch.obligation_id in workspace.root_obligation_ids:
+        # Roots have no inbound dependency edges; floor them so V2 ranks a root
+        # above any helper regardless of the helper's dependent count.
+        unlock_value_rank = max(unlock_value_rank, len(workspace.obligation_graph.active()))
     return FrontierNode(
         branch_id=branch.branch_id,
         obligation_id=branch.obligation_id,
@@ -119,6 +289,9 @@ def _node_for(branch: ProofBranch, workspace: ProofWorkspace) -> FrontierNode:
         last_goal_fingerprints=_branch_goal_fingerprints(branch),
         stalled_streak=_stalled_streak(branch),
         next_action_cost=_next_action_cost(branch),
+        soft_checks=soft_checks,
+        soft_model_calls=soft_model_calls,
+        unlock_value_rank=unlock_value_rank,
     )
 
 
@@ -220,11 +393,12 @@ class Frontier:
         """Return and remove the highest-priority pending node."""
         if not self._pending:
             raise StopIteration("frontier is empty")
-        key = (
-            _cost_aware_priority_key
-            if self._policy is FrontierPolicy.COST_AWARE_V1
-            else _priority_key
-        )
+        if self._policy is FrontierPolicy.COST_AWARE_V2:
+            key = _soft_budget_priority_key
+        elif self._policy is FrontierPolicy.COST_AWARE_V1:
+            key = _cost_aware_priority_key
+        else:
+            key = _priority_key
         self._pending.sort(key=key)
         node = self._pending.pop(0)
         self._pending_ids.discard(node.branch_id)
@@ -295,6 +469,37 @@ def _cost_aware_priority_key(
         node.next_action_cost,
         stalled_penalty,
         unlock_value_rank,
+        node.attempt_count,
+        node.depth_from_root,
+        node.branch_id,
+    )
+
+
+def _soft_budget_priority_key(
+    node: FrontierNode,
+) -> tuple[int, int, int, int, int, int, str]:
+    """Deterministic soft-budget sort key (Phase 8.3 §4).
+
+    ``cost_aware_v1`` ordering with a leading overdraft signal: a branch that
+    has spent past its per-obligation soft envelope (``attempt_count`` against
+    ``soft_checks``) is deprioritised before any V1 dimension is consulted, so
+    no single obligation starves the loop. All ascending so smaller pops first:
+
+    * ``overdraft_checks`` --- ``max(0, attempt_count - soft_checks)``; zero for
+      branches still inside their envelope;
+    * then the full V1 tuple (cheap next action, non-stalled, high unlock value,
+      fewer attempts, shallower, branch_id) to break ties among non-overdraft
+      peers. ``unlock_value_rank`` here is the real dependents count on the node
+      (V1 used ``depth_from_root`` as a proxy), negated because a *higher* unlock
+      value should pop *earlier* in an otherwise ascending tuple.
+    """
+    overdraft_checks = max(0, node.attempt_count - node.soft_checks)
+    stalled_penalty = 1 if node.stalled_streak >= STALL_THRESHOLD else 0
+    return (
+        overdraft_checks,
+        node.next_action_cost,
+        stalled_penalty,
+        -node.unlock_value_rank,
         node.attempt_count,
         node.depth_from_root,
         node.branch_id,

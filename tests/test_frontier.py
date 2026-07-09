@@ -454,7 +454,8 @@ class FrontierPolicyTests(unittest.TestCase):
 
     def test_policy_values(self) -> None:
         self.assertEqual(
-            {p.value for p in FrontierPolicy}, {"legacy", "cost_aware_v1"}
+            {p.value for p in FrontierPolicy},
+            {"legacy", "cost_aware_v1", "cost_aware_v2"},
         )
 
     def test_legacy_default_orders_identical_to_explicit_legacy(self) -> None:
@@ -568,6 +569,152 @@ class FrontierPolicyTests(unittest.TestCase):
         while cost_aware_frontier.has_work():
             ready.append(cost_aware_frontier.pop().branch_id)
         self.assertEqual(ready, ["helper"])
+
+    # -- Phase 8.3: cost_aware_v2 (soft-budget overdraft deprioritisation) --
+
+    def test_cost_aware_v2_deprioritizes_overdraft_branch(self) -> None:
+        # Two roots with identical legacy / cost fields. The overdraft branch
+        # has spent past its soft envelope (attempt_count > soft_checks), so V2
+        # pops the still-in-envelope branch first even though its branch_id is
+        # alphabetically later.
+        fresh = _branch("zzz", observations=(_goal_obs(0, "fp-a"),))
+        # Three distinct attempt evidence refs -> attempt_count 3, soft_checks 2
+        # for a plain root (base 1 + root bonus 1).
+        overdraft = _branch(
+            "aaa",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-b"),
+                _goal_obs(2, "fp-c"),
+            ),
+        )
+        workspace = _workspace((fresh, overdraft))
+
+        v2_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V2), workspace
+        )
+        self.assertEqual(v2_order, ["zzz", "aaa"])
+
+    def test_cost_aware_v2_inherits_v1_cost_ordering_when_no_overdraft(self) -> None:
+        # With no overdraft on either branch, V2 falls through to the inherited
+        # V1 cost dimension: the cheap capability-probe branch ranks first.
+        cheap = _branch_with_capability_test("zzz")
+        dear = _branch("aaa")
+        workspace = _workspace((cheap, dear))
+
+        v1_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace
+        )
+        v2_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V2), workspace
+        )
+        self.assertEqual(v1_order, ["zzz", "aaa"])
+        self.assertEqual(v2_order, ["zzz", "aaa"])
+
+    def test_cost_aware_v2_prefers_higher_unlock_value_at_equal_cost(self) -> None:
+        # Two helpers at equal depth / cost / attempts: the one depended on by
+        # more parents has the higher unlock value, so V2 ranks it earlier.
+        # Both helpers are children of an accepted root so both are ready; the
+        # multi-parent helper is listed in two parents' dependency_ids.
+        from agent.proof_system.base import ProofTask
+
+        task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}\n")
+        workspace = initialize_from_task(task)
+        base = workspace.obligation_graph.by_id("sample")
+        assert base is not None
+        hot_helper = ProofObligation(
+            obligation_id="sample.hot",
+            version=1,
+            title="hot helper depended on by two parents",
+            lean_statement="lemma hot : True := by trivial",
+            status=ObligationStatus.OPEN,
+        )
+        cold_helper = ProofObligation(
+            obligation_id="sample.cold",
+            version=1,
+            title="cold helper depended on by one parent",
+            lean_statement="lemma cold : True := by trivial",
+            status=ObligationStatus.OPEN,
+        )
+        # root v2 depends on both helpers; an extra parent depends on hot only.
+        root_v2 = ProofObligation(
+            obligation_id="sample",
+            version=2,
+            title="sample",
+            lean_statement=base.lean_statement,
+            dependency_ids=("sample.hot", "sample.cold"),
+            status=ObligationStatus.OPEN,
+        )
+        extra_parent = ProofObligation(
+            obligation_id="sample.extra",
+            version=1,
+            title="extra parent depending on hot",
+            lean_statement="lemma extra : True := by trivial",
+            dependency_ids=("sample.hot",),
+            status=ObligationStatus.OPEN,
+        )
+        graph = ObligationGraph(
+            obligations=(base, root_v2, extra_parent, hot_helper, cold_helper),
+            root_obligation_id="sample",
+        )
+        branches = (
+            _branch("hot", obligation_id="sample.hot"),
+            _branch("cold", obligation_id="sample.cold"),
+        )
+        workspace = workspace.successor(obligation_graph=graph, branches=branches)
+
+        v2_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V2), workspace
+        )
+        self.assertEqual(v2_order, ["hot", "cold"])
+
+    def test_cost_aware_v2_branch_id_is_final_tiebreaker(self) -> None:
+        # Two roots identical on every V2 field tie-break on branch_id.
+        workspace = _workspace((_branch("zzz"), _branch("aaa")))
+        v2_order = _drain(
+            Frontier(policy=FrontierPolicy.COST_AWARE_V2), workspace
+        )
+        self.assertEqual(v2_order, ["aaa", "zzz"])
+
+    def test_cost_aware_v2_keeps_readiness_as_gate(self) -> None:
+        # A parent whose helper is still OPEN is not ready, so V2 ordering never
+        # surfaces it -- readiness filters before reorder (same gate as V1).
+        helper = _branch("helper", obligation_id="sample.helper")
+        parent = _branch(
+            "parent",
+            obligation_id="sample",
+            obligation_version=2,
+        )
+        workspace = _multi_obligation_workspace(
+            helper_status=ObligationStatus.OPEN, branches=(helper, parent)
+        )
+        v2_frontier = Frontier(policy=FrontierPolicy.COST_AWARE_V2)
+        v2_frontier.seed(workspace)
+        ready = []
+        while v2_frontier.has_work():
+            ready.append(v2_frontier.pop().branch_id)
+        self.assertEqual(ready, ["helper"])
+
+    def test_legacy_and_v1_orders_unchanged_by_v2_addition(self) -> None:
+        # Regression guard: adding the COST_AWARE_V2 enum value must not perturb
+        # legacy or v1 ordering on identical inputs.
+        progressing = _branch("zzz", observations=(_goal_obs(0, "fp-a"),))
+        stalled = _branch(
+            "aaa",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-a"),
+                _goal_obs(2, "fp-a"),
+            ),
+        )
+        workspace = _workspace((progressing, stalled))
+        # Legacy uses the raw streak as its leading key: the lower-streak
+        # branch ("zzz", streak 1) pops before the stalled one ("aaa", streak 3).
+        self.assertEqual(_drain(Frontier(), workspace), ["zzz", "aaa"])
+        self.assertEqual(
+            _drain(Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace),
+            ["zzz", "aaa"],
+        )
 
 
 def _drain(frontier: Frontier, workspace) -> list[str]:

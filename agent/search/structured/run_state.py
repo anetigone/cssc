@@ -12,6 +12,10 @@ from ..controller.types import AttemptRecord, ControllerResult
 from ..cost import cost_vector_from_metrics_and_budget, to_dict
 from ..execution import ExecutionMode
 from ..metrics import new_sample_id, summarize_run
+from .budget_hints import (
+    build_obligation_budget_hints,
+    join_borrowed_costs,
+)
 from .costing import build_cost_summary
 from .summary import build_result_summary
 
@@ -160,7 +164,7 @@ def build_structured_result(
     }
     if assembly_outcome is not None:
         metadata["assembly"] = assembly_outcome.to_dict()
-    metadata["cost_summary"] = build_cost_summary(
+    cost_summary = build_cost_summary(
         workspace=workspace,
         attempts=tuple(state.attempts),
         attempt_metrics=tuple(state.attempt_metrics),
@@ -169,6 +173,20 @@ def build_structured_result(
         snapshot=snapshot,
         assembly_outcome=assembly_outcome,
     )
+    metadata["cost_summary"] = cost_summary
+    # Phase 8.3: per-obligation soft-budget hints, with realised borrowing
+    # joined from the cost summary above (single source of truth for direct
+    # spend). Both projections iterate ``graph.active()``, so every hint has a
+    # matching cost entry; unworked obligations borrow nothing.
+    obligation_direct = {
+        entry["obligation_id"]: entry["direct_cost"]
+        for entry in cost_summary["obligations"]
+    }
+    hints = build_obligation_budget_hints(
+        workspace, budget_snapshot=snapshot
+    )
+    hints = join_borrowed_costs(hints, obligation_direct)
+    metadata["budget_hints"] = tuple(hint.to_dict() for hint in hints)
     return ControllerResult(
         task=task,
         accepted=accepted,
