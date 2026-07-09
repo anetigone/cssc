@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from agent.proof_system.workspace import ObligationStatus, WorkspaceStatus
 from ..budget import BudgetManager
 from ..controller.types import AttemptRecord, ControllerResult
+from ..cost import cost_vector_from_metrics_and_budget, to_dict
 from ..execution import ExecutionMode
 from ..metrics import new_sample_id, summarize_run
 from .summary import build_result_summary
@@ -149,6 +150,7 @@ def build_structured_result(
         "representation_records": tuple(state.representation_records),
         "model_usage": tuple(state.model_usage),
         "generation_failures": tuple(state.generation_failures),
+        "cost": to_dict(cost_vector_from_metrics_and_budget(metrics, snapshot)),
         "result_summary": build_result_summary(
             workspace, assembly_result=assembly_outcome
         ).to_dict(),
