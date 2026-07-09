@@ -45,18 +45,19 @@ class FrontierPolicy(str, Enum):
     inherited V1 dimensions (cheap action, non-stalled, high unlock value)
     break ties among non-overdraft peers. ``VALUE_PER_COST_V1`` (Phase 8.4)
     adds an integer value signal on top of the V2 gate: among non-stalled,
-    in-envelope peers the branch with higher value (information gain, recent
-    progress, unlock value) pops first, and cost only breaks ties at equal
-    value --- the ``unlock_value * progress_likelihood * information_gain /
-    expected_incremental_cost`` score of ``phase8_plan.md`` §5 expressed as an
-    all-integer tuple (no float division, so traces replay bit-for-bit). Minimal
-    mode never imports this enum.
+    in-envelope peers the branch with the higher fixed-point
+    ``unlock_value * progress_likelihood * information_gain /
+    expected_incremental_cost`` score pops first (no float division, so traces
+    replay bit-for-bit). Minimal mode never imports this enum.
     """
 
     LEGACY = "legacy"
     COST_AWARE_V1 = "cost_aware_v1"
     COST_AWARE_V2 = "cost_aware_v2"
     VALUE_PER_COST_V1 = "value_per_cost_v1"
+
+
+VALUE_SCORE_SCALE = 1024
 
 
 @dataclass(frozen=True)
@@ -660,35 +661,33 @@ def _soft_budget_priority_key(
 
 def _value_per_cost_priority_key(
     node: FrontierNode,
-) -> tuple[int, int, int, int, int, int, int, int, str]:
+) -> tuple[int, int, int, int, int, str]:
     """Deterministic value/cost sort key (Phase 8.4 §5), all-integer.
 
     Realises ``unlock_value * progress_likelihood * information_gain /
-    expected_incremental_cost`` without float division: the value dimensions
-    are grouped ahead of cost (negated so higher value pops earlier in an
-    ascending tuple), so a higher-value branch always beats a lower-value one,
-    and cost only orders branches at equal value --- exactly the multiplicative
-    score's intent. Stalled / overdraft signals stay as leading gates (inherited
-    from V2) so no stuck or starving branch can ride a high value to the front.
-    All ascending so smaller pops first:
+    expected_incremental_cost`` as a fixed-point integer score, avoiding float
+    division while preserving the multiplicative signal. Stalled / overdraft
+    signals stay as leading gates (inherited from V2) so no stuck or starving
+    branch can ride a high value to the front. All ascending so smaller pops
+    first:
 
     * ``stalled_penalty`` --- 1 past :data:`STALL_THRESHOLD`;
     * ``overdraft_checks`` --- ``max(0, local_attempt_count - soft_checks)``;
-    * ``-information_gain`` --- a discriminating next probe ranks first;
-    * ``-progress_likelihood`` --- a branch whose latest attempt changed goals
-      ranks ahead of one stuck on the same goals;
-    * ``-unlock_value`` --- an obligation depended on by more parents ranks first;
+    * ``-value_score`` --- higher fixed-point value/cost score ranks first;
     * ``expected_incremental_cost`` --- cheaper next action wins at equal value;
     * ``local_attempt_count`` / ``depth_from_root`` / ``branch_id`` --- tie-breaks.
     """
     stalled_penalty = 1 if node.stalled_streak >= STALL_THRESHOLD else 0
     overdraft_checks = max(0, node.local_attempt_count - node.soft_checks)
+    expected_cost = max(1, node.next_action_cost)
+    value_numerator = (
+        node.unlock_value * node.progress_likelihood * node.information_gain
+    )
+    value_score = (value_numerator * VALUE_SCORE_SCALE) // expected_cost
     return (
         stalled_penalty,
         overdraft_checks,
-        -node.information_gain,
-        -node.progress_likelihood,
-        -node.unlock_value,
+        -value_score,
         node.next_action_cost,
         node.local_attempt_count,
         node.depth_from_root,

@@ -382,7 +382,7 @@ def _run_controller(
             max_retrieval_results=args.max_retrieval_results,
             retrieve_before_first_model_call=args.retrieve_before_first_model_call,
             execution_mode=execution_mode,
-            frontier_policy=args.frontier_policy,
+            frontier_policy=getattr(args, "frontier_policy", "legacy"),
         ),
     )
     return controller.run(task)

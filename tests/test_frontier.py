@@ -424,7 +424,13 @@ def _capability_test_action(branch_id: str) -> SearchAction:
     )
 
 
-def _branch_with_capability_test(branch_id: str) -> ProofBranch:
+def _branch_with_capability_test(
+    branch_id: str,
+    *,
+    obligation_id: str = "sample",
+    obligation_version: int = 1,
+    observations: tuple[Observation, ...] = (_goal_obs(0, "fp-a"),),
+) -> ProofBranch:
     """A branch whose failure hypotheses propose a capability test.
 
     Such a branch is expected to run a cheap probe next (1 check, 0 model
@@ -440,10 +446,10 @@ def _branch_with_capability_test(branch_id: str) -> ProofBranch:
     )
     return ProofBranch(
         branch_id=branch_id,
-        obligation_id="sample",
-        obligation_version=1,
+        obligation_id=obligation_id,
+        obligation_version=obligation_version,
         parent_branch_id=None,
-        observations=(_goal_obs(0, "fp-a"),),
+        observations=observations,
         status=BranchStatus.ACTIVE,
         failure_hypotheses=(hypothesis,),
     )
@@ -830,24 +836,39 @@ class ValuePerCostFrontierTests(unittest.TestCase):
         return workspace.successor(obligation_graph=graph, branches=branches)
 
     def test_value_per_cost_ranks_higher_unlock_value_first(self) -> None:
-        # Two ready helpers at equal depth / cost / value-of-everything-else: the
-        # one depended on by more parents has higher unlock value and pops first.
+        # Two ready helpers at equal depth / cost / information / progress: the
+        # one depended on by more parents has higher multiplicative value score.
         workspace = self._two_helper_workspace()
+        progressing = (_goal_obs(0, "fp-a"), _goal_obs(1, "fp-b"))
+        workspace = workspace.successor(
+            branches=(
+                _branch_with_capability_test(
+                    "hot",
+                    obligation_id="sample.hot",
+                    observations=progressing,
+                ),
+                _branch_with_capability_test(
+                    "cold",
+                    obligation_id="sample.cold",
+                    observations=progressing,
+                ),
+            )
+        )
         order = _drain(
             Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
         )
         self.assertEqual(order, ["hot", "cold"])
 
     def test_value_per_cost_ranks_progressing_branch_first(self) -> None:
-        # Both roots, equal cost. The progressing branch changed goal
-        # fingerprints on its latest attempt (progress_likelihood=1) and so pops
-        # ahead of the stuck one (progress_likelihood=0). The progressing branch
-        # is named later so a pure branch_id tie-break would take the other.
-        progressing = _branch(
-            "zzz",  # alphabetically later, so branch_id alone would NOT pick it
+        # Both roots, equal cost / unlock / information. The progressing branch
+        # changed goal fingerprints on its latest attempt (progress_likelihood=1)
+        # and so gets a higher multiplicative value score. It is named later so
+        # a pure branch_id tie-break would take the other.
+        progressing = _branch_with_capability_test(
+            "zzz",
             observations=(_goal_obs(0, "fp-a"), _goal_obs(1, "fp-b")),
         )
-        stuck = _branch(
+        stuck = _branch_with_capability_test(
             "aaa",
             observations=(_goal_obs(0, "fp-a"), _goal_obs(1, "fp-a")),
         )
@@ -858,10 +879,12 @@ class ValuePerCostFrontierTests(unittest.TestCase):
         self.assertEqual(order, ["zzz", "aaa"])
 
     def test_value_per_cost_ranks_information_gain_first(self) -> None:
-        # Equal cost / unlock / progress: a branch proposing a capability probe
-        # (information_gain=1) ranks ahead of one that will only implement.
-        informed = _branch_with_capability_test("zzz")
-        plain = _branch("aaa")
+        # Equal unlock / progress and both inside their envelopes: the branch
+        # proposing a capability probe has a non-zero multiplicative value score
+        # and ranks ahead of one that will only implement.
+        progressing = (_goal_obs(0, "fp-a"), _goal_obs(1, "fp-b"))
+        informed = _branch_with_capability_test("zzz", observations=progressing)
+        plain = _branch("aaa", observations=progressing)
         workspace = _workspace((informed, plain))
         order = _drain(
             Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
@@ -879,10 +902,9 @@ class ValuePerCostFrontierTests(unittest.TestCase):
         self.assertEqual(order, ["aaa", "zzz"])
 
     def test_value_per_cost_cost_dimension_is_consulted(self) -> None:
-        # The capability-probe branch has both lower next-action cost and higher
-        # information_gain, so it wins under value-per-cost. Compared against the
-        # legacy order (pure branch_id) this confirms the value/cost dimensions
-        # drive the pop rather than the legacy key leaking through.
+        # With zero multiplicative value on both branches, expected cost still
+        # breaks the tie before branch_id. Compared against the legacy order
+        # (pure branch_id) this confirms the cost dimension drives the pop.
         cheap = _branch_with_capability_test("zzz")
         dear = _branch("aaa")
         workspace = _workspace((cheap, dear))
