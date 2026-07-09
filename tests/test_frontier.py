@@ -25,6 +25,7 @@ from agent.search.structured.frontier import (
     Frontier,
     FrontierNode,
     FrontierPolicy,
+    PriorityExplanation,
     soft_envelope_for_obligation,
 )
 
@@ -457,7 +458,7 @@ class FrontierPolicyTests(unittest.TestCase):
     def test_policy_values(self) -> None:
         self.assertEqual(
             {p.value for p in FrontierPolicy},
-            {"legacy", "cost_aware_v1", "cost_aware_v2"},
+            {"legacy", "cost_aware_v1", "cost_aware_v2", "value_per_cost_v1"},
         )
 
     def test_legacy_default_orders_identical_to_explicit_legacy(self) -> None:
@@ -769,6 +770,245 @@ class FrontierPolicyTests(unittest.TestCase):
         self.assertEqual(_drain(Frontier(), workspace), ["zzz", "aaa"])
         self.assertEqual(
             _drain(Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace),
+            ["zzz", "aaa"],
+        )
+
+
+class ValuePerCostFrontierTests(unittest.TestCase):
+    """Phase 8.4: opt-in value/cost mixed-score frontier ordering."""
+
+    def _two_helper_workspace(self):
+        """Workspace whose root + extra parent both depend on ``sample.hot``.
+
+        Reuses the 8.3 multi-parent construction so ``hot`` has a higher unlock
+        value (2 dependents) than ``cold`` (1 dependent), with both ready.
+        """
+        from agent.proof_system.base import ProofTask
+
+        task = ProofTask("sample", "theorem sample : True := by\n  {{proof}}\n")
+        workspace = initialize_from_task(task)
+        base = workspace.obligation_graph.by_id("sample")
+        assert base is not None
+        hot_helper = ProofObligation(
+            obligation_id="sample.hot",
+            version=1,
+            title="hot helper depended on by two parents",
+            lean_statement="lemma hot : True := by trivial",
+            status=ObligationStatus.OPEN,
+        )
+        cold_helper = ProofObligation(
+            obligation_id="sample.cold",
+            version=1,
+            title="cold helper depended on by one parent",
+            lean_statement="lemma cold : True := by trivial",
+            status=ObligationStatus.OPEN,
+        )
+        root_v2 = ProofObligation(
+            obligation_id="sample",
+            version=2,
+            title="sample",
+            lean_statement=base.lean_statement,
+            dependency_ids=("sample.hot", "sample.cold"),
+            status=ObligationStatus.OPEN,
+        )
+        extra_parent = ProofObligation(
+            obligation_id="sample.extra",
+            version=1,
+            title="extra parent depending on hot",
+            lean_statement="lemma extra : True := by trivial",
+            dependency_ids=("sample.hot",),
+            status=ObligationStatus.OPEN,
+        )
+        graph = ObligationGraph(
+            obligations=(base, root_v2, extra_parent, hot_helper, cold_helper),
+            root_obligation_id="sample",
+        )
+        branches = (
+            _branch("hot", obligation_id="sample.hot"),
+            _branch("cold", obligation_id="sample.cold"),
+        )
+        return workspace.successor(obligation_graph=graph, branches=branches)
+
+    def test_value_per_cost_ranks_higher_unlock_value_first(self) -> None:
+        # Two ready helpers at equal depth / cost / value-of-everything-else: the
+        # one depended on by more parents has higher unlock value and pops first.
+        workspace = self._two_helper_workspace()
+        order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(order, ["hot", "cold"])
+
+    def test_value_per_cost_ranks_progressing_branch_first(self) -> None:
+        # Both roots, equal cost. The progressing branch changed goal
+        # fingerprints on its latest attempt (progress_likelihood=1) and so pops
+        # ahead of the stuck one (progress_likelihood=0). The progressing branch
+        # is named later so a pure branch_id tie-break would take the other.
+        progressing = _branch(
+            "zzz",  # alphabetically later, so branch_id alone would NOT pick it
+            observations=(_goal_obs(0, "fp-a"), _goal_obs(1, "fp-b")),
+        )
+        stuck = _branch(
+            "aaa",
+            observations=(_goal_obs(0, "fp-a"), _goal_obs(1, "fp-a")),
+        )
+        workspace = _workspace((progressing, stuck))
+        order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(order, ["zzz", "aaa"])
+
+    def test_value_per_cost_ranks_information_gain_first(self) -> None:
+        # Equal cost / unlock / progress: a branch proposing a capability probe
+        # (information_gain=1) ranks ahead of one that will only implement.
+        informed = _branch_with_capability_test("zzz")
+        plain = _branch("aaa")
+        workspace = _workspace((informed, plain))
+        order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(order, ["zzz", "aaa"])
+
+    def test_value_per_cost_falls_back_to_branch_id_at_full_value_tie(self) -> None:
+        # Every value dimension ties (no capability probe, single attempt, two
+        # roots): the value-per-cost key must still deterministically fall
+        # through to the branch_id tie-breaker, never reorder arbitrarily.
+        workspace = _workspace((_branch("zzz"), _branch("aaa")))
+        order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(order, ["aaa", "zzz"])
+
+    def test_value_per_cost_cost_dimension_is_consulted(self) -> None:
+        # The capability-probe branch has both lower next-action cost and higher
+        # information_gain, so it wins under value-per-cost. Compared against the
+        # legacy order (pure branch_id) this confirms the value/cost dimensions
+        # drive the pop rather than the legacy key leaking through.
+        cheap = _branch_with_capability_test("zzz")
+        dear = _branch("aaa")
+        workspace = _workspace((cheap, dear))
+        legacy_order = _drain(Frontier(), workspace)
+        value_order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(legacy_order, ["aaa", "zzz"])
+        self.assertEqual(value_order, ["zzz", "aaa"])
+
+    def test_value_per_cost_keeps_stall_as_gate(self) -> None:
+        # A stalled branch with otherwise high value still loses to a fresh peer
+        # because the stalled_penalty gate precedes every value dimension.
+        fresh = _branch("zzz", observations=(_goal_obs(0, "fp-a"),))
+        stalled = _branch(
+            "aaa",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-a"),
+                _goal_obs(2, "fp-a"),
+            ),
+        )
+        workspace = _workspace((fresh, stalled))
+        order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(order, ["zzz", "aaa"])
+
+    def test_value_per_cost_keeps_overdraft_as_gate(self) -> None:
+        # A branch spent past its soft envelope loses to an in-envelope peer even
+        # though both are roots with equal value, because overdraft precedes
+        # value. Plain root soft_checks = base(1) + root bonus(1) = 2.
+        fresh = _branch("zzz", observations=(_goal_obs(0, "fp-a"),))
+        overdraft = _branch(
+            "aaa",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-b"),
+                _goal_obs(2, "fp-c"),
+            ),
+        )
+        workspace = _workspace((fresh, overdraft))
+        order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(order, ["zzz", "aaa"])
+
+    def test_value_per_cost_branch_id_final_tiebreaker(self) -> None:
+        workspace = _workspace((_branch("zzz"), _branch("aaa")))
+        order = _drain(
+            Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1), workspace
+        )
+        self.assertEqual(order, ["aaa", "zzz"])
+
+    def test_value_per_cost_keeps_readiness_as_gate(self) -> None:
+        helper = _branch("helper", obligation_id="sample.helper")
+        parent = _branch(
+            "parent", obligation_id="sample", obligation_version=2
+        )
+        workspace = _multi_obligation_workspace(
+            helper_status=ObligationStatus.OPEN, branches=(helper, parent)
+        )
+        frontier = Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1)
+        frontier.seed(workspace)
+        ready = []
+        while frontier.has_work():
+            ready.append(frontier.pop().branch_id)
+        self.assertEqual(ready, ["helper"])
+
+    def test_priority_explanation_recorded_on_every_pop(self) -> None:
+        # Every pop, under every policy, appends a PriorityExplanation with the
+        # full field set and an integer-only final_key_or_score.
+        workspace = _workspace((_branch("zzz"), _branch("aaa")))
+        frontier = Frontier(policy=FrontierPolicy.VALUE_PER_COST_V1)
+        frontier.seed(workspace)
+        first = frontier.pop()
+        explanations = frontier.explanations()
+        self.assertEqual(len(explanations), 1)
+        expl: PriorityExplanation = explanations[0]
+        self.assertEqual(expl.branch_id, first.branch_id)
+        self.assertEqual(expl.policy, "value_per_cost_v1")
+        self.assertEqual(expl.expected_incremental_cost, first.next_action_cost)
+        self.assertEqual(expl.unlock_value, first.unlock_value)
+        self.assertEqual(expl.progress_likelihood, first.progress_likelihood)
+        self.assertEqual(expl.information_gain, first.information_gain)
+        # final_key_or_score is a tuple of plain ints (no float, no str).
+        self.assertIsInstance(expl.final_key_or_score, tuple)
+        self.assertTrue(expl.final_key_or_score)
+        for part in expl.final_key_or_score:
+            self.assertIsInstance(part, int)
+        # The serialized dict keeps the same shape.
+        payload = expl.to_dict()
+        self.assertEqual(payload["policy"], "value_per_cost_v1")
+        self.assertIsInstance(payload["final_key_or_score"], tuple)
+
+    def test_priority_explanation_policy_field_matches_legacy(self) -> None:
+        # Legacy pops also record explanations so the trace has one uniform
+        # per-pop record regardless of policy.
+        workspace = _workspace((_branch("aaa"),))
+        frontier = Frontier()
+        frontier.seed(workspace)
+        frontier.pop()
+        expl = frontier.explanations()[0]
+        self.assertEqual(expl.policy, "legacy")
+        self.assertEqual(expl.information_gain, 0)
+
+    def test_legacy_v1_v2_orders_unchanged_by_value_addition(self) -> None:
+        # Regression guard: adding VALUE_PER_COST_V1 must not perturb legacy /
+        # v1 / v2 ordering on identical inputs.
+        progressing = _branch("zzz", observations=(_goal_obs(0, "fp-a"),))
+        stalled = _branch(
+            "aaa",
+            observations=(
+                _goal_obs(0, "fp-a"),
+                _goal_obs(1, "fp-a"),
+                _goal_obs(2, "fp-a"),
+            ),
+        )
+        workspace = _workspace((progressing, stalled))
+        self.assertEqual(_drain(Frontier(), workspace), ["zzz", "aaa"])
+        self.assertEqual(
+            _drain(Frontier(policy=FrontierPolicy.COST_AWARE_V1), workspace),
+            ["zzz", "aaa"],
+        )
+        self.assertEqual(
+            _drain(Frontier(policy=FrontierPolicy.COST_AWARE_V2), workspace),
             ["zzz", "aaa"],
         )
 

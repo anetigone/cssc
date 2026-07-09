@@ -43,12 +43,20 @@ class FrontierPolicy(str, Enum):
     a soft-budget overdraft signal on top of V1's cost ordering: a branch that
     has spent past its per-obligation soft envelope is deprioritised, while the
     inherited V1 dimensions (cheap action, non-stalled, high unlock value)
-    break ties among non-overdraft peers. Minimal mode never imports this enum.
+    break ties among non-overdraft peers. ``VALUE_PER_COST_V1`` (Phase 8.4)
+    adds an integer value signal on top of the V2 gate: among non-stalled,
+    in-envelope peers the branch with higher value (information gain, recent
+    progress, unlock value) pops first, and cost only breaks ties at equal
+    value --- the ``unlock_value * progress_likelihood * information_gain /
+    expected_incremental_cost`` score of ``phase8_plan.md`` §5 expressed as an
+    all-integer tuple (no float division, so traces replay bit-for-bit). Minimal
+    mode never imports this enum.
     """
 
     LEGACY = "legacy"
     COST_AWARE_V1 = "cost_aware_v1"
     COST_AWARE_V2 = "cost_aware_v2"
+    VALUE_PER_COST_V1 = "value_per_cost_v1"
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,45 @@ class FrontierNode:
     #: evidence inherited from parent branches, so fresh repair / representation
     #: forks are not treated as having already spent their parent's checks.
     local_attempt_count: int = 0
+    #: Value signals (Phase 8.4). Only the ``value_per_cost_v1`` key reads them;
+    #: legacy/v1/v2 keys ignore the fields, so they default to zero and never
+    #: perturb earlier orderings. ``unlock_value`` mirrors ``unlock_value_rank``
+    #: (kept under a separate name so the V2 projection field stays legible);
+    #: ``progress_likelihood`` / ``information_gain`` are 0/1 integer heuristics.
+    unlock_value: int = 0
+    progress_likelihood: int = 0
+    information_gain: int = 0
+
+
+@dataclass(frozen=True)
+class PriorityExplanation:
+    """Why the frontier popped one branch when it did (Phase 8.4 §5).
+
+    Recorded on every pop regardless of policy so the trace has a uniform
+    per-pop record (legacy / v1 pop with the value fields at their neutral
+    values). ``final_key_or_score`` is the integer sort-key prefix actually
+    consulted for this pop (a tuple of ints), never a float, so traces replay
+    bit-for-bit across platforms.
+    """
+
+    branch_id: str
+    policy: str
+    expected_incremental_cost: int
+    unlock_value: int
+    progress_likelihood: int
+    information_gain: int
+    final_key_or_score: tuple[int, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "branch_id": self.branch_id,
+            "policy": self.policy,
+            "expected_incremental_cost": self.expected_incremental_cost,
+            "unlock_value": self.unlock_value,
+            "progress_likelihood": self.progress_likelihood,
+            "information_gain": self.information_gain,
+            "final_key_or_score": tuple(self.final_key_or_score),
+        }
 
 
 def _branch_goal_fingerprints(branch: ProofBranch) -> tuple[str, ...]:
@@ -185,6 +232,43 @@ def _next_action_is_capability(branch: ProofBranch | None) -> bool:
     return _next_action_cost(branch) == _ACTION_INCREMENTAL_COST[
         SearchActionKind.RUN_CAPABILITY_TEST
     ]
+
+
+def _progress_likelihood(branch: ProofBranch) -> int:
+    """Integer (0/1) value signal: did the latest attempt change the goal set?
+
+    Reuses the same evidence-ref batching as :func:`_stalled_streak`. The latest
+    batch changed the unsolved-goal fingerprints iff there is at least one prior
+    distinct batch and the trailing streak is exactly one (i.e. the latest batch
+    differs from its predecessor). A branch with no history, or one whose latest
+    attempt landed on the same goals, scores zero. Pure integer so the
+    value-per-cost key never touches float arithmetic.
+    """
+    if _stalled_streak(branch) != 1:
+        return 0
+    observations = branch.observations
+    if not observations:
+        return 0
+    distinct_refs: list[str] = []
+    seen_refs: set[str] = set()
+    for obs in reversed(observations):
+        if not obs.raw_evidence_ref or obs.raw_evidence_ref in seen_refs:
+            continue
+        seen_refs.add(obs.raw_evidence_ref)
+        distinct_refs.append(obs.raw_evidence_ref)
+    return 1 if len(distinct_refs) >= 2 else 0
+
+
+def _information_gain(branch: ProofBranch | None) -> int:
+    """Integer (0/1) value signal: can the next action discriminate hypotheses?
+
+    Phase 8.4's first cut reads only the existing capability-probe signal: a
+    branch whose failure hypotheses propose a capability test can, when run,
+    separate ``CAPABILITY_MISSING`` from other failure kinds, so it carries
+    information gain. Decompose-driven structural signal has no branch-local
+    hook today, so it is intentionally not fabricated here.
+    """
+    return 1 if _next_action_is_capability(branch) else 0
 
 
 def _has_accepted_neighbor(
@@ -309,6 +393,9 @@ def _node_for(branch: ProofBranch, workspace: ProofWorkspace) -> FrontierNode:
         soft_model_calls=soft_model_calls,
         unlock_value_rank=unlock_value_rank,
         local_attempt_count=_branch_local_attempt_count(branch, workspace),
+        unlock_value=unlock_value_rank,
+        progress_likelihood=_progress_likelihood(branch),
+        information_gain=_information_gain(branch),
     )
 
 
@@ -401,6 +488,7 @@ class Frontier:
         self._pending: list[FrontierNode] = []
         self._pending_ids: set[str] = set()
         self._popped_this_round: set[str] = set()
+        self._explanations: list[PriorityExplanation] = []
 
     def seed(self, workspace: ProofWorkspace) -> None:
         """Load all ready branches of the workspace as pending nodes."""
@@ -422,21 +510,52 @@ class Frontier:
         """The priority policy this frontier orders ready branches by."""
         return self._policy
 
+    def _select_key(self):
+        if self._policy is FrontierPolicy.VALUE_PER_COST_V1:
+            return _value_per_cost_priority_key
+        if self._policy is FrontierPolicy.COST_AWARE_V2:
+            return _soft_budget_priority_key
+        if self._policy is FrontierPolicy.COST_AWARE_V1:
+            return _cost_aware_priority_key
+        return _priority_key
+
     def pop(self) -> FrontierNode:
         """Return and remove the highest-priority pending node."""
         if not self._pending:
             raise StopIteration("frontier is empty")
-        if self._policy is FrontierPolicy.COST_AWARE_V2:
-            key = _soft_budget_priority_key
-        elif self._policy is FrontierPolicy.COST_AWARE_V1:
-            key = _cost_aware_priority_key
-        else:
-            key = _priority_key
+        key = self._select_key()
         self._pending.sort(key=key)
         node = self._pending.pop(0)
         self._pending_ids.discard(node.branch_id)
         self._popped_this_round.add(node.branch_id)
+        self._record_explanation(node, key)
         return node
+
+    def _record_explanation(self, node: FrontierNode, key) -> None:
+        """Append a deterministic per-pop explanation for the trace.
+
+        ``final_key_or_score`` stores the int prefix of the sort key actually
+        consulted for this pop (the trailing ``branch_id`` str is dropped) so
+        consumers get a plain integer sequence with no float and no string
+        mixed in.
+        """
+        full_key = key(node)
+        int_prefix = tuple(part for part in full_key if isinstance(part, int))
+        self._explanations.append(
+            PriorityExplanation(
+                branch_id=node.branch_id,
+                policy=self._policy.value,
+                expected_incremental_cost=node.next_action_cost,
+                unlock_value=node.unlock_value,
+                progress_likelihood=node.progress_likelihood,
+                information_gain=node.information_gain,
+                final_key_or_score=int_prefix,
+            )
+        )
+
+    def explanations(self) -> tuple[PriorityExplanation, ...]:
+        """All per-pop explanations recorded since construction, in pop order."""
+        return tuple(self._explanations)
 
     def update(
         self,
@@ -533,6 +652,44 @@ def _soft_budget_priority_key(
         node.next_action_cost,
         stalled_penalty,
         -node.unlock_value_rank,
+        node.local_attempt_count,
+        node.depth_from_root,
+        node.branch_id,
+    )
+
+
+def _value_per_cost_priority_key(
+    node: FrontierNode,
+) -> tuple[int, int, int, int, int, int, int, int, str]:
+    """Deterministic value/cost sort key (Phase 8.4 §5), all-integer.
+
+    Realises ``unlock_value * progress_likelihood * information_gain /
+    expected_incremental_cost`` without float division: the value dimensions
+    are grouped ahead of cost (negated so higher value pops earlier in an
+    ascending tuple), so a higher-value branch always beats a lower-value one,
+    and cost only orders branches at equal value --- exactly the multiplicative
+    score's intent. Stalled / overdraft signals stay as leading gates (inherited
+    from V2) so no stuck or starving branch can ride a high value to the front.
+    All ascending so smaller pops first:
+
+    * ``stalled_penalty`` --- 1 past :data:`STALL_THRESHOLD`;
+    * ``overdraft_checks`` --- ``max(0, local_attempt_count - soft_checks)``;
+    * ``-information_gain`` --- a discriminating next probe ranks first;
+    * ``-progress_likelihood`` --- a branch whose latest attempt changed goals
+      ranks ahead of one stuck on the same goals;
+    * ``-unlock_value`` --- an obligation depended on by more parents ranks first;
+    * ``expected_incremental_cost`` --- cheaper next action wins at equal value;
+    * ``local_attempt_count`` / ``depth_from_root`` / ``branch_id`` --- tie-breaks.
+    """
+    stalled_penalty = 1 if node.stalled_streak >= STALL_THRESHOLD else 0
+    overdraft_checks = max(0, node.local_attempt_count - node.soft_checks)
+    return (
+        stalled_penalty,
+        overdraft_checks,
+        -node.information_gain,
+        -node.progress_likelihood,
+        -node.unlock_value,
+        node.next_action_cost,
         node.local_attempt_count,
         node.depth_from_root,
         node.branch_id,
