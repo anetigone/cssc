@@ -41,7 +41,8 @@
 - **Phase 7.5** ✅：helper 复用语义清理（`declaration_id` 按名引用 helper）+ `no_ready_work`→`stop_reason="blocked"`。
 - **Phase 7.6** ✅：`PROPOSE/REFINE_ARGUMENT` + `CHANGE_REPRESENTATION` 执行 + 竞争性 `FailureHypothesis` 层（`_select_test_action` 低成本优先）。
 - **Phase 7.7** ✅：`WorkspaceStatus.PARTIAL` + 终态 finalizer + 传递性 BLOCKED 传播 + evidence-driven DORMANT 恢复。
-- **Phase 7.8** ⬜ **未做**：真实复杂任务 + minimal-vs-structured 消融对比（依赖真实 Lean + 真实 model，手动跑、不进 CI）。方案见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)，不引入新代码模块。
+- **Phase 7.8** ✅：真实复杂任务 + minimal-vs-structured 消融对比（依赖真实 Lean + 真实 model，手动跑、不进 CI）。方案见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)，不引入新代码模块。
+- **Phase 8** ⬜ **未做**：成本感知搜索——先观测 `CostVector` 与 branch/obligation 成本归因，再 opt-in cost-aware frontier，之后才做软预算和 value-per-cost。方案见 [tmp/phase8_plan.md](tmp/phase8_plan.md)，成本策略只改 structured 调度，不改证明语义。
 
 ## 三、工作纪律（控制 review-fix 与 token）
 

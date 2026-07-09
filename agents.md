@@ -246,11 +246,19 @@ agent/
 - 不变项：`branch.py`/`obligation.py`/`graph.py`/`action.py`/`hypothesis.py`/`proposal/*`/`projection*`/`frontier.py`/`finalize.py`/`solution_tracker.py`/`summary.py`/`branch_ops.py` 只读引用；minimal `ProofController` 不 import structured 包，零成本。
 - 测试：`tests/test_reducer.py` 加 `ReducerTransitiveBlockTests`（helper block→依赖链 parent 同步 BLOCKED、已验证 sibling 不受影响、`block_branch` 路径不传播、不可变）+ `ReducerDormantRecoveryTests`（accept helper 复活 DORMANT parent、capability 可用复活、missing 不复活、无 DORMANT no-op）；新增 `tests/test_structured_run_state.py`（finalizer 五态：accepted / 单根 OPEN 耗尽→SEARCHING / 非根 accepted→PARTIAL / 全 blocked→BLOCKED / open+verified helper→PARTIAL）；`tests/test_workspace.py` 加 `PARTIAL` 序列化往返；`tests/test_structured_controller.py` 的 blocked-helper 测试加断言 root obligation 传递性 BLOCKED + `workspace_status="blocked"`。
 
-## Phase 7.8 真实复杂任务与消融（**未做**）
+## Phase 7.8 真实复杂任务与消融（**已完成**）
 
 - 这是 proof-system-redesign 的收尾实证对比：用同一组复杂 Lean 任务跑各档配置（minimal / structured 去掉某些能力），度量结构化层相对 minimal baseline 的净收益（plan1.md §15 的消融原则）。
 - **依赖真实 Lean toolchain（慢、需非沙箱）+ 真实 model 调用（有 token 成本）**，不进 CI、手动跑。
-- 完整方案（任务集、消融档位、跑批脚本、对比指标口径、报告产出、提交粒度）见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)。在落地前，本文不在此维护 7.8 的代码结构细节——它不引入新代码模块，只复用现有 structured 执行器 + trace 指标出口。
+- 完整方案（任务集、消融档位、跑批脚本、对比指标口径、报告产出、提交粒度）见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)。7.8 不引入新代码模块，只复用现有 structured 执行器 + trace 指标出口。
+
+## Phase 8 成本感知搜索（**未做**）
+
+- 这是 structured 基础设施稳定后的下一阶段优化：先冻结统一 `CostVector` 与 branch/obligation 成本归因，再以 opt-in `FrontierPolicy` 引入确定性 cost-aware 排序，最后才做软预算、价值/成本混合评分和真实任务消融。
+- 完整方案见 [tmp/phase8_plan.md](tmp/phase8_plan.md)。Phase 8 的核心边界是：成本感知只优化 structured 的调度顺序和预算分配，不改变 checker/safety/reducer/assembly 语义；预算不足只能导致 `PARTIAL` / `BLOCKED` / 预算耗尽类 stop reason，不能把未验证路线标成数学失败。
+- 8.0/8.1 必须只观测不改行为：`agent/search/cost.py` 提供共享成本向量，`agent/search/structured/costing.py` 从 trace/workspace 派生 structured 成本摘要；minimal 可记录 run-level cost，但不 import structured 成本归因模块。
+- 8.2 的 cost-aware frontier 必须 opt-in，默认 `legacy` 排序保持不变；readiness 仍是 gate，不是排序权重，`branch_id` 保留为最终 tie-breaker 以保证 trace 可回放。
+- 8.3+ 的软预算和 value-per-cost 策略只能降权或调度借用，不能跳过 final assembly、不能削弱 statement-preservation、不能因为“太贵”直接接受或否定一个分支。
 
 ## `ChatDriver` 抽象
 
@@ -367,6 +375,7 @@ python -m pytest tests/ -q
 - `tests/test_structured_projection.py`：Phase 7.1 workspace context projection；Phase 7.5 helper fact `declaration_id` 透传 + 往返。
 - `tests/test_structured_proposal.py`：Phase 7.2 typed structured action proposal——payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、legacy adapter 正确性/idempotent/native 旁路；Phase 7.6 argument/representation payload 往返 + kind/payload 一致 + 跨 kind 拒绝。
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查；Phase 7.4 前置 helper 声明不触发 statement_not_preserved。
+- Phase 8 计划测试：`tests/test_cost.py` 覆盖 `CostVector` 序列化/聚合/metrics 派生；`tests/test_structured_costing.py` 覆盖 branch/obligation direct/transitive 成本归因；`tests/test_frontier.py` 扩展 opt-in cost-aware policy 排序与 legacy 行为不变。
 
 ## 注意事项
 
