@@ -12,6 +12,7 @@ from ..controller.types import AttemptRecord, ControllerResult
 from ..cost import cost_vector_from_metrics_and_budget, to_dict
 from ..execution import ExecutionMode
 from ..metrics import new_sample_id, summarize_run
+from .costing import build_cost_summary
 from .summary import build_result_summary
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ class _StructuredRunState:
     decompose_records: list[dict[str, Any]] = field(default_factory=list)
     argument_records: list[dict[str, Any]] = field(default_factory=list)
     representation_records: list[dict[str, Any]] = field(default_factory=list)
-    model_usage: list[dict[str, int]] = field(default_factory=list)
+    model_usage: list[dict[str, Any]] = field(default_factory=list)
     generation_failures: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -157,6 +158,15 @@ def build_structured_result(
     }
     if assembly_outcome is not None:
         metadata["assembly"] = assembly_outcome.to_dict()
+    metadata["cost_summary"] = build_cost_summary(
+        workspace=workspace,
+        attempts=tuple(state.attempts),
+        attempt_metrics=tuple(state.attempt_metrics),
+        model_usage=tuple(state.model_usage),
+        run_metrics=metrics,
+        snapshot=snapshot,
+        assembly_outcome=assembly_outcome,
+    )
     return ControllerResult(
         task=task,
         accepted=accepted,

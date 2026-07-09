@@ -181,7 +181,12 @@ class StructuredController(
                 state.generation_failures.append(failure)
                 usage = exc.metadata.get("token_usage")
                 if isinstance(usage, dict):
-                    state.model_usage.append(dict(usage))
+                    usage = dict(usage)
+                    # Tag the iteration's generator call to the popped branch so
+                    # Phase 8.1 costing can attribute tokens per branch.
+                    usage["structured_branch_id"] = branch.branch_id
+                    usage["structured_obligation_id"] = branch.obligation_id
+                    state.model_usage.append(usage)
                 state.stop_reason = f"generation:{exc.reason}"
                 logger.warning(
                     "Structured generation failed: task_id=%s branch=%s reason=%s",
@@ -193,7 +198,12 @@ class StructuredController(
             if proposals:
                 usage = proposals[0].metadata.get("token_usage")
                 if isinstance(usage, dict):
-                    state.model_usage.append(dict(usage))
+                    usage = dict(usage)
+                    # Tag the iteration's generator call to the popped branch so
+                    # Phase 8.1 costing can attribute tokens per branch.
+                    usage["structured_branch_id"] = branch.branch_id
+                    usage["structured_obligation_id"] = branch.obligation_id
+                    state.model_usage.append(usage)
             if not proposals:
                 workspace = block_branch(workspace, branch.branch_id)
                 frontier.update(workspace, branch.branch_id, accepted=False)
