@@ -61,6 +61,13 @@ class _OracleRule:
     on_candidate_contains: str
     accepted: bool
     category: DiagnosticCategory
+    # Optional goal fingerprint for failed (non-accepted) results. Defaults to
+    # ``None`` (caller falls back to a constant). Setting different fingerprints
+    # across a branch's failures lets a scenario raise ``local_attempt_count``
+    # WITHOUT raising ``stalled_streak`` (the streak only counts consecutive
+    # identical fingerprints), which is how frontier-policy divergence is
+    # manufactured without tripping DORMANT.
+    goal_fingerprint: str | None = None
 
 
 def _parse_oracle(rules: Sequence[dict[str, Any]]) -> tuple[_OracleRule, ...]:
@@ -80,11 +87,18 @@ def _parse_oracle(rules: Sequence[dict[str, Any]]) -> tuple[_OracleRule, ...]:
                 f"expected_check_results[{index}].category {category_value!r} "
                 f"is not a DiagnosticCategory value"
             ) from exc
+        fingerprint = rule.get("goal_fingerprint")
+        if fingerprint is not None and not isinstance(fingerprint, str):
+            raise ValueError(
+                f"expected_check_results[{index}].goal_fingerprint must be a "
+                f"string when present"
+            )
         parsed.append(
             _OracleRule(
                 on_candidate_contains=needle,
                 accepted=bool(rule.get("accepted")),
                 category=category,
+                goal_fingerprint=fingerprint,
             )
         )
     return tuple(parsed)
@@ -102,37 +116,77 @@ def _deserialized_proposals(
 
 
 class ReplayGenerator:
-    """Emit scenario proposals one per ``generate()`` call, in sequence.
+    """Emit scenario proposals, either in flat sequence or per-obligation.
 
-    The controller pops one branch per loop iteration and calls ``generate()``
-    once per pop. Because ``_finalize_kind`` overwrites every proposal's
-    ``target_branch_id`` with the popped branch's id, the scenario's
-    ``target_branch_id`` is descriptive only — so this generator does not route
-    by branch. It emits proposals strictly in scenario order; the scenarios are
-    authored to match the frontier's deterministic pop sequence for the task
-    structure (decompose first on root, then helpers in dependency order, then
-    the parent branch). When proposals are exhausted it returns ``[]`` and the
-    controller blocks the branch, stopping the run when the frontier empties.
+    Two modes (mutually exclusive):
+
+    - **sequence** (``proposals``): emit one proposal per ``generate()`` call in
+      flat order. Used by the 6 canaries, whose scenarios are authored to match
+      the frontier's deterministic pop sequence. Because ``_finalize_kind``
+      overwrites ``target_branch_id`` with the popped branch's id, this mode
+      does NOT route by branch — pop order changes nothing about what is
+      emitted, so total cost is invariant across frontier policies.
+    - **state-aware** (``proposals_by_obligation``): a map from obligation id to
+      that obligation's ordered proposal list. Each ``generate()`` keys off
+      ``request.metadata["branch_obligation"]["obligation_id"]`` and emits the
+      next proposal from THAT obligation's list (per-obligation cursor). This
+      makes the emitted proposal depend on which branch the frontier popped, so
+      different frontier policies — which pop ready branches in different
+      orders — produce different attempt sequences and costs. This is how
+      controlled-track tasks expose frontier-policy divergence.
+
+    In both modes, exhausting a sequence/list returns ``()`` and the controller
+    blocks the branch; the run stops when the frontier empties.
     """
 
     _is_structured_generator = True
 
     def __init__(
-        self, proposals: Sequence[StructuredActionProposal]
+        self,
+        *,
+        proposals: Sequence[StructuredActionProposal] = (),
+        proposals_by_obligation: (
+            dict[str, Sequence[StructuredActionProposal]] | None
+        ) = None,
     ) -> None:
+        if proposals and proposals_by_obligation:
+            raise ValueError(
+                "ReplayGenerator accepts proposals OR proposals_by_obligation, "
+                "not both"
+            )
         self._proposals: tuple[StructuredActionProposal, ...] = tuple(proposals)
         self._cursor = 0
+        self._by_obligation: dict[str, tuple[StructuredActionProposal, ...]] = {}
+        self._cursors: dict[str, int] = {}
+        if proposals_by_obligation:
+            for obligation_id, plist in proposals_by_obligation.items():
+                self._by_obligation[obligation_id] = tuple(plist)
+                self._cursors[obligation_id] = 0
+        self._state_aware = bool(self._by_obligation)
         self._calls = 0
 
     def generate(
         self, request: Any
     ) -> tuple[StructuredActionProposal, ...]:
-        del request  # routing is frontier-driven, not request-driven
         self._calls += 1
-        if self._cursor >= len(self._proposals):
+        if not self._state_aware:
+            # sequence mode: routing is frontier-driven, request ignored.
+            if self._cursor >= len(self._proposals):
+                return ()
+            proposal = self._proposals[self._cursor]
+            self._cursor += 1
+            return (proposal,)
+
+        # state-aware mode: key on the popped branch's obligation id.
+        metadata = getattr(request, "metadata", {}) or {}
+        branch_obligation = metadata.get("branch_obligation") or {}
+        obligation_id = branch_obligation.get("obligation_id")
+        proposals = self._by_obligation.get(obligation_id, ())
+        cursor = self._cursors.get(obligation_id, 0)
+        if cursor >= len(proposals):
             return ()
-        proposal = self._proposals[self._cursor]
-        self._cursor += 1
+        proposal = proposals[cursor]
+        self._cursors[obligation_id] = cursor + 1
         return (proposal,)
 
 
@@ -202,9 +256,7 @@ class ScenarioFakeAdapter(ProofSystemAdapter):
                 )
             except OSError:
                 pass
-        category = matched.category if matched is not None else _DEFAULT_CATEGORY
-        accepted = bool(matched.accepted) if matched is not None else False
-        return self._check_result(candidate_file, category, accepted)
+        return self._check_result(candidate_file, matched)
 
     def _match(self, haystack: str) -> _OracleRule | None:
         for rule in self._rules:
@@ -225,8 +277,10 @@ class ScenarioFakeAdapter(ProofSystemAdapter):
 
     @staticmethod
     def _check_result(
-        candidate_file: Path, category: DiagnosticCategory, accepted: bool
+        candidate_file: Path, matched: _OracleRule | None
     ) -> CheckResult:
+        category = matched.category if matched is not None else _DEFAULT_CATEGORY
+        accepted = bool(matched.accepted) if matched is not None else False
         if accepted or category is DiagnosticCategory.PROOF_ACCEPTED:
             feedback = ParsedFeedback(
                 category=DiagnosticCategory.PROOF_ACCEPTED, message="ok"
@@ -239,13 +293,20 @@ class ScenarioFakeAdapter(ProofSystemAdapter):
                 parsed_feedback=feedback,
             )
 
+        # Fingerprint: rule may override it (to separate local_attempt_count
+        # from stalled_streak); otherwise the constant default.
+        fingerprint = (
+            matched.goal_fingerprint
+            if matched is not None and matched.goal_fingerprint
+            else _CONTROLLED_FINGERPRINT
+        )
         if category is DiagnosticCategory.UNKNOWN_IDENTIFIER:
             # Capability-gap path: _apply_capability_audit blocks the
             # obligation when the category is in the capability-missing set;
             # declaration_id is surfaced in the observation message.
             goal = GoalState(
                 text="unknown identifier",
-                goal_fingerprint=_CONTROLLED_FINGERPRINT,
+                goal_fingerprint=fingerprint,
                 declaration_id="widgetGood",
             )
         else:
@@ -253,7 +314,7 @@ class ScenarioFakeAdapter(ProofSystemAdapter):
             # goal so stall and frontier signals have a stable identity.
             goal = GoalState(
                 text="unsolved",
-                goal_fingerprint=_CONTROLLED_FINGERPRINT,
+                goal_fingerprint=fingerprint,
             )
         feedback = ParsedFeedback(
             category=category,
@@ -286,9 +347,21 @@ def build_replay_controller(
     model_call=1`` matches the one-proposal-per-pop contract the scenarios
     assume.
     """
-    proposals = _deserialized_proposals(scenario.get("proposals", []))
+    proposals_field = scenario.get("proposals")
+    by_obligation_field = scenario.get("proposals_by_obligation")
+    if proposals_field and by_obligation_field:
+        raise ValueError(
+            "scenario must set proposals OR proposals_by_obligation, not both"
+        )
     rules = _parse_oracle(scenario.get("expected_check_results", []))
-    generator = ReplayGenerator(proposals)
+    if by_obligation_field:
+        proposals_by_obligation = {
+            obligation_id: _deserialized_proposals(plist)
+            for obligation_id, plist in by_obligation_field.items()
+        }
+        generator = ReplayGenerator(proposals_by_obligation=proposals_by_obligation)
+    else:
+        generator = ReplayGenerator(proposals=_deserialized_proposals(proposals_field or []))
     adapter = ScenarioFakeAdapter(rules)
     controller = StructuredController(
         adapter=adapter,
