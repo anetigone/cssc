@@ -1,4 +1,4 @@
-/--
+/-
 L3 capability/import-gap canary (pure Lean core, no Mathlib import).
 
 Expected terminal: blocked.
