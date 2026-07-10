@@ -148,6 +148,7 @@ class StructuredControllerTests(unittest.TestCase):
         max_candidates: int = 1,
         retriever: Any = None,
         context_summarizer: Any = None,
+        frontier_policy: str = "legacy",
     ) -> StructuredController:
         return StructuredController(
             adapter=adapter or StructuredFakeAdapter(),
@@ -157,6 +158,7 @@ class StructuredControllerTests(unittest.TestCase):
             config=ControllerConfig(
                 execution_mode=ExecutionMode.STRUCTURED,
                 max_candidates_per_model_call=max_candidates,
+                frontier_policy=frontier_policy,
             ),
             safety_reviewer=safety_reviewer,
             retriever=retriever,
@@ -179,6 +181,109 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertTrue(any(b["status"] == "accepted" for b in workspace["branches"]))
         # Assembly consumed one extra check on top of the single attempt.
         self.assertEqual(result.metrics.budget_checks_used, 2)
+
+    def test_default_frontier_policy_recorded_as_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, QueueGenerator([["trivial"]]))
+            result = controller.run(_task())
+        self.assertEqual(result.metadata["frontier_policy"], "legacy")
+
+    def test_cost_aware_frontier_policy_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="cost_aware_v1",
+            )
+            result = controller.run(_task())
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.metadata["frontier_policy"], "cost_aware_v1")
+
+    def test_cost_aware_v2_frontier_policy_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="cost_aware_v2",
+            )
+            result = controller.run(_task())
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.metadata["frontier_policy"], "cost_aware_v2")
+
+    def test_budget_hints_present_in_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="cost_aware_v2",
+            )
+            result = controller.run(_task())
+
+        hints = result.metadata["budget_hints"]
+        self.assertIsInstance(hints, tuple)
+        self.assertTrue(hints)
+        required = {
+            "obligation_id",
+            "soft_model_calls",
+            "soft_checks",
+            "borrowed_model_calls",
+            "borrowed_checks",
+        }
+        for hint in hints:
+            self.assertEqual(set(hint), required)
+        # A single-root accepted run: the root hint borrows nothing (its direct
+        # spend is within the envelope) and is non-negative throughout.
+        root_hint = next(h for h in hints if h["obligation_id"] == "sample")
+        self.assertGreaterEqual(root_hint["soft_checks"], 0)
+        self.assertGreaterEqual(root_hint["borrowed_checks"], 0)
+
+    def test_unknown_frontier_policy_hard_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="bogus",
+            )
+            with self.assertRaises(ValueError):
+                controller.run(_task())
+
+    def test_value_per_cost_frontier_policy_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="value_per_cost_v1",
+            )
+            result = controller.run(_task())
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.metadata["frontier_policy"], "value_per_cost_v1")
+
+    def test_priority_explanations_present_on_legacy_path(self) -> None:
+        # The trace records a priority explanation on every pop regardless of
+        # policy, so even the default legacy run surfaces them with the legacy
+        # policy tag and the full explanation field set.
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(tmp, QueueGenerator([["trivial"]]))
+            result = controller.run(_task())
+
+        explanations = result.metadata["priority_explanations"]
+        self.assertIsInstance(explanations, tuple)
+        self.assertTrue(explanations)
+        required = {
+            "branch_id",
+            "policy",
+            "expected_incremental_cost",
+            "unlock_value",
+            "progress_likelihood",
+            "information_gain",
+            "final_key_or_score",
+        }
+        for expl in explanations:
+            self.assertEqual(set(expl), required)
+            self.assertEqual(expl["policy"], "legacy")
+            self.assertIsInstance(expl["final_key_or_score"], tuple)
+            for part in expl["final_key_or_score"]:
+                self.assertIsInstance(part, int)
 
     def test_generation_metadata_carries_context_projection(self) -> None:
         generator = QueueGenerator([["trivial"]])

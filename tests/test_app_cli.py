@@ -457,6 +457,18 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertEqual(formalize.model, "f-model")
         self.assertEqual(prove.model, "p-model")
 
+    def test_parser_accepts_all_frontier_policy_choices(self) -> None:
+        # Phase 8.4: --frontier-policy exposes every opt-in档位 on the solve
+        # subcommand; an unknown value must still be rejected by argparse.
+        parser = build_parser()
+        for value in ("legacy", "cost_aware_v1", "cost_aware_v2", "value_per_cost_v1"):
+            args = parser.parse_args(
+                ["solve", "Basic.lean", "--frontier-policy", value]
+            )
+            self.assertEqual(args.frontier_policy, value)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["solve", "Basic.lean", "--frontier-policy", "bogus"])
+
     def test_per_role_model_flags_override_generic_model(self) -> None:
         parser = build_parser()
         formalize = parser.parse_args(

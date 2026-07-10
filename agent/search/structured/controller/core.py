@@ -51,7 +51,7 @@ from ..branch_ops import (
 from .actions import StructuredControllerActionMixin
 from .runtime import StructuredControllerRuntimeMixin
 from ..finalize import assemble_and_finalize
-from ..frontier import Frontier
+from ..frontier import Frontier, FrontierPolicy
 from ..proposal import (
     StructuredActionProposal,
     adapt_legacy_generator,
@@ -103,9 +103,16 @@ class StructuredController(
 
     def run(self, task: ProofTask) -> ControllerResult:
         logger.info("Structured controller run started: task_id=%s", task.task_id)
+        try:
+            frontier_policy = FrontierPolicy(self.config.frontier_policy)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown frontier_policy={self.config.frontier_policy!r}; "
+                f"expected one of {[p.value for p in FrontierPolicy]}"
+            ) from exc
         workspace = self._initial_workspace(task)
         state = _StructuredRunState()
-        frontier = Frontier()
+        frontier = Frontier(policy=frontier_policy)
         frontier.seed(workspace)
         logger.debug(
             "Structured frontier seeded: task_id=%s has_work=%s checks_available=%s "
@@ -122,6 +129,9 @@ class StructuredController(
             and self.budget.can_call_model()
         ):
             node = frontier.pop()
+            # Phase 8.4: drain the per-pop explanation this pop just produced so
+            # the trace records why the branch was scheduled.
+            state.priority_explanations.extend(frontier.explanations()[len(state.priority_explanations):])
             branch = branch_by_id(workspace, node.branch_id)
             if branch is None or branch.status != BranchStatus.ACTIVE:
                 logger.debug(
@@ -180,8 +190,14 @@ class StructuredController(
                 }
                 state.generation_failures.append(failure)
                 usage = exc.metadata.get("token_usage")
-                if isinstance(usage, dict):
-                    state.model_usage.append(dict(usage))
+                usage_entry = dict(usage) if isinstance(usage, dict) else {}
+                usage_entry.setdefault("input_tokens", 0)
+                usage_entry.setdefault("output_tokens", 0)
+                # This is a call ledger as well as token diagnostics: reserve_model_call()
+                # succeeded above even when the provider reports no token usage.
+                usage_entry["structured_branch_id"] = branch.branch_id
+                usage_entry["structured_obligation_id"] = branch.obligation_id
+                state.model_usage.append(usage_entry)
                 state.stop_reason = f"generation:{exc.reason}"
                 logger.warning(
                     "Structured generation failed: task_id=%s branch=%s reason=%s",
@@ -190,10 +206,15 @@ class StructuredController(
                     state.stop_reason,
                 )
                 break
-            if proposals:
-                usage = proposals[0].metadata.get("token_usage")
-                if isinstance(usage, dict):
-                    state.model_usage.append(dict(usage))
+            usage = proposals[0].metadata.get("token_usage") if proposals else None
+            usage_entry = dict(usage) if isinstance(usage, dict) else {}
+            usage_entry.setdefault("input_tokens", 0)
+            usage_entry.setdefault("output_tokens", 0)
+            # This is a call ledger as well as token diagnostics: reserve_model_call()
+            # succeeded above even when the provider reports no token usage.
+            usage_entry["structured_branch_id"] = branch.branch_id
+            usage_entry["structured_obligation_id"] = branch.obligation_id
+            state.model_usage.append(usage_entry)
             if not proposals:
                 workspace = block_branch(workspace, branch.branch_id)
                 frontier.update(workspace, branch.branch_id, accepted=False)
@@ -448,6 +469,7 @@ class StructuredController(
                         check_workspace=self.check_workspace,
                         safety_reviewer=self.safety_reviewer,
                         execution_mode=ExecutionMode.STRUCTURED,
+                        frontier_policy=frontier_policy.value,
                     )
 
             frontier.update(
@@ -501,6 +523,7 @@ class StructuredController(
             execution_mode=ExecutionMode.STRUCTURED,
             budget=self.budget,
             safety_reviewer=self.safety_reviewer,
+            frontier_policy=frontier_policy.value,
         )
         logger.info(
             "Structured controller run finished: task_id=%s accepted=%s stop_reason=%s "

@@ -35,6 +35,7 @@ def assemble_and_finalize(
     check_workspace: EphemeralCheckWorkspace | None,
     safety_reviewer: SafetyReviewer,
     execution_mode: ExecutionMode,
+    frontier_policy: str = "legacy",
 ) -> ControllerResult:
     """Reserve budget, assemble the whole source, and build the run result."""
     if not budget.can_check():
@@ -53,6 +54,7 @@ def assemble_and_finalize(
             execution_mode=execution_mode,
             budget=budget,
             safety_reviewer=safety_reviewer,
+            frontier_policy=frontier_policy,
         )
     budget_slice = budget.reserve_check()
     solution_branches = select_solution(workspace)
@@ -100,6 +102,7 @@ def assemble_and_finalize(
             budget=budget,
             safety_reviewer=safety_reviewer,
             assembly_outcome=assembly,
+            frontier_policy=frontier_policy,
         )
         logger.info(
             "Structured controller run finished: task_id=%s accepted=%s stop_reason=%s "
@@ -123,6 +126,7 @@ def assemble_and_finalize(
         budget=budget,
         safety_reviewer=safety_reviewer,
         assembly_outcome=assembly,
+        frontier_policy=frontier_policy,
     )
     logger.info(
         "Structured controller run finished: task_id=%s accepted=%s stop_reason=%s "

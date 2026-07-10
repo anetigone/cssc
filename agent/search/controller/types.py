@@ -54,6 +54,10 @@ class ControllerConfig:
     )
     # 执行模式：由启动参数决定，运行中不可变；factory 是唯一选择点。
     execution_mode: ExecutionMode = ExecutionMode.MINIMAL
+    # Structured frontier 排序策略（Phase 8.2）。用字符串而非枚举，避免共享
+    # types 模块 import structured frontier；minimal 忽略此字段，structured
+    # 在启动时校验值是否在 FrontierPolicy 范围内，未知值硬失败。
+    frontier_policy: str = "legacy"
 
 
 @dataclass(frozen=True)

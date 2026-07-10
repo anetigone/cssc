@@ -9,8 +9,14 @@ from typing import TYPE_CHECKING, Any
 from agent.proof_system.workspace import ObligationStatus, WorkspaceStatus
 from ..budget import BudgetManager
 from ..controller.types import AttemptRecord, ControllerResult
+from ..cost import cost_vector_from_metrics_and_budget, to_dict
 from ..execution import ExecutionMode
 from ..metrics import new_sample_id, summarize_run
+from .budget_hints import (
+    build_obligation_budget_hints,
+    join_borrowed_costs,
+)
+from .costing import build_cost_summary
 from .summary import build_result_summary
 
 if TYPE_CHECKING:
@@ -41,8 +47,12 @@ class _StructuredRunState:
     decompose_records: list[dict[str, Any]] = field(default_factory=list)
     argument_records: list[dict[str, Any]] = field(default_factory=list)
     representation_records: list[dict[str, Any]] = field(default_factory=list)
-    model_usage: list[dict[str, int]] = field(default_factory=list)
+    model_usage: list[dict[str, Any]] = field(default_factory=list)
     generation_failures: list[dict[str, Any]] = field(default_factory=list)
+    # Phase 8.4: per-pop frontier priority explanations, in pop order. Captured
+    # by the controller from ``Frontier.explanations()`` so the trace records
+    # why each branch was scheduled regardless of policy.
+    priority_explanations: list = field(default_factory=list)
 
 
 _SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
@@ -90,6 +100,7 @@ def build_structured_result(
     budget: BudgetManager,
     safety_reviewer: SafetyReviewer,
     assembly_outcome: AssemblyResult | None = None,
+    frontier_policy: str = "legacy",
 ) -> ControllerResult:
     """Construct the :class:`ControllerResult` for one structured run.
 
@@ -141,6 +152,10 @@ def build_structured_result(
     workspace = workspace.successor(status=final_status)
     metadata: dict[str, Any] = {
         "workspace": workspace.to_dict(),
+        "frontier_policy": frontier_policy,
+        "priority_explanations": tuple(
+            expl.to_dict() for expl in state.priority_explanations
+        ),
         "safety_rejections": tuple(state.safety_rejections),
         "safety_reviewer": type(safety_reviewer).__name__,
         "skipped_proposals": tuple(state.skipped_proposals),
@@ -149,12 +164,36 @@ def build_structured_result(
         "representation_records": tuple(state.representation_records),
         "model_usage": tuple(state.model_usage),
         "generation_failures": tuple(state.generation_failures),
+        "cost": to_dict(cost_vector_from_metrics_and_budget(metrics, snapshot)),
         "result_summary": build_result_summary(
             workspace, assembly_result=assembly_outcome
         ).to_dict(),
     }
     if assembly_outcome is not None:
         metadata["assembly"] = assembly_outcome.to_dict()
+    cost_summary = build_cost_summary(
+        workspace=workspace,
+        attempts=tuple(state.attempts),
+        attempt_metrics=tuple(state.attempt_metrics),
+        model_usage=tuple(state.model_usage),
+        run_metrics=metrics,
+        snapshot=snapshot,
+        assembly_outcome=assembly_outcome,
+    )
+    metadata["cost_summary"] = cost_summary
+    # Phase 8.3: per-obligation soft-budget hints, with realised borrowing
+    # joined from the cost summary above (single source of truth for direct
+    # spend). Both projections iterate ``graph.active()``, so every hint has a
+    # matching cost entry; unworked obligations borrow nothing.
+    obligation_direct = {
+        entry["obligation_id"]: entry["direct_cost"]
+        for entry in cost_summary["obligations"]
+    }
+    hints = build_obligation_budget_hints(
+        workspace, budget_snapshot=snapshot
+    )
+    hints = join_borrowed_costs(hints, obligation_direct)
+    metadata["budget_hints"] = tuple(hint.to_dict() for hint in hints)
     return ControllerResult(
         task=task,
         accepted=accepted,

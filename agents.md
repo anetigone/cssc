@@ -62,7 +62,10 @@ agent/
 │   │   │   ├── core.py       # apply / StructuredActionResult / accept / failure / capability audit
 │   │   │   ├── decompose.py  # DECOMPOSE 结构转移
 │   │   │   └── structural.py # argument / representation / failure hypothesis 转移
-│   │   ├── frontier.py       # Frontier / FrontierNode 调度器（只读 workspace）
+│   │   ├── frontier.py       # Frontier 调度器 + 兼容 re-export
+│   │   ├── frontier_types.py # FrontierPolicy / FrontierNode / PriorityExplanation / soft-budget config
+│   │   ├── frontier_signals.py # readiness / stalled / soft envelope / node projection 纯函数
+│   │   ├── frontier_priority.py # legacy / cost-aware / value-per-cost priority keys
 │   │   ├── run_state.py      # _StructuredRunState + build_structured_result
 │   │   └── solution_tracker.py # has_complete_solution / select_solution
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
@@ -252,13 +255,15 @@ agent/
 - **依赖真实 Lean toolchain（慢、需非沙箱）+ 真实 model 调用（有 token 成本）**，不进 CI、手动跑。
 - 完整方案（任务集、消融档位、跑批脚本、对比指标口径、报告产出、提交粒度）见 [tmp/phase7_8_plan.md](tmp/phase7_8_plan.md)。7.8 不引入新代码模块，只复用现有 structured 执行器 + trace 指标出口。
 
-## Phase 8 成本感知搜索（**未做**）
+## Phase 8 成本感知搜索（**进行中**）
 
 - 这是 structured 基础设施稳定后的下一阶段优化：先冻结统一 `CostVector` 与 branch/obligation 成本归因，再以 opt-in `FrontierPolicy` 引入确定性 cost-aware 排序，最后才做软预算、价值/成本混合评分和真实任务消融。
 - 完整方案见 [tmp/phase8_plan.md](tmp/phase8_plan.md)。Phase 8 的核心边界是：成本感知只优化 structured 的调度顺序和预算分配，不改变 checker/safety/reducer/assembly 语义；预算不足只能导致 `PARTIAL` / `BLOCKED` / 预算耗尽类 stop reason，不能把未验证路线标成数学失败。
-- 8.0/8.1 必须只观测不改行为：`agent/search/cost.py` 提供共享成本向量，`agent/search/structured/costing.py` 从 trace/workspace 派生 structured 成本摘要；minimal 可记录 run-level cost，但不 import structured 成本归因模块。
-- 8.2 的 cost-aware frontier 必须 opt-in，默认 `legacy` 排序保持不变；readiness 仍是 gate，不是排序权重，`branch_id` 保留为最终 tie-breaker 以保证 trace 可回放。
-- 8.3+ 的软预算和 value-per-cost 策略只能降权或调度借用，不能跳过 final assembly、不能削弱 statement-preservation、不能因为“太贵”直接接受或否定一个分支。
+- 8.0 ✅ / 8.1 ✅ 只观测不改行为：`agent/search/cost.py` 提供共享成本向量，`agent/search/structured/costing.py` 从 trace/workspace 派生 structured 成本摘要；minimal 可记录 run-level cost，但不 import structured 成本归因模块。
+- 8.2 ✅ cost-aware frontier opt-in：`FrontierPolicy`（默认 `LEGACY`）+ `Frontier(policy=...)` + `_cost_aware_priority_key`（`expected_incremental_cost, stalled_penalty, unlock_value_rank=depth, attempt_count, depth_from_root, branch_id`），由 `ControllerConfig.frontier_policy`（字符串，structured 校验未知值硬失败）+ `--frontier-policy` CLI 驱动；`metadata["frontier_policy"]` 透传所有 result 路径（`run_state.build_structured_result` + `finalize.assemble_and_finalize`）。默认 legacy 排序逐字节不变，readiness 仍是 gate，`branch_id` 最终 tie-breaker，minimal 不 import frontier policy。
+- 8.3 ✅ 软预算与借用：`COST_AWARE_V2`（`_soft_budget_priority_key`，leading `overdraft_checks = max(0, local_attempt_count - soft_checks)` + 继承 V1 cost 维度，真实 dependents 计数作 unlock value）；`soft_envelope_for_obligation` + `BudgetHintDefaults`（capability/stalled *替换* base，root/unlock/accepted-neighbour *叠加* bonus）是 frontier 排序与 `metadata["budget_hints"]` 投影的单一来源；`join_borrowed_costs` 从 cost summary 直连花费回填借用量。软预算超支只 deprioritize，不直接 BLOCKED。
+- 8.4 ✅ 价值/成本混合评分：`FrontierPolicy.VALUE_PER_COST_V1`（`_value_per_cost_priority_key`，用 fixed-point 整数 score 实现 `unlock_value * progress_likelihood * information_gain / expected_incremental_cost`，不做浮点除法），stalled/overdraft gate 仍前置（继承 V2）。`FrontierNode` 新增 `unlock_value`/`progress_likelihood`（最新 attempt 改变 goal-fingerprint 集合）/`information_gain`（capability probe 0/1）三字段，legacy/v1/v2 key 忽略。每次 `pop()` 产 `PriorityExplanation`（`final_key_or_score` 是 int 序列），所有 policy 都记录；`metadata["priority_explanations"]` 透传所有 result 路径。`--frontier-policy` choices 补全为全四档。
+- 8.3/8.4 的软预算和 value-per-cost 策略只能降权或调度借用，不能跳过 final assembly、不能削弱 statement-preservation、不能因为“太贵”直接接受或否定一个分支。
 
 ## `ChatDriver` 抽象
 
@@ -365,7 +370,7 @@ python -m pytest tests/ -q
 - `tests/test_branch.py`：ProofBranch 嵌套序列化与状态枚举。
 - `tests/test_search_action.py`：SearchAction 序列化、默认作用域表完整性、narrow/broaden 校验。
 - `tests/test_hypothesis.py`：FailureHypothesis 序列化、confidence/evidence 校验、嵌套 proposed_tests 聚合。
-- `tests/test_frontier.py`：Frontier seed/pop 排序确定性、stalled_streak 派生、retired 分支不重新入队、REPAIR 子分支优先级；Phase 7.4 readiness gate（parent 未 ready / helper accepted 后 ready / helper blocked 终止 / 单 root baseline）。
+- `tests/test_frontier.py`：Frontier seed/pop 排序确定性、stalled_streak 派生、retired 分支不重新入队、REPAIR 子分支优先级；Phase 7.4 readiness gate（parent 未 ready / helper accepted 后 ready / helper blocked 终止 / 单 root baseline）；frontier 拆分后 `frontier.py` 保持兼容 re-export，核心类型/信号/priority key 分在 `frontier_types.py` / `frontier_signals.py` / `frontier_priority.py`。
 - `tests/test_solution_tracker.py`：has_complete_solution / select_solution 的 version 相容、artifact 必需、stale 版本拒绝、多 accepted 取最小 branch_id。
 - `tests/test_reducer.py`：apply 不可变转移、accepted/failure/safety 三态、DORMANT 与 REPAIR 子分支派生、原 workspace 不被 mutate；Phase 7.3 capability audit 三态；Phase 7.4 `apply_decompose`（supersede+seed+validate、no-op 守卫）+ artifact contract（helper/root fact statement 与 kind）；Phase 7.6 `apply_argument`（PROPOSE/REFINE 同转移 step+alignment、缺 alignment no-op、REFINE 未知 id no-op、不可变）/`apply_change_representation`（父 SUPERSEDED+`.rep0` child、继承 observations、id 确定性）/`apply_failure_hypotheses`（非法 evidence/错误 branch test/重复 id 丢弃）；Phase 7.7 `ReducerTransitiveBlockTests`（helper block→依赖链 parent 同步 BLOCKED、已验证 sibling 不受影响、`block_branch` 不传播、不可变）/`ReducerDormantRecoveryTests`（accept helper 复活 DORMANT parent、capability 可用复活、missing 不复活、无 DORMANT no-op）。
 - `tests/test_assembler.py`：final-assembly 整体复检与 blocked 语义；Phase 7.4 多义务 helper 注入 + 单 root 不变。
@@ -375,7 +380,7 @@ python -m pytest tests/ -q
 - `tests/test_structured_projection.py`：Phase 7.1 workspace context projection；Phase 7.5 helper fact `declaration_id` 透传 + 往返。
 - `tests/test_structured_proposal.py`：Phase 7.2 typed structured action proposal——payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、legacy adapter 正确性/idempotent/native 旁路；Phase 7.6 argument/representation payload 往返 + kind/payload 一致 + 跨 kind 拒绝。
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查；Phase 7.4 前置 helper 声明不触发 statement_not_preserved。
-- Phase 8 计划测试：`tests/test_cost.py` 覆盖 `CostVector` 序列化/聚合/metrics 派生；`tests/test_structured_costing.py` 覆盖 branch/obligation direct/transitive 成本归因；`tests/test_frontier.py` 扩展 opt-in cost-aware policy 排序与 legacy 行为不变。
+- Phase 8 计划测试：`tests/test_cost.py` 覆盖 `CostVector` 序列化/聚合/metrics 派生；`tests/test_structured_costing.py` 覆盖 branch/obligation direct/transitive 成本归因；`tests/test_frontier.py` 已扩展 `FrontierPolicyTests`（默认 legacy + 显式 legacy 逐字节一致、cost-aware 偏好廉价 next-action / 阈值 stalled penalty / 子阈值 streak 折叠 / shallower 优先 / `branch_id` tie-break / readiness gate 仍先过滤）+ 8.3 V2 overdraft/unlock-value 测试 + 8.4 `ValuePerCostFrontierTests`（value 排序关系 / stall+overdraft gate 仍前置 / `PriorityExplanation` 字段与 int-only `final_key_or_score` / legacy·v1·v2 回归不变）；`tests/test_structured_controller.py` 覆盖 `metadata["frontier_policy"]` 透传（legacy 默认 / cost_aware_v1 / cost_aware_v2 / value_per_cost_v1 / 未知值硬失败）+ `metadata["priority_explanations"]`（legacy 路径全字段 + int-only key）；`tests/test_app_cli.py` 覆盖 `--frontier-policy` 全四档 choices 接受 + bogus 拒绝。
 
 ## 注意事项
 

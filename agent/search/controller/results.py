@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from ..budget import BudgetManager
+from ..budget import BudgetManager, BudgetSnapshot
+from ..cost import cost_vector_from_metrics_and_budget, to_dict
 from ..execution import ExecutionMode
 from ..memory import memory_to_dict
 from ..metrics import RunMetrics, summarize_run
@@ -22,14 +23,19 @@ logger = logging.getLogger(__name__)
 def result_metadata(
     state: _ControllerRunState,
     safety_reviewer: SafetyReviewer,
+    *,
+    metrics: RunMetrics | None,
+    snapshot: BudgetSnapshot,
 ) -> dict[str, Any]:
     """Shared metadata block recorded on every controller result.
 
     Includes a snapshot of the final self-managed memory so the trace preserves
     the compact context the loop actually carried, alongside the raw Phase 0
     fields. The memory snapshot is a plain dict, never the live object, so it
-    serializes cleanly.
+    serializes cleanly. The Phase 8.0 ``cost`` roll-up is derived from the run
+    metrics and budget snapshot without writing back to either.
     """
+    cost = cost_vector_from_metrics_and_budget(metrics, snapshot)
     return {
         "retrieved_results": tuple(state.retrieved_history),
         "feedback_count": len(state.feedback_history),
@@ -38,6 +44,7 @@ def result_metadata(
         "safety_reviewer": type(safety_reviewer).__name__,
         "model_usage": tuple(state.model_usage),
         "generation_failures": tuple(state.generation_failures),
+        "cost": to_dict(cost),
     }
 
 
@@ -85,22 +92,29 @@ def build_accepted_result(
         task.task_id,
         record.attempt_index,
     )
+    snapshot = budget.snapshot()
+    metrics = run_metrics(
+        state,
+        task,
+        accepted=True,
+        stop_reason="accepted",
+        execution_mode=execution_mode,
+        budget=budget,
+    )
     return ControllerResult(
         task=task,
         accepted=True,
         attempts=tuple(state.attempts),
-        budget=budget.snapshot(),
+        budget=snapshot,
         stop_reason="accepted",
         accepted_attempt=record,
-        metrics=run_metrics(
+        metrics=metrics,
+        metadata=result_metadata(
             state,
-            task,
-            accepted=True,
-            stop_reason="accepted",
-            execution_mode=execution_mode,
-            budget=budget,
+            safety_reviewer,
+            metrics=metrics,
+            snapshot=snapshot,
         ),
-        metadata=result_metadata(state, safety_reviewer),
     )
 
 
@@ -117,21 +131,28 @@ def build_tool_unavailable_result(
         task.task_id,
         state.stop_reason,
     )
+    snapshot = budget.snapshot()
+    metrics = run_metrics(
+        state,
+        task,
+        accepted=False,
+        stop_reason=state.stop_reason,
+        execution_mode=execution_mode,
+        budget=budget,
+    )
     return ControllerResult(
         task=task,
         accepted=False,
         attempts=tuple(state.attempts),
-        budget=budget.snapshot(),
+        budget=snapshot,
         stop_reason=state.stop_reason,
-        metrics=run_metrics(
+        metrics=metrics,
+        metadata=result_metadata(
             state,
-            task,
-            accepted=False,
-            stop_reason=state.stop_reason,
-            execution_mode=execution_mode,
-            budget=budget,
+            safety_reviewer,
+            metrics=metrics,
+            snapshot=snapshot,
         ),
-        metadata=result_metadata(state, safety_reviewer),
     )
 
 
@@ -152,19 +173,26 @@ def build_final_result(
         state.stop_reason,
         len(state.attempts),
     )
+    snapshot = budget.snapshot()
+    metrics = run_metrics(
+        state,
+        task,
+        accepted=False,
+        stop_reason=state.stop_reason,
+        execution_mode=execution_mode,
+        budget=budget,
+    )
     return ControllerResult(
         task=task,
         accepted=False,
         attempts=tuple(state.attempts),
-        budget=budget.snapshot(),
+        budget=snapshot,
         stop_reason=state.stop_reason,
-        metrics=run_metrics(
+        metrics=metrics,
+        metadata=result_metadata(
             state,
-            task,
-            accepted=False,
-            stop_reason=state.stop_reason,
-            execution_mode=execution_mode,
-            budget=budget,
+            safety_reviewer,
+            metrics=metrics,
+            snapshot=snapshot,
         ),
-        metadata=result_metadata(state, safety_reviewer),
     )
