@@ -29,4 +29,21 @@ python scripts/phase8_benchmark_validate.py -v
 python scripts/phase8_benchmark_validate.py --skip-lean-smoke   # static checks only
 ```
 
+## Harness smoke (no model calls)
+
+```bash
+python scripts/phase8_benchmark_run.py --dry-run \
+  --suite-version stage0-smoke --arm A0
+python scripts/phase8_benchmark_report.py \
+  --suite-version stage0-smoke --output tmp/phase8_stage0_report.md
+```
+
+Every live/dry run owns exactly one
+`<suite>/<arm>/<task>/<repetition>.jsonl` file and a matching `.meta.json`
+provenance sidecar. Reusing the same tuple is rejected; pass `--overwrite`
+only when intentional. A real live run must name `--proof-model` explicitly so
+the result remains reproducible. CLI return code 1 (a completed but unaccepted
+proof) is recorded as a benchmark outcome; missing, malformed, or duplicate
+`run_summary` events fail the harness.
+
 See `scenarios/README.md` for the controlled-scenario schema.

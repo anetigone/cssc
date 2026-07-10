@@ -19,7 +19,10 @@ Output trace path: ``<runs-root>/<suite>/<arm>/<task>/<rep>.jsonl``.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
+import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -73,6 +76,140 @@ def _trace_path(
     return runs_root / suite / arm / task_id / f"{rep}.jsonl"
 
 
+def _provenance_path(trace_path: Path) -> Path:
+    return trace_path.with_suffix(".meta.json")
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _git_output(*args: str) -> str | None:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def _lean_environment(project_root: Path) -> dict[str, Any]:
+    toolchain_path = project_root / "lean-toolchain"
+    manifest_path = project_root / "lake-manifest.json"
+    toolchain = (
+        toolchain_path.read_text(encoding="utf-8").strip()
+        if toolchain_path.is_file()
+        else None
+    )
+    mathlib_rev = None
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for package in manifest.get("packages", []):
+                if package.get("name") == "mathlib":
+                    mathlib_rev = package.get("rev")
+                    break
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"lean_toolchain": toolchain, "mathlib_rev": mathlib_rev}
+
+
+def _build_provenance(
+    *,
+    row: dict[str, Any],
+    suite: str,
+    arm: str,
+    repetition: int,
+    execution_mode: str,
+    frontier_policy: str,
+    project_root: Path,
+    trace_path: Path,
+    proof_model: str | None,
+    proof_temperature: float,
+    proof_max_tokens: int,
+    model_timeout: float,
+    lean_timeout: float,
+    dry_run: bool,
+) -> dict[str, Any]:
+    max_calls, max_checks = BUDGET_TABLE[row["budget_profile"]]
+    git_status = _git_output("status", "--porcelain", "--untracked-files=no")
+    return {
+        "schema_version": 1,
+        "status": "started",
+        "started_at": _utc_now(),
+        "completed_at": None,
+        "suite_version": suite,
+        "arm": arm,
+        "task_id": row["task_id"],
+        "repetition": repetition,
+        "track": "live",
+        "dry_run": dry_run,
+        "execution_mode": execution_mode,
+        "frontier_policy": frontier_policy,
+        "git_commit": _git_output("rev-parse", "HEAD"),
+        "git_dirty_tracked": bool(git_status),
+        "proof_model": proof_model,
+        "proof_temperature": proof_temperature,
+        "proof_max_tokens": proof_max_tokens,
+        "model_timeout": model_timeout,
+        "lean_timeout": lean_timeout,
+        "budget_profile": row["budget_profile"],
+        "max_model_calls": max_calls,
+        "max_checks": max_checks,
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "project_root": str(project_root),
+        "trace_jsonl": str(trace_path),
+        **_lean_environment(project_root),
+    }
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _read_single_run_summary(trace_path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    if not trace_path.is_file():
+        return None, "trace file was not created"
+    summaries: list[dict[str, Any]] = []
+    for line_number, raw in enumerate(
+        trace_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not raw.strip():
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return None, f"invalid JSON at line {line_number}: {exc.msg}"
+        if event.get("event") == "run_summary":
+            summaries.append(event)
+    if len(summaries) != 1:
+        return None, f"expected exactly one run_summary, found {len(summaries)}"
+    return summaries[0], None
+
+
+def _validate_segment(value: str, *, label: str) -> None:
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise ValueError(f"{label} must be one non-empty path segment: {value!r}")
+
+
 def _dry_run_stub(
     row: dict[str, Any], arm: str, execution_mode: str, frontier_policy: str
 ) -> dict[str, Any]:
@@ -83,6 +220,17 @@ def _dry_run_stub(
     """
     terminal = row["expected_terminal"]
     accepted = terminal == "accepted"
+    metadata: dict[str, Any] = {}
+    if execution_mode == "structured":
+        metadata = {
+            "frontier_policy": frontier_policy,
+            "result_summary": {
+                "workspace_status": terminal,
+                "accepted_obligations": [],
+                "open_obligations": [],
+                "blocked_obligations": [],
+            },
+        }
     return {
         "event": "run_summary",
         "run_id": f"{arm}-{row['task_id']}-dryrun",
@@ -118,15 +266,7 @@ def _dry_run_stub(
             "model_output_tokens": 0,
             "attempts": [],
         },
-        "metadata": {
-            "frontier_policy": frontier_policy,
-            "result_summary": {
-                "workspace_status": terminal,
-                "accepted_obligations": [],
-                "open_obligations": [],
-                "blocked_obligations": [],
-            },
-        },
+        "metadata": metadata,
     }
 
 
@@ -139,6 +279,10 @@ def _run_live(
     project_root: Path,
     fixture_abs: Path,
     lean_timeout: float,
+    model_timeout: float,
+    proof_model: str,
+    proof_temperature: float,
+    proof_max_tokens: int,
     out: Path,
 ) -> int:
     max_calls, max_checks = BUDGET_TABLE[row["budget_profile"]]
@@ -160,6 +304,14 @@ def _run_live(
         str(max_checks),
         "--lean-timeout",
         str(lean_timeout),
+        "--model-timeout",
+        str(model_timeout),
+        "--proof-model",
+        proof_model,
+        "--proof-temperature",
+        str(proof_temperature),
+        "--proof-max-tokens",
+        str(proof_max_tokens),
         "--trace-jsonl",
         str(out),
     ]
@@ -180,6 +332,7 @@ def _run_controlled(
         structured_action_proposal_from_dict(proposal)
         deserialized += 1
     return {
+        "ok": True,
         "track": "controlled",
         "task_id": row["task_id"],
         "proposals_loaded": deserialized,
@@ -187,7 +340,7 @@ def _run_controlled(
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--manifest",
@@ -202,6 +355,15 @@ def main() -> int:
     parser.add_argument("--project-root", default="lean_workspace")
     parser.add_argument("--fixtures-dir", default="tests/fixtures/phase8_benchmark")
     parser.add_argument("--lean-timeout", type=float, default=30.0)
+    parser.add_argument("--model-timeout", type=float, default=60.0)
+    parser.add_argument("--proof-model", default=None)
+    parser.add_argument("--proof-temperature", type=float, default=0.2)
+    parser.add_argument("--proof-max-tokens", type=int, default=16384)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing trace/provenance pair for the same run tuple.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -212,7 +374,28 @@ def main() -> int:
         default=None,
         help="dry-run only: copy this existing trace as the run output.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    try:
+        _validate_segment(args.suite_version, label="suite-version")
+        if args.repetition < 1:
+            raise ValueError("repetition must be >= 1")
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 2
+    if args.from_trace and not args.dry_run:
+        print(json.dumps({"ok": False, "error": "--from-trace requires --dry-run"}))
+        return 2
+    if args.track == "live" and not args.dry_run and not args.proof_model:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "live benchmark runs require explicit --proof-model for provenance",
+                }
+            )
+        )
+        return 2
 
     manifest_path = (ROOT / args.manifest).resolve()
     fixtures_dir = (ROOT / args.fixtures_dir).resolve()
@@ -225,11 +408,53 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": f"manifest not found: {manifest_path}"}))
         return 2
 
-    targets = (
-        [_find_task(manifest, args.task)] if args.task else list(manifest)
-    )
+    try:
+        targets = [_find_task(manifest, args.task)] if args.task else list(manifest)
+    except KeyError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 2
 
     execution_mode, frontier_policy = ARM_TABLE[args.arm]
+    if args.track == "live":
+        collisions: list[str] = []
+        copied_trace = (ROOT / args.from_trace).resolve() if args.from_trace else None
+        if copied_trace is not None and not copied_trace.is_file():
+            print(
+                json.dumps(
+                    {"ok": False, "error": f"--from-trace not found: {copied_trace}"}
+                )
+            )
+            return 2
+        for row in targets:
+            out = _trace_path(
+                runs_root, args.suite_version, args.arm, row["task_id"], args.repetition
+            )
+            meta = _provenance_path(out)
+            if copied_trace is not None and copied_trace == out:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "--from-trace must differ from the destination trace",
+                        }
+                    )
+                )
+                return 2
+            if not args.overwrite and (out.exists() or meta.exists()):
+                collisions.append(_display_path(out))
+        if collisions:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "run tuple already exists; choose another repetition or pass --overwrite",
+                        "collisions": collisions,
+                    },
+                    indent=2,
+                )
+            )
+            return 2
+
     results = []
     for row in targets:
         task_id = row["task_id"]
@@ -241,10 +466,33 @@ def main() -> int:
             results.append(_run_controlled(row, fixtures_dir))
             continue
 
+        meta = _provenance_path(out)
+        if args.overwrite:
+            out.unlink(missing_ok=True)
+            meta.unlink(missing_ok=True)
+        provenance = _build_provenance(
+            row=row,
+            suite=args.suite_version,
+            arm=args.arm,
+            repetition=args.repetition,
+            execution_mode=execution_mode,
+            frontier_policy=frontier_policy,
+            project_root=project_root,
+            trace_path=out,
+            proof_model=args.proof_model,
+            proof_temperature=args.proof_temperature,
+            proof_max_tokens=args.proof_max_tokens,
+            model_timeout=args.model_timeout,
+            lean_timeout=args.lean_timeout,
+            dry_run=args.dry_run,
+        )
+        _write_json_atomic(meta, provenance)
+
         if args.dry_run:
             out.parent.mkdir(parents=True, exist_ok=True)
             if args.from_trace:
-                src = (ROOT / args.from_trace).resolve()
+                src = copied_trace
+                assert src is not None
                 shutil.copyfile(src, out)
                 payload = {"ok": True, "track": "live", "dry_run": True, "copied_from": str(src)}
             else:
@@ -252,9 +500,27 @@ def main() -> int:
                 with out.open("w", encoding="utf-8") as handle:
                     handle.write(json.dumps(stub) + "\n")
                 payload = {"ok": True, "track": "live", "dry_run": True}
+            summary, trace_error = _read_single_run_summary(out)
+            payload["ok"] = trace_error is None
+            if trace_error:
+                payload["trace_error"] = trace_error
             payload.update(
-                {"task": task_id, "arm": args.arm, "trace_jsonl": str(out.relative_to(ROOT))}
+                {
+                    "task": task_id,
+                    "arm": args.arm,
+                    "trace_jsonl": _display_path(out),
+                    "proof_accepted": summary.get("accepted") if summary else None,
+                }
             )
+            provenance.update(
+                {
+                    "status": "completed" if payload["ok"] else "failed",
+                    "completed_at": _utc_now(),
+                    "trace_error": trace_error,
+                    "cli_returncode": None,
+                }
+            )
+            _write_json_atomic(meta, provenance)
             results.append(payload)
             continue
 
@@ -268,21 +534,41 @@ def main() -> int:
             project_root=project_root,
             fixture_abs=fixture_abs,
             lean_timeout=args.lean_timeout,
+            model_timeout=args.model_timeout,
+            proof_model=args.proof_model,
+            proof_temperature=args.proof_temperature,
+            proof_max_tokens=args.proof_max_tokens,
             out=out,
         )
+        summary, trace_error = _read_single_run_summary(out)
+        # CLI return code 1 means a completed but unaccepted proof run. It is a
+        # benchmark outcome, not an infrastructure failure. Codes >=2 or an
+        # invalid/missing trace are harness failures.
+        run_ok = rc in {0, 1} and trace_error is None
+        provenance.update(
+            {
+                "status": "completed" if run_ok else "failed",
+                "completed_at": _utc_now(),
+                "trace_error": trace_error,
+                "cli_returncode": rc,
+            }
+        )
+        _write_json_atomic(meta, provenance)
         results.append(
             {
-                "ok": rc == 0,
+                "ok": run_ok,
                 "track": "live",
                 "task": task_id,
                 "arm": args.arm,
-                "trace_jsonl": str(out.relative_to(ROOT)),
+                "trace_jsonl": _display_path(out),
                 "cli_returncode": rc,
+                "proof_accepted": summary.get("accepted") if summary else None,
+                "trace_error": trace_error,
             }
         )
 
     print(json.dumps(results if len(results) > 1 else results[0], indent=2))
-    return 0
+    return 0 if all(result.get("ok", False) for result in results) else 1
 
 
 if __name__ == "__main__":
