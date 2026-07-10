@@ -1,0 +1,23 @@
+{
+  "scenario_version": 1,
+  "task_id": "l1_canary_true",
+  "description": "Minimal controlled: trivial accepted in one IMPLEMENT.",
+  "proposals": [
+    {
+      "action": {
+        "kind": "implement",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "Close the trivial goal with `trivial`."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "trivial"
+      }
+    }
+  ],
+  "expected_check_results": [
+    {"on_candidate_contains": "trivial", "accepted": true, "category": "proof_accepted"}
+  ]
+}

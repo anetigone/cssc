@@ -1,0 +1,25 @@
+{
+  "scenario_version": 1,
+  "task_id": "l3_canary_capability_gap",
+  "description": "Controlled capability gap: probe the missing bridge lemma, then block.",
+  "proposals": [
+    {
+      "action": {
+        "kind": "run_capability_test",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": [],
+        "rationale": "Probe whether the missing bridge lemma `widgetGood target` exists."
+      },
+      "payload": {
+        "kind": "run_capability_test",
+        "requirement": "good target",
+        "signature": "widgetGood : ∀ w : widget, good w",
+        "expected_outcome": "unknown_identifier"
+      }
+    }
+  ],
+  "expected_check_results": [
+    {"on_candidate_contains": "widgetGood", "accepted": false, "category": "unknown_identifier"}
+  ]
+}
