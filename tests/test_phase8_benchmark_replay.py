@@ -180,5 +180,86 @@ class ControlledReplayTests(unittest.TestCase):
                 )
 
 
+class RunScriptControlledTests(unittest.TestCase):
+    """End-to-end: phase8_benchmark_run --track controlled writes a parseable trace."""
+
+    def test_controlled_run_writes_trace_and_provenance(self) -> None:
+        import scripts.phase8_benchmark_run as run
+        import scripts.phase8_benchmark_report as rep
+
+        with tempfile.TemporaryDirectory() as runs_root:
+            argv = [
+                "--track", "controlled",
+                "--task", "l4_canary_two_helpers",
+                "--arm", "A1",
+                "--suite-version", "test-controlled",
+                "--runs-root", str(Path(runs_root) / "phase8"),
+            ]
+            rc = run.main(argv)
+            self.assertEqual(rc, 0, "controlled run should succeed")
+
+            trace = (
+                Path(runs_root)
+                / "phase8"
+                / "test-controlled"
+                / "A1"
+                / "l4_canary_two_helpers"
+                / "1.jsonl"
+            )
+            meta = trace.with_suffix(".meta.json")
+            self.assertTrue(trace.is_file(), f"trace missing: {trace}")
+            self.assertTrue(meta.is_file(), f"provenance missing: {meta}")
+
+            provenance = json.loads(meta.read_text(encoding="utf-8"))
+            self.assertEqual(provenance["track"], "controlled")
+            self.assertEqual(provenance["status"], "completed")
+            self.assertIsNone(provenance["proof_model"])
+
+            # The report script must parse the controlled trace unchanged.
+            rc_report = rep.main(
+                [
+                    "--runs-dir", str(Path(runs_root) / "phase8"),
+                    "--suite-version", "test-controlled",
+                    "--output", str(Path(runs_root) / "report.md"),
+                ]
+            )
+            self.assertEqual(rc_report, 0, "report should parse controlled trace")
+            report = (Path(runs_root) / "report.md").read_text(encoding="utf-8")
+            self.assertIn("l4_canary_two_helpers", report)
+            self.assertIn("structured", report)
+            self.assertIn("legacy", report)
+
+    def test_controlled_rejects_minimal_arm(self) -> None:
+        import scripts.phase8_benchmark_run as run
+
+        with tempfile.TemporaryDirectory() as runs_root:
+            argv = [
+                "--track", "controlled",
+                "--task", "l1_canary_true",
+                "--arm", "A0",
+                "--suite-version", "test-controlled-a0",
+                "--runs-root", str(Path(runs_root) / "phase8"),
+            ]
+            rc = run.main(argv)
+            self.assertNotEqual(rc, 0, "controlled + A0 should fail")
+
+    def test_controlled_collision_protection(self) -> None:
+        import scripts.phase8_benchmark_run as run
+
+        with tempfile.TemporaryDirectory() as runs_root:
+            common = [
+                "--track", "controlled",
+                "--task", "l1_canary_true",
+                "--arm", "A1",
+                "--suite-version", "test-controlled-coll",
+                "--runs-root", str(Path(runs_root) / "phase8"),
+            ]
+            self.assertEqual(run.main(common), 0)
+            # Same tuple without --overwrite must be refused.
+            self.assertNotEqual(run.main(common), 0)
+            # --overwrite succeeds.
+            self.assertEqual(run.main(common + ["--overwrite"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

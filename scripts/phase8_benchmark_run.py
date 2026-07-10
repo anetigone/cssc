@@ -26,6 +26,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +34,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.search.structured.proposal.core import (  # noqa: E402
-    structured_action_proposal_from_dict,
-)
+from agent.runtime.trace_store import JsonlTraceStore  # noqa: E402
+from agent.search.budget import BudgetConfig  # noqa: E402
+from agent.tasks.task_builder import LeanTaskBuilder, TaskBuildError  # noqa: E402
+from scripts.phase8_benchmark_replay import build_replay_controller  # noqa: E402
 
 # arm -> (execution_mode, frontier_policy)
 ARM_TABLE: dict[str, tuple[str, str]] = {
@@ -141,6 +143,7 @@ def _build_provenance(
     model_timeout: float,
     lean_timeout: float,
     dry_run: bool,
+    track: str = "live",
 ) -> dict[str, Any]:
     max_calls, max_checks = BUDGET_TABLE[row["budget_profile"]]
     git_status = _git_output("status", "--porcelain", "--untracked-files=no")
@@ -153,7 +156,7 @@ def _build_provenance(
         "arm": arm,
         "task_id": row["task_id"],
         "repetition": repetition,
-        "track": "live",
+        "track": track,
         "dry_run": dry_run,
         "execution_mode": execution_mode,
         "frontier_policy": frontier_policy,
@@ -321,22 +324,110 @@ def _run_live(
 
 
 def _run_controlled(
-    row: dict[str, Any], fixtures_dir: Path
+    row: dict[str, Any],
+    fixtures_dir: Path,
+    *,
+    arm: str,
+    frontier_policy: str,
+    suite: str,
+    repetition: int,
+    runs_root: Path,
+    overwrite: bool,
 ) -> dict[str, Any]:
-    """Stage 0 placeholder: load + deserialize the scenario, do not replay."""
+    """Drive the real StructuredController with scripted components (Stage 2).
+
+    No model, no Lean: a ``ReplayGenerator`` emits the scenario's proposals and
+    a ``ScenarioFakeAdapter`` answers checks from the scenario's oracle. The
+    real frontier / reducer / assembly / ResultSummary pipeline runs unchanged,
+    so the frontier_policy genuinely affects scheduling. The trace is written by
+    the real ``JsonlTraceStore``, identical in shape to a live run, so the report
+    script parses it unchanged.
+    """
+    task_id = row["task_id"]
     scenario_path = fixtures_dir / row["controlled_scenario"]
     scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
-    proposals = scenario["proposals"]
-    deserialized = 0
-    for proposal in proposals:
-        structured_action_proposal_from_dict(proposal)
-        deserialized += 1
+    source = (fixtures_dir / row["source"]).read_text(encoding="utf-8")
+    try:
+        tasks = LeanTaskBuilder().build_from_source(source, source_path=row["source"])
+    except TaskBuildError as exc:
+        return {
+            "ok": False,
+            "track": "controlled",
+            "task": task_id,
+            "arm": arm,
+            "error": f"LeanTaskBuilder rejected scaffold: {exc}",
+        }
+    if len(tasks) != 1:
+        return {
+            "ok": False,
+            "track": "controlled",
+            "task": task_id,
+            "arm": arm,
+            "error": f"expected 1 task from scaffold, got {len(tasks)}",
+        }
+    task = tasks[0]
+
+    max_calls, max_checks = BUDGET_TABLE[row["budget_profile"]]
+    budget_config = BudgetConfig(max_checks=max_checks, max_model_calls=max_calls)
+
+    out = _trace_path(runs_root, suite, arm, task_id, repetition)
+    meta = _provenance_path(out)
+    if overwrite:
+        out.unlink(missing_ok=True)
+        meta.unlink(missing_ok=True)
+
+    provenance = _build_provenance(
+        row=row,
+        suite=suite,
+        arm=arm,
+        repetition=repetition,
+        execution_mode="structured",
+        frontier_policy=frontier_policy,
+        project_root=fixtures_dir,  # controlled runs have no Lean project
+        trace_path=out,
+        proof_model=None,
+        proof_temperature=0.0,
+        proof_max_tokens=0,
+        model_timeout=0.0,
+        lean_timeout=0.0,
+        dry_run=False,
+        track="controlled",
+    )
+    # controlled runs are deterministic and offline; clear Lean/model env fields
+    # that have no meaning without a real toolchain.
+    provenance["lean_toolchain"] = None
+    provenance["mathlib_rev"] = None
+    _write_json_atomic(meta, provenance)
+
+    with tempfile.TemporaryDirectory() as workspace_root:
+        controller, _generator, _adapter = build_replay_controller(
+            scenario=scenario,
+            frontier_policy=frontier_policy,
+            budget_config=budget_config,
+            workspace_root=workspace_root,
+        )
+        result = controller.run(task)
+
+    JsonlTraceStore(out).append_result(result)
+    summary, trace_error = _read_single_run_summary(out)
+    run_ok = trace_error is None
+    provenance.update(
+        {
+            "status": "completed" if run_ok else "failed",
+            "completed_at": _utc_now(),
+            "trace_error": trace_error,
+            "cli_returncode": None,
+        }
+    )
+    _write_json_atomic(meta, provenance)
     return {
-        "ok": True,
+        "ok": run_ok,
         "track": "controlled",
-        "task_id": row["task_id"],
-        "proposals_loaded": deserialized,
-        "note": "Stage 0 placeholder: scenario deserialized; replay arrives in Stage 2.",
+        "task": task_id,
+        "arm": arm,
+        "trace_jsonl": _display_path(out),
+        "proof_accepted": summary.get("accepted") if summary else None,
+        "trace_error": trace_error,
     }
 
 
@@ -396,6 +487,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 2
+    if args.track == "controlled" and args.arm == "A0":
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "controlled track requires a structured arm (A1-A4); "
+                    "A0/minimal has no frontier policy",
+                }
+            )
+        )
+        return 2
 
     manifest_path = (ROOT / args.manifest).resolve()
     fixtures_dir = (ROOT / args.fixtures_dir).resolve()
@@ -415,8 +517,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     execution_mode, frontier_policy = ARM_TABLE[args.arm]
+    copied_trace: Path | None = None
     if args.track == "live":
-        collisions: list[str] = []
         copied_trace = (ROOT / args.from_trace).resolve() if args.from_trace else None
         if copied_trace is not None and not copied_trace.is_file():
             print(
@@ -425,35 +527,54 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2
+        if copied_trace is not None:
+            for row in targets:
+                out = _trace_path(
+                    runs_root,
+                    args.suite_version,
+                    args.arm,
+                    row["task_id"],
+                    args.repetition,
+                )
+                if copied_trace == out:
+                    print(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "error": "--from-trace must differ from the destination trace",
+                            }
+                        )
+                    )
+                    return 2
+
+    # Both tracks write a trace + provenance pair, so both get no-overwrite
+    # protection (controlled runs are reproducible but must still not silently
+    # clobber an existing tuple).
+    collisions: list[str] = []
+    if not args.overwrite:
         for row in targets:
             out = _trace_path(
-                runs_root, args.suite_version, args.arm, row["task_id"], args.repetition
+                runs_root,
+                args.suite_version,
+                args.arm,
+                row["task_id"],
+                args.repetition,
             )
             meta = _provenance_path(out)
-            if copied_trace is not None and copied_trace == out:
-                print(
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "error": "--from-trace must differ from the destination trace",
-                        }
-                    )
-                )
-                return 2
-            if not args.overwrite and (out.exists() or meta.exists()):
+            if out.exists() or meta.exists():
                 collisions.append(_display_path(out))
-        if collisions:
-            print(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "error": "run tuple already exists; choose another repetition or pass --overwrite",
-                        "collisions": collisions,
-                    },
-                    indent=2,
-                )
+    if collisions:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "run tuple already exists; choose another repetition or pass --overwrite",
+                    "collisions": collisions,
+                },
+                indent=2,
             )
-            return 2
+        )
+        return 2
 
     results = []
     for row in targets:
@@ -463,7 +584,18 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if args.track == "controlled":
-            results.append(_run_controlled(row, fixtures_dir))
+            results.append(
+                _run_controlled(
+                    row,
+                    fixtures_dir,
+                    arm=args.arm,
+                    frontier_policy=frontier_policy,
+                    suite=args.suite_version,
+                    repetition=args.repetition,
+                    runs_root=runs_root,
+                    overwrite=args.overwrite,
+                )
+            )
             continue
 
         meta = _provenance_path(out)
