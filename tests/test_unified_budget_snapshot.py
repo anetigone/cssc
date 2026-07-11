@@ -77,6 +77,21 @@ class UnifiedBudgetSnapshotTests(unittest.TestCase):
         self.assertTrue(admit_estimate(snapshot, proposal).allowed)
         self.assertTrue(admit_estimate(snapshot, execution).allowed)
 
+    def test_global_reserve_is_enforced_by_admission(self) -> None:
+        snapshot = build_unified_budget_snapshot(
+            _budget(), None,
+            limits=ActionBudgetLimits(
+                global_reserve_checks=3,
+                global_reserve_model_requests=3,
+            ),
+        )
+        self.assertFalse(admit_estimate(
+            snapshot, CostEstimate(checks=Estimate(1))
+        ).allowed)
+        self.assertFalse(admit_estimate(
+            snapshot, CostEstimate(model_requests=Estimate(1))
+        ).allowed)
+
     def test_checker_wall_milliseconds_are_compared_to_seconds(self) -> None:
         snapshot = build_unified_budget_snapshot(
             _budget(), None, limits=ActionBudgetLimits(max_elapsed_seconds=5),

@@ -26,7 +26,11 @@ from .openai import (
     choice_content,
 )
 from .tools import Tool
-from .tools.loop import AGENT_TOKEN_USAGE_KEY, AGENT_TOOL_CALLS_KEY
+from .tools.loop import (
+    AGENT_PROVIDER_REQUESTS_KEY,
+    AGENT_TOKEN_USAGE_KEY,
+    AGENT_TOOL_CALLS_KEY,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -82,11 +86,23 @@ class ChatActionGenerator(ActionGenerator):
             request.attempt_index,
             allow_tools and bool(self.driver.tools),
         )
-        response = self.driver.complete(
-            messages,
-            final_n=request.max_candidates,
-            allow_tools=allow_tools,
-        )
+        try:
+            response = self.driver.complete(
+                messages,
+                final_n=request.max_candidates,
+                allow_tools=allow_tools,
+            )
+        except ModelAdapterError as exc:
+            raise ActionGenerationError(
+                "provider_error",
+                str(exc),
+                metadata={
+                    "model": self.config.model,
+                    "provider_requests": tuple(
+                        exc.metadata.get("provider_requests", ())
+                    ),
+                },
+            ) from exc
         choices = response.get("choices")
         if not isinstance(choices, list):
             logger.error("Model response missing choices list: model=%s", self.config.model)
@@ -96,6 +112,12 @@ class ChatActionGenerator(ActionGenerator):
         usage_metadata = dict(token_usage) if isinstance(token_usage, Mapping) else {}
         tool_calls = response.get(AGENT_TOOL_CALLS_KEY)
         tool_metadata = list(tool_calls) if isinstance(tool_calls, (list, tuple)) else []
+        provider_requests = response.get(AGENT_PROVIDER_REQUESTS_KEY)
+        provider_metadata = (
+            list(provider_requests)
+            if isinstance(provider_requests, (list, tuple))
+            else []
+        )
         candidates: list[ActionCandidate] = []
         for index, choice in enumerate(choices[: request.max_candidates]):
             if not isinstance(choice, Mapping):
@@ -121,6 +143,7 @@ class ChatActionGenerator(ActionGenerator):
                         "removed_exploration_commands": removed_commands,
                         "token_usage": usage_metadata,
                         "tool_calls": tool_metadata,
+                        "provider_requests": provider_metadata,
                     },
                 )
             )
@@ -158,6 +181,7 @@ class ChatActionGenerator(ActionGenerator):
                     "finish_reasons": finish_reasons,
                     "token_usage": usage_metadata,
                     "tool_calls": tool_metadata,
+                    "provider_requests": provider_metadata,
                 },
             )
         return tuple(candidates)

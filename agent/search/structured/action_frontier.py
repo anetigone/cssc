@@ -301,21 +301,32 @@ def proposal_cache_from_dict(data: dict[str, object]) -> ProposalCache:
 
 def node_is_valid(node: ActionFrontierNode, workspace: ProofWorkspace) -> bool:
     """Whether a cached action is still executable against this exact state."""
+    return node_invalid_reason(node, workspace) is None
+
+
+def node_invalid_reason(
+    node: ActionFrontierNode, workspace: ProofWorkspace
+) -> str | None:
+    """Return a deterministic cache-invalidation reason, if any."""
     if node.cached_at_workspace_version != workspace.version:
-        return False
+        return "workspace_version_changed"
     branch = next((item for item in workspace.branches if item.branch_id == node.branch_id), None)
-    if branch is None or branch.status is not BranchStatus.ACTIVE:
-        return False
+    if branch is None:
+        return "branch_missing"
+    if branch.status is not BranchStatus.ACTIVE:
+        return f"branch_{branch.status.value}"
     if branch.obligation_id != node.obligation_id or branch.obligation_version != node.obligation_version:
-        return False
+        return "obligation_version_changed"
     if node.proposal.action.target_branch_id != node.branch_id:
-        return False
+        return "proposal_target_changed"
     if any(
         branch.argument.by_id(step_id) is None
         for step_id in node.proposal.action.target_step_ids
     ):
-        return False
-    return is_ready(branch, workspace)
+        return "target_step_missing"
+    if not is_ready(branch, workspace):
+        return "branch_not_ready"
+    return None
 
 
 class ActionFrontierPolicy(str, Enum):
@@ -342,25 +353,36 @@ class ActionFrontier:
     def has_work(self) -> bool:
         return bool(self._pending)
 
-    def pop(self) -> ActionFrontierNode:
-        if not self._pending:
-            raise StopIteration("action frontier is empty")
-        # A cost dimension participates only when it is available for every
-        # competing node in this selection round. Unknown is not infinity and
-        # therefore cannot silently retire an otherwise eligible action.
+    def ranked(self) -> tuple[ActionFrontierNode, ...]:
+        """Return the deterministic choice set without consuming a node."""
         compare_check_cost = all(
             node.estimated_execution_cost.checks is not None
             for node in self._pending
         )
-        selected = min(
+        return tuple(sorted(
             self._pending,
             key=lambda node: self._priority_key(
                 node, compare_check_cost=compare_check_cost
             ),
+        ))
+
+    def consume(self, node_id: str) -> ActionFrontierNode:
+        """Consume one explicitly selected node from the current choice set."""
+        selected = next(
+            (node for node in self._pending if node.node_id == node_id), None
         )
-        self._pending = tuple(node for node in self._pending if node.node_id != selected.node_id)
+        if selected is None:
+            raise KeyError(f"action frontier node not pending: {node_id}")
+        self._pending = tuple(
+            node for node in self._pending if node.node_id != node_id
+        )
         self._explanations.append(selected.priority_explanation)
         return selected
+
+    def pop(self) -> ActionFrontierNode:
+        if not self._pending:
+            raise StopIteration("action frontier is empty")
+        return self.consume(self.ranked()[0].node_id)
 
     def explanations(self) -> tuple[PriorityExplanation, ...]:
         return tuple(self._explanations)

@@ -229,6 +229,21 @@ class StructuredControllerTests(unittest.TestCase):
         ]
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["action_kind"], "implement")
+        choice_set = next(
+            event for event in result.metadata["proposal_cache_events"]
+            if event["event"] == "choice_set"
+        )
+        self.assertEqual(choice_set["selected_node_id"], selected[0]["node_id"])
+        self.assertEqual(len(choice_set["choices"]), 1)
+        observed = next(
+            event for event in result.metadata["proposal_cache_events"]
+            if event["event"] == "action_cost_observed"
+        )
+        self.assertEqual(
+            observed["actual_execution_cost"]["checks"]["value"], 1.0
+        )
+        # Final assembly is a separate fixed tax, not attributed to the action.
+        self.assertEqual(len(observed["ledger_event_ids"]), 1)
         ledger = result.metadata["cost_ledger"]
         checker_kinds = [
             event["checker_kind"] for event in ledger["events"]
@@ -248,7 +263,23 @@ class StructuredControllerTests(unittest.TestCase):
                 raise ActionGenerationError(
                     "provider_timeout",
                     "timed out",
-                    metadata={"model": "test-model"},
+                    metadata={
+                        "model": "test-model",
+                        "provider_requests": (
+                            {
+                                "request_id": "physical:0",
+                                "retry_index": 0,
+                                "status": "retry",
+                                "wall_time_ms": 4,
+                            },
+                            {
+                                "request_id": "physical:1",
+                                "retry_index": 1,
+                                "status": "failed",
+                                "wall_time_ms": 7,
+                            },
+                        ),
+                    },
                 )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,12 +291,16 @@ class StructuredControllerTests(unittest.TestCase):
 
         self.assertEqual(result.stop_reason, "generation:provider_timeout")
         events = result.metadata["cost_ledger"]["events"]
-        request = next(event for event in events if event["kind"] == "provider_request")
-        usage = next(event for event in events if event["kind"] == "provider_usage")
+        requests = [event for event in events if event["kind"] == "provider_request"]
+        usages = [event for event in events if event["kind"] == "provider_usage"]
         charge = next(event for event in events if event["kind"] == "charge")
-        self.assertEqual(request["status"], "failed")
-        self.assertEqual(request["model"], "test-model")
-        self.assertEqual(usage["input_tokens"]["measurement_status"], "unavailable")
+        self.assertEqual([event["status"] for event in requests], ["retry", "failed"])
+        self.assertEqual([event["request_id"] for event in requests], ["physical:0", "physical:1"])
+        self.assertTrue(all(event["model"] == "test-model" for event in requests))
+        self.assertTrue(all(
+            event["input_tokens"]["measurement_status"] == "unavailable"
+            for event in usages
+        ))
         self.assertEqual(charge["api_cost_usd"]["measurement_status"], "unavailable")
 
     def test_cached_actions_compete_before_execution(self) -> None:

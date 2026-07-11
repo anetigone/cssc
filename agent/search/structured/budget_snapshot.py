@@ -187,11 +187,18 @@ def admit_estimate(
     rejected: list[str] = []
     not_compared: list[str] = []
     for name, dimension, action_cost in pairs:
-        if dimension.remaining is None or action_cost is None:
+        remaining = dimension.remaining
+        if name == "checks" and remaining is not None:
+            remaining = max(0.0, remaining - snapshot.global_reserve_checks)
+        elif name == "model_requests" and remaining is not None:
+            remaining = max(
+                0.0, remaining - snapshot.global_reserve_model_requests
+            )
+        if remaining is None or action_cost is None:
             not_compared.append(name)
             if reject_unknown and action_cost is not None and dimension.limit_status is BudgetValueStatus.KNOWN:
                 rejected.append(name)
-        elif action_cost.value > dimension.remaining:
+        elif action_cost.value > remaining:
             rejected.append(name)
     return BudgetAdmission(not rejected, tuple(rejected), tuple(not_compared))
 

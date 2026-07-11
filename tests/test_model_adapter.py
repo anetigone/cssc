@@ -743,6 +743,9 @@ class ChatActionGeneratorTests(unittest.TestCase):
 
         self.assertEqual(result, {"choices": []})
         self.assertEqual(urlopen.call_count, 2)
+        events = transport.drain_provider_request_events()
+        self.assertEqual([event["status"] for event in events], ["retry", "completed"])
+        self.assertEqual([event["retry_index"] for event in events], [0, 1])
 
     def test_transport_logs_request_start_and_completion(self) -> None:
         response = MagicMock()
@@ -776,13 +779,15 @@ class ChatActionGeneratorTests(unittest.TestCase):
             "agent.agents.openai.urllib.request.urlopen",
             side_effect=http.client.RemoteDisconnected("closed"),
         ):
-            with self.assertRaisesRegex(ModelAdapterError, "after 2 attempt"):
+            with self.assertRaisesRegex(ModelAdapterError, "after 2 attempt") as raised:
                 transport.post_json(
                     "https://example.test/v1/chat/completions",
                     headers={"Content-Type": "application/json"},
                     payload={"model": "m"},
                     timeout_seconds=10,
                 )
+        events = raised.exception.metadata["provider_requests"]
+        self.assertEqual([event["status"] for event in events], ["retry", "failed"])
 
 
 class ChatStructuredActionGeneratorTests(unittest.TestCase):

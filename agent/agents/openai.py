@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 class ModelAdapterError(RuntimeError):
     """Raised when a model request cannot be completed or parsed."""
 
+    def __init__(self, message: str, *, metadata: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.metadata = dict(metadata or {})
+
 
 def normalized_token_usage(response: Mapping[str, Any]) -> dict[str, int]:
     """Normalize provider usage while excluding hidden reasoning from output cost.
@@ -157,6 +161,13 @@ class UrllibChatTransport:
     def __init__(self, *, max_retries: int = 2, retry_backoff_seconds: float = 1.0) -> None:
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
+        self._provider_request_events: tuple[dict[str, Any], ...] = ()
+
+    def drain_provider_request_events(self) -> tuple[dict[str, Any], ...]:
+        """Return and clear physical request-attempt telemetry."""
+        events = self._provider_request_events
+        self._provider_request_events = ()
+        return events
 
     def post_json(
         self,
@@ -165,6 +176,7 @@ class UrllibChatTransport:
         payload: Mapping[str, Any],
         timeout_seconds: float,
     ) -> Mapping[str, Any]:
+        self._provider_request_events = ()
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
         request_id = uuid.uuid4().hex[:8]
@@ -176,6 +188,7 @@ class UrllibChatTransport:
             TimeoutError,
             socket.timeout,
         )
+        request_events: list[dict[str, Any]] = []
         for attempt in range(self.max_retries + 1):
             started = time.perf_counter()
             try:
@@ -203,6 +216,13 @@ class UrllibChatTransport:
                     elapsed,
                     len(raw_body),
                 )
+                request_events.append({
+                    "request_id": f"{request_id}:{attempt}",
+                    "retry_index": attempt,
+                    "status": "completed",
+                    "http_status": status,
+                    "wall_time_ms": elapsed * 1000,
+                })
                 break
             except urllib.error.HTTPError as exc:
                 elapsed = time.perf_counter() - started
@@ -214,9 +234,28 @@ class UrllibChatTransport:
                     exc.code,
                     elapsed,
                 )
-                raise ModelAdapterError(f"Model endpoint returned HTTP {exc.code}: {body}") from exc
+                request_events.append({
+                    "request_id": f"{request_id}:{attempt}",
+                    "retry_index": attempt,
+                    "status": "failed",
+                    "http_status": exc.code,
+                    "wall_time_ms": elapsed * 1000,
+                    "error": type(exc).__name__,
+                })
+                raise ModelAdapterError(
+                    f"Model endpoint returned HTTP {exc.code}: {body}",
+                    metadata={"provider_requests": tuple(request_events)},
+                ) from exc
             except transient_errors as exc:
                 elapsed = time.perf_counter() - started
+                request_events.append({
+                    "request_id": f"{request_id}:{attempt}",
+                    "retry_index": attempt,
+                    "status": "failed" if attempt >= self.max_retries else "retry",
+                    "http_status": None,
+                    "wall_time_ms": elapsed * 1000,
+                    "error": type(exc).__name__,
+                })
                 if attempt >= self.max_retries:
                     logger.warning(
                         "Model request failed after %d attempt(s): request_id=%s url=%s elapsed=%.3fs error=%s",
@@ -227,7 +266,8 @@ class UrllibChatTransport:
                         exc,
                     )
                     raise ModelAdapterError(
-                        f"Model endpoint connection failed after {attempt + 1} attempt(s): {exc}"
+                        f"Model endpoint connection failed after {attempt + 1} attempt(s): {exc}",
+                        metadata={"provider_requests": tuple(request_events)},
                     ) from exc
                 delay = self.retry_backoff_seconds * (2**attempt)
                 logger.warning(
@@ -246,10 +286,19 @@ class UrllibChatTransport:
             decoded = json.loads(body)
         except json.JSONDecodeError as exc:
             logger.warning("Model endpoint returned invalid JSON: request_id=%s url=%s", request_id, url)
-            raise ModelAdapterError("Model endpoint returned invalid JSON.") from exc
+            raise ModelAdapterError(
+                "Model endpoint returned invalid JSON.",
+                metadata={"provider_requests": tuple(request_events)},
+            ) from exc
         if not isinstance(decoded, Mapping):
             logger.warning("Model endpoint returned non-object JSON: request_id=%s url=%s", request_id, url)
-            raise ModelAdapterError("Model endpoint returned a non-object JSON payload.")
+            raise ModelAdapterError(
+                "Model endpoint returned a non-object JSON payload.",
+                metadata={"provider_requests": tuple(request_events)},
+            )
+        if request_events:
+            request_events[-1]["token_usage"] = normalized_token_usage(decoded)
+        self._provider_request_events = tuple(request_events)
         return decoded
 
 

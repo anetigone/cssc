@@ -27,6 +27,21 @@ from agent.search.structured.proposal import (
     ImplementPayload,
     StructuredActionProposal,
 )
+from agent.search.budget import BudgetSnapshot
+from agent.search.cost_ledger import (
+    CostLedger,
+    CostLedgerEvent,
+    CostLedgerEventKind,
+    CostMeasurement,
+    CostScope,
+)
+from agent.search.structured.budget_snapshot import (
+    ActionBudgetLimits,
+    build_unified_budget_snapshot,
+)
+from agent.search.structured.controller.action_runtime_selection import (
+    select_admissible_action,
+)
 
 
 def _workspace(*branches: ProofBranch):
@@ -95,6 +110,42 @@ class ProposalCacheTests(unittest.TestCase):
 
 
 class ActionFrontierTests(unittest.TestCase):
+    def test_constrained_selection_skips_rejected_higher_ranked_action(self) -> None:
+        workspace = _workspace(ProofBranch("b1", "sample", 1))
+        cache, _ = ProposalCache().add(
+            workspace,
+            (_proposal("b1", SearchActionKind.DECOMPOSE), _proposal("b1", SearchActionKind.IMPLEMENT)),
+            proposal_source="model",
+        )
+        by_kind = {node.proposal.action.kind: node.node_id for node in cache.entries}
+        cache = cache.with_estimates({
+            by_kind[SearchActionKind.DECOMPOSE]: CostEstimate(
+                checks=Estimate(0), api_cost_usd=Estimate(10)
+            ),
+            by_kind[SearchActionKind.IMPLEMENT]: CostEstimate(
+                checks=Estimate(0), api_cost_usd=Estimate(1)
+            ),
+        })
+        frontier = ActionFrontier(policy=ActionFrontierPolicy.COST_AWARE_V1)
+        frontier.refresh(workspace, cache)
+        ledger = CostLedger((CostLedgerEvent(
+            event_id="charge", kind=CostLedgerEventKind.CHARGE,
+            scope=CostScope.PROPOSAL_GENERATION, status="completed",
+            api_cost_usd=CostMeasurement.observed(0),
+        ),))
+        snapshot = build_unified_budget_snapshot(
+            BudgetSnapshot(0, 0, 0, 5, 5), ledger,
+            limits=ActionBudgetLimits(max_api_cost_usd=5),
+        )
+
+        selection = select_admissible_action(frontier, snapshot)
+
+        self.assertEqual(
+            selection.node.proposal.action.kind, SearchActionKind.IMPLEMENT
+        )
+        self.assertFalse(selection.choice_set[0]["budget_admission"]["allowed"])
+        self.assertTrue(selection.choice_set[1]["budget_admission"]["allowed"])
+
     def test_cost_policy_prefers_free_structural_action(self) -> None:
         workspace = _workspace(ProofBranch("b1", "sample", 1))
         cache, _ = ProposalCache().add(

@@ -306,6 +306,31 @@ def _actual_from_events(events: Iterable[CostLedgerEvent], estimator_version: st
     )
 
 
+def actual_cost_from_events(
+    events: Iterable[CostLedgerEvent],
+    *,
+    estimator_version: str = "phase9.2-actual-v1",
+) -> CostEstimate:
+    """Project completed runtime events into the public action-cost vector."""
+    return _actual_from_events(events, estimator_version)
+
+
+def estimate_error(
+    estimate: CostEstimate,
+    actual: CostEstimate,
+) -> dict[str, float | None]:
+    """Return signed estimate-minus-actual errors without inventing NA values."""
+    return {
+        dimension: (
+            _value(estimate, dimension) - _value(actual, dimension)
+            if _value(estimate, dimension) is not None
+            and _value(actual, dimension) is not None
+            else None
+        )
+        for dimension in _DIMENSIONS
+    }
+
+
 def _sum_event_measurements(
     events: Iterable[CostLedgerEvent],
     field: str,

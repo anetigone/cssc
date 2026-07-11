@@ -70,52 +70,97 @@ def record_proposal_request(
     )
     common = {
         "action_id": None,
+        "proposal_batch_id": request_id,
         "branch_id": branch.branch_id,
         "obligation_id": branch.obligation_id,
         "error": error,
         "routing": metadata.get("routing"),
     }
-    state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
-        event_id=f"provider-request:{len(state.cost_ledger.events)}",
-        kind=CostLedgerEventKind.PROVIDER_REQUEST,
-        scope=CostScope.PROPOSAL_GENERATION,
-        status=status,
-        attempt_index=state.attempt_index,
-        request_id=request_id,
-        model=model,
-        model_tier=str(tier),
-        wall_time_ms=CostMeasurement.observed(elapsed * 1000),
-        metadata=common,
-    ))
-
-    def measured(name: str) -> CostMeasurement:
-        value = usage.get(name) if isinstance(usage, dict) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return CostMeasurement.observed(value)
-        return CostMeasurement.unavailable(f"provider omitted {name}")
-
-    state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
-        event_id=f"provider-usage:{len(state.cost_ledger.events)}",
-        kind=CostLedgerEventKind.PROVIDER_USAGE,
-        scope=CostScope.PROPOSAL_GENERATION,
-        status=status,
-        attempt_index=state.attempt_index,
-        request_id=request_id,
-        model=model,
-        model_tier=str(tier),
-        input_tokens=measured("input_tokens"),
-        output_tokens=measured("output_tokens"),
-        reasoning_tokens=measured("reasoning_tokens"),
-        cached_tokens=measured("cached_tokens"),
-        billed_tokens=measured("provider_total_tokens"),
-        usage_source="provider_response" if isinstance(usage, dict) else "provider_usage_unavailable",
-        metadata=common,
-    ))
+    provider_attempts = metadata.get("provider_requests")
+    if isinstance(provider_attempts, (list, tuple)) and provider_attempts:
+        for attempt in provider_attempts:
+            if isinstance(attempt, Mapping):
+                _append_provider_attempt(
+                    state, attempt, model=model, tier=str(tier), common=common
+                )
+    else:
+        _append_provider_attempt(
+            state,
+            {
+                "request_id": request_id,
+                "status": status,
+                "wall_time_ms": elapsed * 1000,
+                "token_usage": usage,
+            },
+            model=model,
+            tier=str(tier),
+            common=common,
+        )
     _record_charges(state, request_id, status, metadata, common)
     _record_tools(state, branch, status, metadata, common)
     if isinstance(usage, dict):
         state.model_usage.append(dict(usage))
     return "model", str(tier)
+
+
+def _append_provider_attempt(state, attempt: Mapping[str, Any], *, model, tier, common) -> None:
+    """Append one physical provider attempt and its non-synthesized usage."""
+    request_id = str(
+        attempt.get("request_id") or f"request:{len(state.cost_ledger.events)}"
+    )
+    status = str(attempt.get("status", "unknown"))
+    elapsed = attempt.get("wall_time_ms")
+    usage = attempt.get("token_usage")
+
+    def measured(name: str) -> CostMeasurement:
+        value = usage.get(name) if isinstance(usage, Mapping) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return CostMeasurement.observed(value)
+        return CostMeasurement.unavailable(f"provider omitted {name}")
+
+    event_metadata = {
+        **common,
+        "retry_index": attempt.get("retry_index"),
+        "http_status": attempt.get("http_status"),
+        "transport_error": attempt.get("error"),
+    }
+    state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
+        event_id=f"provider-request:{len(state.cost_ledger.events)}",
+        kind=CostLedgerEventKind.PROVIDER_REQUEST,
+        scope=CostScope.RETRY if status == "retry" else CostScope.PROPOSAL_GENERATION,
+        status=status,
+        attempt_index=state.attempt_index,
+        request_id=request_id,
+        model=model,
+        model_tier=tier,
+        wall_time_ms=(
+            CostMeasurement.observed(elapsed)
+            if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
+            else CostMeasurement.unavailable("provider wall time not reported")
+        ),
+        metadata=event_metadata,
+    ))
+    state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
+        event_id=f"provider-usage:{len(state.cost_ledger.events)}",
+        kind=CostLedgerEventKind.PROVIDER_USAGE,
+        scope=CostScope.RETRY if status == "retry" else CostScope.PROPOSAL_GENERATION,
+        status=status,
+        attempt_index=state.attempt_index,
+        request_id=request_id,
+        model=model,
+        model_tier=tier,
+        input_tokens=measured("input_tokens"),
+        output_tokens=measured("output_tokens"),
+        reasoning_tokens=measured("reasoning_tokens"),
+        cached_tokens=measured("cached_tokens"),
+        billed_tokens=measured("provider_total_tokens"),
+        usage_source=(
+            "provider_response"
+            if isinstance(usage, Mapping)
+            else "provider_usage_unavailable"
+        ),
+        metadata=event_metadata,
+    ))
 
 
 def _record_charges(state, request_id: str, status: str, metadata, common) -> None:
@@ -175,7 +220,10 @@ def attribute_proposal_batch(state, proposal, node_id: str) -> None:
         return
     events = tuple(
         replace(event, metadata={**event.metadata, "action_id": node_id})
-        if event.request_id == batch_id else event
+        if (
+            event.request_id == batch_id
+            or event.metadata.get("proposal_batch_id") == batch_id
+        ) else event
         for event in state.cost_ledger.events
     )
     state.cost_ledger = CostLedger(events)

@@ -42,6 +42,10 @@ class ModelRouterConfig:
         SearchActionKind.REFINE_ARGUMENT,
         SearchActionKind.CHANGE_REPRESENTATION,
     })
+    cheap_cost: CostEstimate = field(default_factory=lambda: CostEstimate(
+        model_requests=Estimate(1), source="prior",
+        estimator_version="phase9.4-cheap-prior-v1",
+    ))
     strong_cost: CostEstimate = field(default_factory=lambda: CostEstimate(
         model_requests=Estimate(1), checks=Estimate(1), source="prior",
         estimator_version="phase9.4-strong-prior-v1",
