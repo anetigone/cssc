@@ -49,6 +49,7 @@ from ..branch_ops import (
     expand_candidate_branches,
 )
 from .actions import StructuredControllerActionMixin
+from .phase9 import StructuredControllerPhase9Mixin
 from .runtime import StructuredControllerRuntimeMixin
 from ..finalize import assemble_and_finalize
 from ..frontier import Frontier, FrontierPolicy
@@ -62,11 +63,13 @@ from ..reducer import (
 )
 from ..run_state import _StructuredRunState, build_structured_result
 from ..solution_tracker import has_complete_solution
+from ..cost_estimator import ActionCostEstimator
 
 logger = logging.getLogger(__name__)
 
 
 class StructuredController(
+    StructuredControllerPhase9Mixin,
     StructuredControllerActionMixin,
     StructuredControllerRuntimeMixin,
 ):
@@ -84,6 +87,7 @@ class StructuredController(
         budget_config: BudgetConfig | None = None,
         config: ControllerConfig | None = None,
         safety_reviewer: SafetyReviewer | None = None,
+        cost_estimator: ActionCostEstimator | None = None,
     ) -> None:
         self.adapter = adapter
         self.action_generator = adapt_legacy_generator(action_generator)
@@ -100,9 +104,12 @@ class StructuredController(
             )
         self.safety_reviewer = safety_reviewer or StatementSafetyReviewer()
         self.assembler = ArtifactAssembler()
+        self.cost_estimator = cost_estimator
 
     def run(self, task: ProofTask) -> ControllerResult:
         logger.info("Structured controller run started: task_id=%s", task.task_id)
+        if self.config.frontier_policy == "action_cost_aware_v1":
+            return self._run_phase9(task)
         try:
             frontier_policy = FrontierPolicy(self.config.frontier_policy)
         except ValueError as exc:

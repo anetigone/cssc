@@ -110,6 +110,19 @@ class LedgerSnapshotTests(unittest.TestCase):
         self.assertEqual([sample.action_id for sample in snapshot.samples], ["ok"])
         self.assertEqual(snapshot.samples[0].actual.checker_wall_ms, Estimate(12))
 
+    def test_provider_request_without_usage_keeps_tokens_unavailable(self) -> None:
+        bucket = _bucket()
+        request = CostLedgerEvent(
+            event_id="request", kind=CostLedgerEventKind.PROVIDER_REQUEST,
+            scope=CostScope.PROPOSAL_GENERATION, status="completed",
+            request_id="r1", metadata={"action_id": "a"},
+        )
+        snapshot = CostHistorySnapshot.from_completed_ledger(
+            CostLedger((request,)), snapshot_id="pilot",
+            buckets_by_action_id={"a": bucket},
+        )
+        self.assertIsNone(snapshot.samples[0].actual.input_tokens)
+
 
 if __name__ == "__main__":
     unittest.main()

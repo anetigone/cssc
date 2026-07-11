@@ -14,7 +14,7 @@ from typing import Mapping
 from agent.search.budget import BudgetSnapshot
 from agent.search.cost_ledger import CostLedger, MeasurementStatus
 
-from .action_frontier import CostEstimate
+from .action_frontier import CostEstimate, Estimate
 from .budget_hints import ObligationBudgetHint
 
 
@@ -167,7 +167,12 @@ def build_unified_budget_snapshot(
     )
 
 
-def admit_estimate(snapshot: UnifiedBudgetSnapshot, estimate: CostEstimate) -> BudgetAdmission:
+def admit_estimate(
+    snapshot: UnifiedBudgetSnapshot,
+    estimate: CostEstimate,
+    *,
+    reject_unknown: bool = False,
+) -> BudgetAdmission:
     """Enforce only known hard constraints; missing dimensions are not compared."""
     pairs = (
         ("model_requests", snapshot.model_requests, estimate.model_requests),
@@ -175,7 +180,8 @@ def admit_estimate(snapshot: UnifiedBudgetSnapshot, estimate: CostEstimate) -> B
         ("output_tokens", snapshot.output_tokens, estimate.output_tokens),
         ("billed_tokens", snapshot.billed_tokens, estimate.billed_tokens),
         ("checks", snapshot.checks, estimate.checks),
-        ("wall_time", snapshot.wall_time, estimate.checker_wall_ms),
+        # Snapshot wall time is seconds; estimates store checker wall time in ms.
+        ("wall_time", snapshot.wall_time, _milliseconds_to_seconds(estimate.checker_wall_ms)),
         ("api_cost_usd", snapshot.api_cost_usd, estimate.api_cost_usd),
     )
     rejected: list[str] = []
@@ -183,9 +189,17 @@ def admit_estimate(snapshot: UnifiedBudgetSnapshot, estimate: CostEstimate) -> B
     for name, dimension, action_cost in pairs:
         if dimension.remaining is None or action_cost is None:
             not_compared.append(name)
+            if reject_unknown and action_cost is not None and dimension.limit_status is BudgetValueStatus.KNOWN:
+                rejected.append(name)
         elif action_cost.value > dimension.remaining:
             rejected.append(name)
     return BudgetAdmission(not rejected, tuple(rejected), tuple(not_compared))
+
+
+def _milliseconds_to_seconds(value: Estimate | None) -> Estimate | None:
+    if value is None:
+        return None
+    return Estimate(value.value / 1000.0)
 
 
 def _known_dimension(limit: float, spent: float) -> BudgetDimension:

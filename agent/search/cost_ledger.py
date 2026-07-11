@@ -145,6 +145,10 @@ class CostLedgerEvent:
     def __post_init__(self) -> None:
         if not self.event_id:
             raise ValueError("cost ledger event_id is required")
+        if not isinstance(self.kind, CostLedgerEventKind):
+            raise TypeError("cost ledger event kind must be CostLedgerEventKind")
+        if not isinstance(self.scope, CostScope):
+            raise TypeError("cost ledger event scope must be CostScope")
         if self.attempt_index is not None and self.attempt_index < 0:
             raise ValueError("attempt_index cannot be negative")
         if self.kind in {CostLedgerEventKind.PROVIDER_REQUEST, CostLedgerEventKind.PROVIDER_USAGE} and not self.request_id:
@@ -270,6 +274,18 @@ class CostLedger:
         Thus provider requests and price-table rows contribute provenance but
         never inflate run totals.
         """
+        accounted_events: list[CostLedgerEvent] = []
+        duplicate_event_ids: list[str] = []
+        seen_usage_requests: set[str] = set()
+        for event in self.events:
+            if event.kind is CostLedgerEventKind.PROVIDER_USAGE:
+                assert event.request_id is not None
+                if event.request_id in seen_usage_requests:
+                    duplicate_event_ids.append(event.event_id)
+                    continue
+                seen_usage_requests.add(event.request_id)
+            accounted_events.append(event)
+
         dimensions = {
             "input_tokens": (CostLedgerEventKind.PROVIDER_USAGE,),
             "output_tokens": (CostLedgerEventKind.PROVIDER_USAGE,),
@@ -282,7 +298,7 @@ class CostLedger:
         }
         totals = {
             name: _sum_measurements(
-                ((event.event_id, getattr(event, field)) for event in self.events if event.kind in kinds),
+                ((event.event_id, getattr(event, field)) for event in accounted_events if event.kind in kinds),
                 missing_reason=f"no {name} measurements recorded",
             )
             for name, (kinds, field) in {
@@ -291,8 +307,8 @@ class CostLedger:
                 "checker_cpu_time_ms": ((CostLedgerEventKind.CHECKER,), "cpu_time_ms"),
             }.items()
         }
-        counts = {scope.value: sum(event.scope is scope for event in self.events) for scope in CostScope}
-        unallocated = tuple(event.event_id for event in self.events if event.scope not in CostScope)
+        counts = {scope.value: sum(event.scope is scope for event in accounted_events) for scope in CostScope}
+        unallocated = tuple(duplicate_event_ids)
         return CostLedgerReconciliation(totals=totals, scope_event_counts=counts, unallocated_event_ids=unallocated)
 
     def to_dict(self) -> dict[str, Any]:

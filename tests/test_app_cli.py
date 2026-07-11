@@ -469,6 +469,12 @@ class CliSubcommandTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["solve", "Basic.lean", "--frontier-policy", "bogus"])
 
+    def test_parser_accepts_phase9_action_frontier_policy(self) -> None:
+        args = build_parser().parse_args([
+            "solve", "Basic.lean", "--frontier-policy", "action_cost_aware_v1",
+        ])
+        self.assertEqual(args.frontier_policy, "action_cost_aware_v1")
+
     def test_per_role_model_flags_override_generic_model(self) -> None:
         parser = build_parser()
         formalize = parser.parse_args(

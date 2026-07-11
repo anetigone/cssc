@@ -21,6 +21,12 @@ from agent.proof_system.workspace import (
 )
 from agent.search.action import ActionGenerationRequest
 from agent.search.controller.context import summarize_context
+from agent.search.cost_ledger import (
+    CostLedgerEvent,
+    CostLedgerEventKind,
+    CostMeasurement,
+    CostScope,
+)
 from agent.search.safety import SafetyVerdict
 from ..branch_ops import action_rationale, root_branch_id
 from ..projection import build_context_projection
@@ -270,6 +276,7 @@ class StructuredControllerRuntimeMixin:
         )
         if self.check_workspace is None:
             check_result = self.adapter.check(materialized.path, budget_slice)
+            self._record_checker_cost(state, check_result, edit)
             logger.info(
                 "Structured check completed: task_id=%s candidate_id=%s accepted=%s category=%s elapsed=%.3f",
                 task.task_id,
@@ -286,6 +293,7 @@ class StructuredControllerRuntimeMixin:
             extension=self.config.candidate_extension,
         ) as check_candidate:
             check_result = self.adapter.check(check_candidate.path, budget_slice)
+        self._record_checker_cost(state, check_result, edit)
         logger.info(
             "Structured check completed: task_id=%s candidate_id=%s accepted=%s category=%s elapsed=%.3f",
             task.task_id,
@@ -295,6 +303,27 @@ class StructuredControllerRuntimeMixin:
             check_result.elapsed_seconds,
         )
         return replace(check_result, candidate_file=materialized.path)
+
+    def _record_checker_cost(self, state, check_result, edit) -> None:
+        """Append one checker event on both legacy and Phase 9 structured paths."""
+        action_id = getattr(edit, "metadata", {}).get("phase9_action_node_id")
+        event_index = len(state.cost_ledger.events)
+        state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
+            event_id=f"checker:{event_index}",
+            kind=CostLedgerEventKind.CHECKER,
+            scope=CostScope.TOOL_CHECK,
+            status="completed",
+            attempt_index=state.attempt_index,
+            checker_kind=(
+                "capability"
+                if getattr(edit, "action", "") == "capability_test"
+                else "candidate"
+            ),
+            category=check_result.category.value,
+            wall_time_ms=CostMeasurement.observed(check_result.elapsed_seconds * 1000),
+            cpu_time_ms=CostMeasurement.unavailable("checker CPU time not reported"),
+            metadata={"action_id": action_id} if action_id else {},
+        ))
 
     def _review(
         self,

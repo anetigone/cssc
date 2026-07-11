@@ -289,9 +289,15 @@ def _actual_from_events(events: Iterable[CostLedgerEvent], estimator_version: st
     charges = [event for event in events if event.kind is CostLedgerEventKind.CHARGE]
     return CostEstimate(
         model_requests=Estimate(float(len(provider_requests))),
-        input_tokens=_sum_event_measurements(provider_usage, "input_tokens"),
-        output_tokens=_sum_event_measurements(provider_usage, "output_tokens"),
-        billed_tokens=_sum_event_measurements(provider_usage, "billed_tokens"),
+        input_tokens=_sum_event_measurements(
+            provider_usage, "input_tokens", zero_when_absent=not provider_requests
+        ),
+        output_tokens=_sum_event_measurements(
+            provider_usage, "output_tokens", zero_when_absent=not provider_requests
+        ),
+        billed_tokens=_sum_event_measurements(
+            provider_usage, "billed_tokens", zero_when_absent=not provider_requests
+        ),
         checks=Estimate(float(len(checks))),
         checker_wall_ms=_sum_event_measurements(checks, "wall_time_ms"),
         checker_cpu_ms=_sum_event_measurements(checks, "cpu_time_ms"),
@@ -300,12 +306,17 @@ def _actual_from_events(events: Iterable[CostLedgerEvent], estimator_version: st
     )
 
 
-def _sum_event_measurements(events: Iterable[CostLedgerEvent], field: str) -> Estimate | None:
+def _sum_event_measurements(
+    events: Iterable[CostLedgerEvent],
+    field: str,
+    *,
+    zero_when_absent: bool = True,
+) -> Estimate | None:
     events = tuple(events)
     if not events:
         # No provider event means this controlled action used zero tokens; this
         # is deliberately different from a provider response missing usage.
-        return Estimate(0.0)
+        return Estimate(0.0) if zero_when_absent else None
     values: list[float] = []
     for event in events:
         measurement = getattr(event, field)

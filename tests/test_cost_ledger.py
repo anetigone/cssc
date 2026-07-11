@@ -75,6 +75,18 @@ class CostLedgerReconciliationTests(unittest.TestCase):
         self.assertEqual(report.scope_event_counts["retry"], 1)
         self.assertTrue(report.reconciled)
 
+    def test_duplicate_usage_for_shared_batch_is_not_double_counted(self) -> None:
+        first = self._provider_usage(
+            "usage-1", input_tokens=CostMeasurement.observed(7)
+        )
+        duplicate = self._provider_usage(
+            "usage-2", input_tokens=CostMeasurement.observed(7)
+        )
+        report = CostLedger((first, duplicate)).reconcile()
+        self.assertEqual(report.totals["input_tokens"].measurement.value, 7)
+        self.assertFalse(report.reconciled)
+        self.assertEqual(report.unallocated_event_ids, ("usage-2",))
+
     def test_assembly_checker_is_included_as_fixed_cost(self) -> None:
         event = CostLedgerEvent(
             event_id="assembly-1", kind=CostLedgerEventKind.CHECKER,

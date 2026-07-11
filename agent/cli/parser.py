@@ -162,10 +162,11 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
             "cost_aware_v1",
             "cost_aware_v2",
             "value_per_cost_v1",
+            "action_cost_aware_v1",
         ),
         default="legacy",
         help="Structured frontier 排序策略（Phase 8.2+），默认 legacy；"
-        "minimal 模式忽略此参数。cost_aware_v1/v2/value_per_cost_v1 为 opt-in 档位，"
+        "minimal 模式忽略此参数。cost_aware_v1/v2/value_per_cost_v1/action_cost_aware_v1 为 opt-in 档位，"
         "仅影响调度顺序，不改变证明语义。",
     )
     group.add_argument("--enable-retrieval", action="store_true")

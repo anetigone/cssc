@@ -271,6 +271,13 @@ class ProposalCache:
             ))
         return ProposalCache(tuple(entries), self.limits)
 
+    def remove(self, node_id: str) -> "ProposalCache":
+        """Return the cache without one consumed/rejected action node."""
+        return ProposalCache(
+            tuple(entry for entry in self.entries if entry.node_id != node_id),
+            self.limits,
+        )
+
 
 def proposal_cache_from_dict(data: dict[str, object]) -> ProposalCache:
     limits = data.get("limits", {})
@@ -288,7 +295,7 @@ def proposal_cache_from_dict(data: dict[str, object]) -> ProposalCache:
 
 def node_is_valid(node: ActionFrontierNode, workspace: ProofWorkspace) -> bool:
     """Whether a cached action is still executable against this exact state."""
-    if node.cached_at_workspace_version > workspace.version:
+    if node.cached_at_workspace_version != workspace.version:
         return False
     branch = next((item for item in workspace.branches if item.branch_id == node.branch_id), None)
     if branch is None or branch.status is not BranchStatus.ACTIVE:
@@ -296,6 +303,11 @@ def node_is_valid(node: ActionFrontierNode, workspace: ProofWorkspace) -> bool:
     if branch.obligation_id != node.obligation_id or branch.obligation_version != node.obligation_version:
         return False
     if node.proposal.action.target_branch_id != node.branch_id:
+        return False
+    if any(
+        branch.argument.by_id(step_id) is None
+        for step_id in node.proposal.action.target_step_ids
+    ):
         return False
     return is_ready(branch, workspace)
 

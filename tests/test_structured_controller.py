@@ -210,6 +210,149 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         self.assertEqual(result.metadata["frontier_policy"], "cost_aware_v2")
 
+    def test_phase9_action_frontier_runs_real_controller_and_writes_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = self._controller(
+                tmp,
+                QueueGenerator([["trivial"]]),
+                frontier_policy="action_cost_aware_v1",
+            )
+            result = controller.run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.metadata["frontier_policy"], "action_cost_aware_v1")
+        selected = [
+            event for event in result.metadata["proposal_cache_events"]
+            if event["event"] == "action_selected"
+        ]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["action_kind"], "implement")
+        ledger = result.metadata["cost_ledger"]
+        checker_kinds = [
+            event["checker_kind"] for event in ledger["events"]
+            if event["kind"] == "checker"
+        ]
+        self.assertEqual(checker_kinds, ["candidate", "assembly"])
+        self.assertTrue(ledger["reconciliation"]["reconciled"])
+        # Controlled proposals do not consume provider/model-request budget.
+        self.assertEqual(result.budget.model_calls_used, 0)
+
+    def test_phase9_cached_actions_compete_before_execution(self) -> None:
+        from agent.proof_system.workspace import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            CapabilityTestPayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class MixedGenerator:
+            _is_structured_generator = True
+
+            def generate(self, request):
+                branch_id = request.metadata["branch_id"]
+                return (
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            SearchActionKind.RUN_CAPABILITY_TEST,
+                            branch_id,
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.RUN_CAPABILITY_TEST
+                            ],
+                            rationale="probe",
+                        ),
+                        payload=CapabilityTestPayload("True", "#check True"),
+                    ),
+                    StructuredActionProposal(
+                        action=SearchAction(
+                            SearchActionKind.IMPLEMENT,
+                            branch_id,
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.IMPLEMENT
+                            ],
+                            rationale="implement",
+                        ),
+                        payload=ImplementPayload("trivial"),
+                    ),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp, MixedGenerator(),  # type: ignore[arg-type]
+                frontier_policy="action_cost_aware_v1",
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        selected = next(
+            event for event in result.metadata["proposal_cache_events"]
+            if event["event"] == "action_selected"
+        )
+        self.assertEqual(selected["action_kind"], "implement")
+        self.assertFalse(any(
+            attempt.edit.action == "capability_test" for attempt in result.attempts
+        ))
+
+    def test_phase9_decompose_helpers_and_parent_close_end_to_end(self) -> None:
+        from agent.proof_system.workspace import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.proposal import (
+            DecomposeChildSpec,
+            DecomposePayload,
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class Generator:
+            _is_structured_generator = True
+
+            def generate(self, request):
+                branch_id = request.metadata["branch_id"]
+                if branch_id == "sample:root":
+                    return (StructuredActionProposal(
+                        action=SearchAction(
+                            SearchActionKind.DECOMPOSE, branch_id,
+                            allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                                SearchActionKind.DECOMPOSE
+                            ],
+                            rationale="split",
+                        ),
+                        payload=DecomposePayload((DecomposeChildSpec(
+                            "helper", "lemma helper : True := by\n  {{proof}}\n"
+                        ),)),
+                    ),)
+                return (StructuredActionProposal(
+                    action=SearchAction(
+                        SearchActionKind.IMPLEMENT, branch_id,
+                        allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                            SearchActionKind.IMPLEMENT
+                        ],
+                        rationale="implement",
+                    ),
+                    payload=ImplementPayload("trivial"),
+                ),)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp, Generator(),  # type: ignore[arg-type]
+                frontier_policy="action_cost_aware_v1",
+                budget=BudgetConfig(max_checks=6, max_model_calls=1),
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        selected_kinds = [
+            event["action_kind"]
+            for event in result.metadata["proposal_cache_events"]
+            if event["event"] == "action_selected"
+        ]
+        self.assertEqual(selected_kinds, ["decompose", "implement", "implement"])
+        self.assertEqual(result.budget.model_calls_used, 0)
+
     def test_budget_hints_present_in_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = self._controller(

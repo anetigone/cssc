@@ -77,6 +77,18 @@ class UnifiedBudgetSnapshotTests(unittest.TestCase):
         self.assertTrue(admit_estimate(snapshot, proposal).allowed)
         self.assertTrue(admit_estimate(snapshot, execution).allowed)
 
+    def test_checker_wall_milliseconds_are_compared_to_seconds(self) -> None:
+        snapshot = build_unified_budget_snapshot(
+            _budget(), None, limits=ActionBudgetLimits(max_elapsed_seconds=5),
+        )
+        # Four seconds elapsed leaves one second; 900ms fits, 1100ms does not.
+        self.assertTrue(admit_estimate(
+            snapshot, CostEstimate(checker_wall_ms=Estimate(900))
+        ).allowed)
+        self.assertFalse(admit_estimate(
+            snapshot, CostEstimate(checker_wall_ms=Estimate(1100))
+        ).allowed)
+
 
 if __name__ == "__main__":
     unittest.main()

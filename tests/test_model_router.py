@@ -82,6 +82,29 @@ class ModelRouterTests(unittest.TestCase):
         self.assertEqual(metadata["routed_model"], "large")
         self.assertTrue(metadata["routing"]["escalation_granted"])
 
+    def test_unknown_spend_under_configured_limit_rejects_strong(self) -> None:
+        from agent.search.structured.budget_snapshot import ActionBudgetLimits
+
+        budget = build_unified_budget_snapshot(
+            BudgetSnapshot(
+                checks_used=0, model_calls_used=0, elapsed_seconds=0,
+                remaining_checks=3, remaining_model_calls=3,
+            ),
+            None,
+            limits=ActionBudgetLimits(max_input_tokens=100),
+        )
+        decision = route_model(
+            RoutingContext(SearchActionKind.DECOMPOSE), budget,
+            config=ModelRouterConfig(
+                enabled=True,
+                strong_cost=CostEstimate(
+                    model_requests=Estimate(1), input_tokens=Estimate(20)
+                ),
+            ),
+        )
+        self.assertFalse(decision.escalation_granted)
+        self.assertIn("input_tokens", decision.budget_admission.rejected_dimensions)
+
 
 if __name__ == "__main__":
     unittest.main()

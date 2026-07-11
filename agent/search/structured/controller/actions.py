@@ -86,6 +86,7 @@ class StructuredControllerActionMixin:
                 action="capability_test",
                 parent_node_id=branch.branch_id,
                 metadata={
+                    **proposal.metadata,
                     "capability_requirement": payload.requirement,
                     "structured_action_kind": proposal.action.kind.value,
                     "structured_branch_id": branch.branch_id,
@@ -184,7 +185,9 @@ class StructuredControllerActionMixin:
         )
         adapter = self.adapter.subprocess_clone() if force_subprocess else self.adapter
         if self.check_workspace is None:
-            return adapter.check(materialized.path, budget_slice)
+            check_result = adapter.check(materialized.path, budget_slice)
+            self._record_checker_cost(state, check_result, edit)
+            return check_result
         with self.check_workspace.materialize_candidate(
             task,
             candidate_id=materialized.candidate_id,
@@ -192,6 +195,7 @@ class StructuredControllerActionMixin:
             extension=self.config.candidate_extension,
         ) as check_candidate:
             check_result = adapter.check(check_candidate.path, budget_slice)
+        self._record_checker_cost(state, check_result, edit)
         return replace(check_result, candidate_file=materialized.path)
 
     def _run_decompose(

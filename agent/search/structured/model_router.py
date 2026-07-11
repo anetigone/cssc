@@ -106,7 +106,9 @@ def route_model(
     reason = _escalation_reason(context, config)
     if reason is None:
         return RouteDecision(ModelTier.CHEAP, config.cheap_model, "cheap_default", False, False)
-    admission = admit_estimate(budget, config.strong_cost)
+    admission = admit_estimate(
+        budget, config.strong_cost, reject_unknown=True
+    )
     if not admission.allowed:
         return RouteDecision(
             ModelTier.CHEAP, config.cheap_model, f"strong_budget_rejected:{reason}",

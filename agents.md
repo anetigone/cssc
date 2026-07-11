@@ -324,6 +324,14 @@ class AgentRole(str, Enum):
 
 后续可按 role 读取不同环境变量（如 `OPENAI_MODEL_FORMALIZER`、`OPENAI_MODEL_PROOF_GENERATOR`、`OPENAI_MODEL_CONTEXT_MANAGER`）实现“便宜模型 tactic + 贵模型 prove”，或由轻量模型专门做上下文摘要。
 
+## Phase 9 Action-level 成本运行时
+
+- structured CLI 可通过 `--frontier-policy action_cost_aware_v1` 显式启用 Phase 9 路径；legacy / Phase 8 policy 不变。
+- Phase 9 controller 为全部 ready branch 生成 bounded proposal cache，随后以 `(branch, proposal)` action node 全局竞争；workspace version 变化会使旧 cache node 失效，不自动重绑。
+- deterministic generator 不消费 provider/model-request budget；model proposal batch、candidate/capability checker 和 assembly checker 写入 append-only `CostLedger`，结果经独立 trace snapshot 输出。
+- action 选择前从同一 ledger + global budget 构造 `UnifiedBudgetSnapshot` 并执行 hard-budget admission；历史 estimator 可由 `StructuredController(cost_estimator=...)` 注入，或通过 `ProofTask.metadata["phase9_cost_history"]` 提供冻结 snapshot。
+- `ModelRouter` 的 pure routing/预算拒绝协议已存在；cheap/strong 两套真实 generator 的 CLI 构造仍需显式配置后才可启用，不得把当前 action runtime 描述为 heterogeneous routing 已上线。
+
 ## 关键边界协议
 
 - `FormalizationAgent`：形式化入口。

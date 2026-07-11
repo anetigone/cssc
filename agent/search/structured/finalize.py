@@ -7,6 +7,12 @@ from typing import TYPE_CHECKING
 
 from agent.proof_system.assembler import ArtifactAssembler
 from agent.proof_system.workspace import WorkspaceStatus
+from agent.search.cost_ledger import (
+    CostLedgerEvent,
+    CostLedgerEventKind,
+    CostMeasurement,
+    CostScope,
+)
 from .run_state import _StructuredRunState, build_structured_result
 from .solution_tracker import select_solution
 
@@ -84,6 +90,23 @@ def assemble_and_finalize(
         budget_slice=budget_slice,
         safety_reviewer=safety_reviewer,
     )
+    if assembly.check_result is not None:
+        state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
+            event_id=f"checker:{len(state.cost_ledger.events)}",
+            kind=CostLedgerEventKind.CHECKER,
+            scope=CostScope.ASSEMBLY,
+            status="completed",
+            attempt_index=state.attempt_index,
+            checker_kind="assembly",
+            category=assembly.check_result.category.value,
+            wall_time_ms=CostMeasurement.observed(
+                assembly.check_result.elapsed_seconds * 1000
+            ),
+            cpu_time_ms=CostMeasurement.unavailable(
+                "checker CPU time not reported"
+            ),
+            metadata={"action_id": "assembly"},
+        ))
     logger.info(
         "Structured assembly: task_id=%s accepted=%s errors=%d",
         task.task_id,
