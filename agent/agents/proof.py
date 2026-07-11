@@ -26,7 +26,7 @@ from .openai import (
     choice_content,
 )
 from .tools import Tool
-from .tools.loop import AGENT_TOKEN_USAGE_KEY
+from .tools.loop import AGENT_TOKEN_USAGE_KEY, AGENT_TOOL_CALLS_KEY
 
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,8 @@ class ChatActionGenerator(ActionGenerator):
 
         token_usage = response.get(AGENT_TOKEN_USAGE_KEY)
         usage_metadata = dict(token_usage) if isinstance(token_usage, Mapping) else {}
+        tool_calls = response.get(AGENT_TOOL_CALLS_KEY)
+        tool_metadata = list(tool_calls) if isinstance(tool_calls, (list, tuple)) else []
         candidates: list[ActionCandidate] = []
         for index, choice in enumerate(choices[: request.max_candidates]):
             if not isinstance(choice, Mapping):
@@ -118,6 +120,7 @@ class ChatActionGenerator(ActionGenerator):
                         "finish_reason": choice.get("finish_reason"),
                         "removed_exploration_commands": removed_commands,
                         "token_usage": usage_metadata,
+                        "tool_calls": tool_metadata,
                     },
                 )
             )
@@ -154,6 +157,7 @@ class ChatActionGenerator(ActionGenerator):
                     "model": self.config.model,
                     "finish_reasons": finish_reasons,
                     "token_usage": usage_metadata,
+                    "tool_calls": tool_metadata,
                 },
             )
         return tuple(candidates)

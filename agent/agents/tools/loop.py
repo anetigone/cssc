@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from ..openai import (
@@ -19,6 +20,7 @@ from .base import Tool, ToolCall, ToolResult, extract_tool_calls
 
 logger = logging.getLogger(__name__)
 AGENT_TOKEN_USAGE_KEY = "_agent_token_usage"
+AGENT_TOOL_CALLS_KEY = "_agent_tool_calls"
 
 
 def run_tool_loop(
@@ -58,6 +60,7 @@ def run_tool_loop(
     tool_rounds = 0
     seen_tool_calls: set[tuple[str, str]] = set()
     request_usages: list[dict[str, int]] = []
+    tool_events: list[dict[str, object]] = []
     while tool_rounds < max_rounds:
         payload = dict(base_payload)
         payload["n"] = 1
@@ -78,7 +81,7 @@ def run_tool_loop(
         if not calls:
             content = message.get("content")
             if final_n == 1 and isinstance(content, str) and content.strip():
-                return _with_usage(response, request_usages)
+                return _with_usage(response, request_usages, tool_events)
             break
         tool_rounds += 1
         logger.info(
@@ -112,9 +115,31 @@ def run_tool_loop(
                         }
                     ),
                 )
+                tool_events.append({
+                    "call_id": call.id,
+                    "tool_kind": call.name,
+                    "status": "skipped_duplicate",
+                    "wall_time_ms": 0.0,
+                })
             else:
                 seen_tool_calls.add(call_key)
-                result = execute_tool(call)
+                started = time.perf_counter()
+                try:
+                    result = execute_tool(call)
+                except Exception:
+                    tool_events.append({
+                        "call_id": call.id,
+                        "tool_kind": call.name,
+                        "status": "failed",
+                        "wall_time_ms": (time.perf_counter() - started) * 1000,
+                    })
+                    raise
+                tool_events.append({
+                    "call_id": result.call_id,
+                    "tool_kind": call.name,
+                    "status": "completed",
+                    "wall_time_ms": (time.perf_counter() - started) * 1000,
+                })
             messages.append(
                 {
                     "role": "tool",
@@ -151,15 +176,17 @@ def run_tool_loop(
         timeout_seconds=config.timeout_seconds,
     )
     request_usages.append(normalized_token_usage(response))
-    return _with_usage(response, request_usages)
+    return _with_usage(response, request_usages, tool_events)
 
 
 def _with_usage(
     response: Mapping[str, Any],
     request_usages: Sequence[Mapping[str, Any]],
+    tool_calls: Sequence[Mapping[str, object]] = (),
 ) -> Mapping[str, Any]:
     enriched = dict(response)
     enriched[AGENT_TOKEN_USAGE_KEY] = merge_token_usage(*request_usages)
+    enriched[AGENT_TOOL_CALLS_KEY] = tuple(dict(call) for call in tool_calls)
     return enriched
 
 

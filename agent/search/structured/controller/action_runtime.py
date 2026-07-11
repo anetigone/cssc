@@ -10,12 +10,6 @@ from agent.proof_system.workspace import BranchStatus, SearchActionKind
 from agent.search.controller.context import maybe_retrieve
 from agent.search.controller.types import AttemptRecord, ControllerResult
 from agent.search.action import ActionGenerationError
-from agent.search.cost_ledger import (
-    CostLedgerEvent,
-    CostLedgerEventKind,
-    CostMeasurement,
-    CostScope,
-)
 from agent.search.execution import ExecutionMode
 from agent.search.metrics import attempt_metric
 
@@ -25,7 +19,7 @@ from ..action_frontier import (
     ProposalCache,
 )
 from ..branch_ops import branch_by_id, edit_with_structured_metadata, expand_candidate_branches
-from ..budget_snapshot import admit_estimate, build_unified_budget_snapshot
+from ..budget_snapshot import admit_estimate
 from ..finalize import assemble_and_finalize
 from ..frontier_signals import (
     branch_goal_fingerprints,
@@ -47,6 +41,11 @@ from ..model_router import (
     RoutingContext,
     route_model,
     routing_metadata,
+)
+from .action_runtime_ledger import (
+    attribute_proposal_batch,
+    record_proposal_request,
+    unified_budget_snapshot,
 )
 
 
@@ -83,7 +82,7 @@ class StructuredControllerActionRuntimeMixin:
             if branch is None or branch.status is not BranchStatus.ACTIVE:
                 continue
 
-            snapshot = build_unified_budget_snapshot(self.budget.snapshot(), state.cost_ledger)
+            snapshot = unified_budget_snapshot(self.budget, state)
             admission = admit_estimate(snapshot, node.estimated_execution_cost)
             state.priority_explanations.append(node.priority_explanation)
             state.proposal_cache_events.append({
@@ -103,7 +102,18 @@ class StructuredControllerActionRuntimeMixin:
                 break
 
             workspace, terminal = self._execute_action_node(
-                task, workspace, branch, node.proposal, node.node_id, state
+                task,
+                workspace,
+                branch,
+                replace(
+                    node.proposal,
+                    metadata={
+                        **node.proposal.metadata,
+                        "proposal_batch_id": node.proposal_batch_id,
+                    },
+                ),
+                node.node_id,
+                state,
             )
             if terminal is not None:
                 return terminal
@@ -151,9 +161,11 @@ class StructuredControllerActionRuntimeMixin:
             try:
                 proposals = self._generate(task, branch, workspace, state)
             except ActionGenerationError as exc:
-                self._record_proposal_request(
+                record_proposal_request(
                     state, request_id, branch, time.perf_counter() - started,
                     status="failed", proposals=(), error=type(exc).__name__,
+                    provider_used=uses_model, route_decision=route_decision,
+                    failure_metadata=exc.metadata,
                 )
                 state.generation_failures.append({
                     "attempt_index": state.attempt_index,
@@ -181,9 +193,10 @@ class StructuredControllerActionRuntimeMixin:
                         "kind": proposal.action.kind.value,
                         "errors": errors,
                     })
-            source, tier = self._record_proposal_request(
+            source, tier = record_proposal_request(
                 state, request_id, branch, elapsed,
                 status="completed", proposals=tuple(finalized),
+                provider_used=uses_model, route_decision=route_decision,
             )
             cache, reasons = cache.add(
                 workspace, finalized, proposal_source=source,
@@ -221,9 +234,7 @@ class StructuredControllerActionRuntimeMixin:
             for item in state.skipped_proposals
             if item.get("branch_id") == branch.branch_id and item.get("errors")
         )
-        snapshot = build_unified_budget_snapshot(
-            self.budget.snapshot(), state.cost_ledger
-        )
+        snapshot = unified_budget_snapshot(self.budget, state)
         decision = route_model(
             RoutingContext(
                 action_kind=action_kind,
@@ -297,66 +308,10 @@ class StructuredControllerActionRuntimeMixin:
         candidate = legacy if legacy is not None else generator
         return hasattr(candidate, "config") and hasattr(candidate, "transport")
 
-    def _record_proposal_request(
-        self, state, request_id, branch, elapsed, *, status, proposals, error=None
-    ):
-        metadata = proposals[0].metadata if proposals else {}
-        usage = metadata.get("token_usage") if isinstance(metadata, dict) else None
-        model = metadata.get("model") if isinstance(metadata, dict) else None
-        is_provider = isinstance(model, str) or isinstance(usage, dict)
-        if not is_provider:
-            return "deterministic", None
-        tier = metadata.get("model_tier", "cheap")
-        common = {
-            "action_id": None,
-            "branch_id": branch.branch_id,
-            "obligation_id": branch.obligation_id,
-            "error": error,
-            "routing": metadata.get("routing"),
-        }
-        state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
-            event_id=f"provider-request:{len(state.cost_ledger.events)}",
-            kind=CostLedgerEventKind.PROVIDER_REQUEST,
-            scope=CostScope.PROPOSAL_GENERATION,
-            status=status,
-            attempt_index=state.attempt_index,
-            request_id=request_id,
-            model=model,
-            model_tier=str(tier),
-            wall_time_ms=CostMeasurement.observed(elapsed * 1000),
-            metadata=common,
-        ))
-        if isinstance(usage, dict):
-            def measured(name):
-                value = usage.get(name)
-                return (
-                    CostMeasurement.observed(value)
-                    if isinstance(value, (int, float)) and not isinstance(value, bool)
-                    else CostMeasurement.unavailable(f"provider omitted {name}")
-                )
-            state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
-                event_id=f"provider-usage:{len(state.cost_ledger.events)}",
-                kind=CostLedgerEventKind.PROVIDER_USAGE,
-                scope=CostScope.PROPOSAL_GENERATION,
-                status=status,
-                attempt_index=state.attempt_index,
-                request_id=request_id,
-                model=model,
-                model_tier=str(tier),
-                input_tokens=measured("input_tokens"),
-                output_tokens=measured("output_tokens"),
-                reasoning_tokens=measured("reasoning_tokens"),
-                cached_tokens=measured("cached_tokens"),
-                billed_tokens=measured("provider_total_tokens"),
-                usage_source="provider_response",
-                metadata=common,
-            ))
-            state.model_usage.append(dict(usage))
-        return "model", str(tier)
-
     def _execute_action_node(self, task, workspace, branch, proposal, node_id, state):
         kind = proposal.action.kind
         proposal = replace(proposal, metadata={**proposal.metadata, "action_node_id": node_id})
+        attribute_proposal_batch(state, proposal, node_id)
         if kind is SearchActionKind.RUN_CAPABILITY_TEST:
             workspace, _ = self._run_capability_audits(task, branch, [proposal], workspace, state)
             return workspace, None

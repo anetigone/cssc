@@ -239,6 +239,35 @@ class StructuredControllerTests(unittest.TestCase):
         # Controlled proposals do not consume provider/model-request budget.
         self.assertEqual(result.budget.model_calls_used, 0)
 
+    def test_action_runtime_records_failed_provider_with_na_usage_and_charge(self) -> None:
+        class FailingProvider:
+            _is_structured_generator = True
+            _uses_model = True
+
+            def generate(self, request):
+                raise ActionGenerationError(
+                    "provider_timeout",
+                    "timed out",
+                    metadata={"model": "test-model"},
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp,
+                FailingProvider(),  # type: ignore[arg-type]
+                frontier_policy="action_cost_aware_v1",
+            ).run(_task())
+
+        self.assertEqual(result.stop_reason, "generation:provider_timeout")
+        events = result.metadata["cost_ledger"]["events"]
+        request = next(event for event in events if event["kind"] == "provider_request")
+        usage = next(event for event in events if event["kind"] == "provider_usage")
+        charge = next(event for event in events if event["kind"] == "charge")
+        self.assertEqual(request["status"], "failed")
+        self.assertEqual(request["model"], "test-model")
+        self.assertEqual(usage["input_tokens"]["measurement_status"], "unavailable")
+        self.assertEqual(charge["api_cost_usd"]["measurement_status"], "unavailable")
+
     def test_cached_actions_compete_before_execution(self) -> None:
         from agent.proof_system.workspace import (
             DEFAULT_ALLOWED_MUTATIONS,
@@ -439,6 +468,12 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(request["model"], "large")
         self.assertEqual(request["model_tier"], "strong")
         self.assertTrue(request["metadata"]["routing"]["escalation_granted"])
+        # The shared proposal request remains one canonical ledger event, but
+        # becomes attributable to the selected action for frozen history.
+        self.assertEqual(
+            request["metadata"]["action_id"],
+            result.attempts[0].edit.metadata["action_node_id"],
+        )
 
     def test_budget_hints_present_in_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
