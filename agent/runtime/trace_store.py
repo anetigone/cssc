@@ -18,6 +18,7 @@ from ..proof_system.base import (
     ProofTask,
 )
 from ..search.budget import BudgetSnapshot
+from ..search.cost_ledger import CostLedger, cost_ledger_from_dict
 from ..search.controller import AttemptRecord, ControllerResult
 from ..search.metrics import RunMetrics, run_metrics_payload
 
@@ -89,6 +90,7 @@ def result_events(
 
     run_id = _run_id(result)
     workspace = workspace_payload(result.metadata.get("workspace"))
+    ledger = cost_ledger_payload(result.metadata.get("cost_ledger"))
     summary: dict[str, Any] = {
         "event": "run_summary",
         "run_id": run_id,
@@ -108,6 +110,8 @@ def result_events(
     # plain dict, so the trace store stays unaware of the workspace types.
     if workspace is not None:
         summary["workspace_event"] = "workspace_snapshot"
+    if ledger is not None:
+        summary["cost_ledger_event"] = "cost_ledger_snapshot"
     yield summary
     if workspace is not None:
         yield {
@@ -115,6 +119,13 @@ def result_events(
             "run_id": run_id,
             "task_id": result.task.task_id,
             "workspace": workspace,
+        }
+    if ledger is not None:
+        yield {
+            "event": "cost_ledger_snapshot",
+            "run_id": run_id,
+            "task_id": result.task.task_id,
+            "cost_ledger": ledger,
         }
     for attempt in result.attempts:
         yield {
@@ -165,7 +176,29 @@ def _metrics_payload(metrics: RunMetrics | None) -> dict[str, Any] | None:
 
 
 def _summary_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in metadata.items() if key != "workspace"}
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"workspace", "cost_ledger"}
+    }
+
+
+def cost_ledger_payload(cost_ledger: Any) -> dict[str, Any] | None:
+    """Return a ledger snapshot for traces without synthesizing legacy zeros.
+
+    A missing ledger is intentionally omitted: old traces therefore remain
+    readable and consumers can display the Phase 9 dimensions as NA instead
+    of treating absent data as measured zero.
+    """
+    if cost_ledger is None:
+        return None
+    if isinstance(cost_ledger, CostLedger):
+        return cost_ledger.to_dict()
+    if isinstance(cost_ledger, dict):
+        # Validate and normalize external/serialized snapshots before putting
+        # them back into a trace.
+        return cost_ledger_from_dict(cost_ledger).to_dict()
+    raise TypeError("cost_ledger metadata must be a CostLedger or serialized dictionary")
 
 
 def workspace_payload(workspace: Any) -> dict[str, Any] | None:

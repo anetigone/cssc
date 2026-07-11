@@ -54,6 +54,8 @@ def build_controller(
     budget_config: Any = None,
     config: Any = None,
     safety_reviewer: Any = None,
+    cost_estimator: Any = None,
+    model_router_config: Any = None,
 ) -> Any:
     """Return the controller for ``execution_mode``.
 
@@ -97,6 +99,8 @@ def build_controller(
             budget_config=budget_config,
             config=config,
             safety_reviewer=safety_reviewer,
+            cost_estimator=cost_estimator,
+            model_router_config=model_router_config,
         )
 
     raise StructuredModeUnavailableError(

@@ -162,10 +162,11 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
             "cost_aware_v1",
             "cost_aware_v2",
             "value_per_cost_v1",
+            "action_cost_aware_v1",
         ),
         default="legacy",
         help="Structured frontier 排序策略（Phase 8.2+），默认 legacy；"
-        "minimal 模式忽略此参数。cost_aware_v1/v2/value_per_cost_v1 为 opt-in 档位，"
+        "minimal 模式忽略此参数。cost_aware_v1/v2/value_per_cost_v1/action_cost_aware_v1 为 opt-in 档位，"
         "仅影响调度顺序，不改变证明语义。",
     )
     group.add_argument("--enable-retrieval", action="store_true")
@@ -183,6 +184,14 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
     group.add_argument("--work-dir", default=None)
     group.add_argument("--trace-jsonl", default=None)
     group.add_argument("--trace-raw-output", action="store_true")
+    group.add_argument(
+        "--enable-model-routing",
+        action="store_true",
+        help="Enable opt-in cheap/strong routing for action_cost_aware_v1.",
+    )
+    group.add_argument("--strong-proof-model", default=None)
+    group.add_argument("--strong-proof-temperature", type=float, default=None)
+    group.add_argument("--strong-proof-max-tokens", type=int, default=None)
     _add_model_args(parser, role="proof")
     _add_model_args(parser, role="context", default_max_tokens=512)
 

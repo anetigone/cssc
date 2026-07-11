@@ -1,0 +1,51 @@
+{
+  "scenario_version": 1,
+  "task_id": "l2_canary_nat_omega",
+  "description": "Controlled repeated repair: wrong_1 -> wrong_2 -> omega closes.",
+  "proposals": [
+    {
+      "action": {
+        "kind": "implement",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "First guess: rfl (will fail)."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "rfl"
+      }
+    },
+    {
+      "action": {
+        "kind": "repair_implementation",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "Second guess: simp (will fail)."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "simp [h]"
+      }
+    },
+    {
+      "action": {
+        "kind": "repair_implementation",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "Third guess: omega closes the linear arithmetic goal."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "omega"
+      }
+    }
+  ],
+  "expected_check_results": [
+    {"on_candidate_contains": "rfl", "accepted": false, "category": "unsolved_goals"},
+    {"on_candidate_contains": "simp", "accepted": false, "category": "tactic_failed"},
+    {"on_candidate_contains": "omega", "accepted": true, "category": "proof_accepted"}
+  ]
+}

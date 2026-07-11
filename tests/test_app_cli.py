@@ -91,6 +91,53 @@ class SolveLeanTaskCliTests(unittest.TestCase):
         self.assertTrue(getattr(generator, "_is_structured_generator", False))
         self.assertEqual(generator.__class__.__name__, "ChatStructuredActionGenerator")
 
+    def test_structured_model_routing_builds_cheap_and_strong_tiers(self) -> None:
+        args = _args(
+            use_model=True,
+            execution_mode="structured",
+            frontier_policy="action_cost_aware_v1",
+            enable_model_routing=True,
+            proof_model="small",
+            strong_proof_model="large",
+        )
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "key", "OPENAI_MODEL": "fallback"}),
+            patch("agent.cli.generators._ensure_env_loaded"),
+            patch("agent.cli.generators._proof_tools", return_value=()),
+        ):
+            generator = build_action_generator(args)
+
+        self.assertEqual(generator.__class__.__name__, "TieredStructuredActionGenerator")
+        self.assertEqual(generator.cheap_generator.config.model, "small")
+        self.assertEqual(generator.strong_generator.config.model, "large")
+
+    def test_model_routing_rejects_non_action_frontier(self) -> None:
+        args = _args(
+            use_model=True,
+            execution_mode="structured",
+            frontier_policy="legacy",
+            enable_model_routing=True,
+            strong_proof_model="large",
+        )
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "key", "OPENAI_MODEL": "small"}),
+            patch("agent.cli.generators._ensure_env_loaded"),
+            patch("agent.cli.generators._proof_tools", return_value=()),
+        ):
+            with self.assertRaisesRegex(ValueError, "action_cost_aware_v1"):
+                build_action_generator(args)
+
+    def test_model_routing_rejects_minimal_mode(self) -> None:
+        args = _args(
+            use_model=True,
+            execution_mode="minimal",
+            frontier_policy="action_cost_aware_v1",
+            enable_model_routing=True,
+            strong_proof_model="large",
+        )
+        with self.assertRaisesRegex(ValueError, "structured execution mode"):
+            build_action_generator(args)
+
     def test_model_generator_loads_env_only_when_file_exists(self) -> None:
         args = _args(use_model=True, env_file="missing.env")
         with patch("agent.cli.generators.load_dotenv") as load_mock:
@@ -468,6 +515,23 @@ class CliSubcommandTests(unittest.TestCase):
             self.assertEqual(args.frontier_policy, value)
         with self.assertRaises(SystemExit):
             parser.parse_args(["solve", "Basic.lean", "--frontier-policy", "bogus"])
+
+    def test_parser_accepts_action_frontier_policy(self) -> None:
+        args = build_parser().parse_args([
+            "solve", "Basic.lean", "--frontier-policy", "action_cost_aware_v1",
+        ])
+        self.assertEqual(args.frontier_policy, "action_cost_aware_v1")
+
+    def test_parser_accepts_model_routing_configuration(self) -> None:
+        args = build_parser().parse_args([
+            "solve", "Basic.lean",
+            "--execution-mode", "structured",
+            "--frontier-policy", "action_cost_aware_v1",
+            "--enable-model-routing",
+            "--strong-proof-model", "large",
+        ])
+        self.assertTrue(args.enable_model_routing)
+        self.assertEqual(args.strong_proof_model, "large")
 
     def test_per_role_model_flags_override_generic_model(self) -> None:
         parser = build_parser()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from ..openai import (
@@ -19,6 +20,8 @@ from .base import Tool, ToolCall, ToolResult, extract_tool_calls
 
 logger = logging.getLogger(__name__)
 AGENT_TOKEN_USAGE_KEY = "_agent_token_usage"
+AGENT_TOOL_CALLS_KEY = "_agent_tool_calls"
+AGENT_PROVIDER_REQUESTS_KEY = "_agent_provider_requests"
 
 
 def run_tool_loop(
@@ -41,44 +44,85 @@ def run_tool_loop(
     usable content, or when the tool budget is exhausted. At the budget limit,
     tools are removed and the model is forced to provide a final answer.
     """
+    provider_requests: list[dict[str, object]] = []
+
+    def post(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        started = time.perf_counter()
+        try:
+            response = transport.post_json(
+                chat_completions_url(config.base_url),
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Content-Type": "application/json",
+                },
+                payload=payload,
+                timeout_seconds=config.timeout_seconds,
+            )
+        except ModelAdapterError as exc:
+            traced = exc.metadata.get("provider_requests")
+            if isinstance(traced, (list, tuple)):
+                provider_requests.extend(
+                    dict(item) for item in traced if isinstance(item, Mapping)
+                )
+            else:
+                provider_requests.append({
+                    "request_id": f"request:{len(provider_requests)}",
+                    "retry_index": 0,
+                    "status": "failed",
+                    "wall_time_ms": (time.perf_counter() - started) * 1000,
+                    "error": type(exc).__name__,
+                })
+            raise ModelAdapterError(
+                str(exc),
+                metadata={
+                    **exc.metadata,
+                    "provider_requests": tuple(provider_requests),
+                },
+            ) from exc
+        drain = getattr(transport, "drain_provider_request_events", None)
+        traced = drain() if callable(drain) else None
+        if isinstance(traced, (list, tuple)):
+            provider_requests.extend(
+                dict(item) for item in traced if isinstance(item, Mapping)
+            )
+        else:
+            provider_requests.append({
+                "request_id": f"request:{len(provider_requests)}",
+                "retry_index": 0,
+                "status": "completed",
+                "wall_time_ms": (time.perf_counter() - started) * 1000,
+                "token_usage": normalized_token_usage(response),
+            })
+        return response
+
     if not tools:
         payload = dict(base_payload)
         payload["n"] = final_n
-        response = transport.post_json(
-            chat_completions_url(config.base_url),
-            headers={
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json",
-            },
-            payload=payload,
-            timeout_seconds=config.timeout_seconds,
+        response = post(payload)
+        return _with_usage(
+            response, (normalized_token_usage(response),),
+            provider_requests=provider_requests,
         )
-        return _with_usage(response, (normalized_token_usage(response),))
 
     tool_rounds = 0
     seen_tool_calls: set[tuple[str, str]] = set()
     request_usages: list[dict[str, int]] = []
+    tool_events: list[dict[str, object]] = []
     while tool_rounds < max_rounds:
         payload = dict(base_payload)
         payload["n"] = 1
         payload["tools"] = [tool.openai_schema() for tool in tools]
         payload["tool_choice"] = "auto"
-        response = transport.post_json(
-            chat_completions_url(config.base_url),
-            headers={
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json",
-            },
-            payload=payload,
-            timeout_seconds=config.timeout_seconds,
-        )
+        response = post(payload)
         request_usages.append(normalized_token_usage(response))
         message = _first_message(response)
         calls = extract_tool_calls(message)
         if not calls:
             content = message.get("content")
             if final_n == 1 and isinstance(content, str) and content.strip():
-                return _with_usage(response, request_usages)
+                return _with_usage(
+                    response, request_usages, tool_events, provider_requests
+                )
             break
         tool_rounds += 1
         logger.info(
@@ -112,9 +156,31 @@ def run_tool_loop(
                         }
                     ),
                 )
+                tool_events.append({
+                    "call_id": call.id,
+                    "tool_kind": call.name,
+                    "status": "skipped_duplicate",
+                    "wall_time_ms": 0.0,
+                })
             else:
                 seen_tool_calls.add(call_key)
-                result = execute_tool(call)
+                started = time.perf_counter()
+                try:
+                    result = execute_tool(call)
+                except Exception:
+                    tool_events.append({
+                        "call_id": call.id,
+                        "tool_kind": call.name,
+                        "status": "failed",
+                        "wall_time_ms": (time.perf_counter() - started) * 1000,
+                    })
+                    raise
+                tool_events.append({
+                    "call_id": result.call_id,
+                    "tool_kind": call.name,
+                    "status": "completed",
+                    "wall_time_ms": (time.perf_counter() - started) * 1000,
+                })
             messages.append(
                 {
                     "role": "tool",
@@ -141,25 +207,23 @@ def run_tool_loop(
 
     final_payload = dict(base_payload)
     final_payload["n"] = final_n
-    response = transport.post_json(
-        chat_completions_url(config.base_url),
-        headers={
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        },
-        payload=final_payload,
-        timeout_seconds=config.timeout_seconds,
-    )
+    response = post(final_payload)
     request_usages.append(normalized_token_usage(response))
-    return _with_usage(response, request_usages)
+    return _with_usage(response, request_usages, tool_events, provider_requests)
 
 
 def _with_usage(
     response: Mapping[str, Any],
     request_usages: Sequence[Mapping[str, Any]],
+    tool_calls: Sequence[Mapping[str, object]] = (),
+    provider_requests: Sequence[Mapping[str, object]] = (),
 ) -> Mapping[str, Any]:
     enriched = dict(response)
     enriched[AGENT_TOKEN_USAGE_KEY] = merge_token_usage(*request_usages)
+    enriched[AGENT_TOOL_CALLS_KEY] = tuple(dict(call) for call in tool_calls)
+    enriched[AGENT_PROVIDER_REQUESTS_KEY] = tuple(
+        dict(request) for request in provider_requests
+    )
     return enriched
 
 

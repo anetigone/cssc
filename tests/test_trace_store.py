@@ -18,6 +18,13 @@ from agent.proof_system.base import (
 )
 from agent.runtime.trace_store import JsonlTraceStore, result_events
 from agent.search.budget import BudgetSnapshot
+from agent.search.cost_ledger import (
+    CostLedger,
+    CostLedgerEvent,
+    CostLedgerEventKind,
+    CostMeasurement,
+    CostScope,
+)
 from agent.search.controller import AttemptRecord, ControllerResult
 from agent.search.memory import MemoryProcessor, MemoryUpdate, empty_memory, memory_to_dict
 
@@ -74,6 +81,34 @@ class TraceStoreTests(unittest.TestCase):
         )
         # The serialized dict also survives a JSON round-trip.
         json.loads(json.dumps(events[1]["workspace"]))
+
+    def test_cost_ledger_is_written_as_a_separate_snapshot(self) -> None:
+        result = _sample_result()
+        ledger = CostLedger((
+            CostLedgerEvent(
+                event_id="usage-1",
+                kind=CostLedgerEventKind.PROVIDER_USAGE,
+                scope=CostScope.PROPOSAL_GENERATION,
+                status="completed",
+                request_id="request-1",
+                input_tokens=CostMeasurement.observed(0),
+            ),
+        ))
+        result = _with_metadata(result, {"cost_ledger": ledger})
+
+        events = list(result_events(result))
+
+        self.assertEqual([event["event"] for event in events], [
+            "run_summary", "cost_ledger_snapshot", "attempt",
+        ])
+        self.assertEqual(events[0]["cost_ledger_event"], "cost_ledger_snapshot")
+        self.assertNotIn("cost_ledger", events[0]["metadata"])
+        snapshot = events[1]["cost_ledger"]
+        self.assertEqual(snapshot["events"][0]["input_tokens"]["value"], 0)
+        self.assertEqual(
+            snapshot["reconciliation"]["totals"]["input_tokens"]["measurement_status"],
+            "observed",
+        )
 
     def test_attempt_trace_carries_structured_goal_state(self) -> None:
         result = _sample_result()

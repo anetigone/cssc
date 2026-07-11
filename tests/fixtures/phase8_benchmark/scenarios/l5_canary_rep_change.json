@@ -1,0 +1,69 @@
+{
+  "scenario_version": 1,
+  "task_id": "l5_canary_rep_change",
+  "description": "Controlled representation change: direct term fails, switch to pointwise membership representation, then close.",
+  "proposals": [
+    {
+      "action": {
+        "kind": "implement",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "Direct attempt: rfl fails (lists not defeq)."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "rfl"
+      }
+    },
+    {
+      "action": {
+        "kind": "change_representation",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": ["argument_step", "lean_artifact", "alignment_link"],
+        "rationale": "Switch to the pointwise-membership representation and argue via list extensionality."
+      },
+      "payload": {
+        "kind": "change_representation",
+        "argument": [
+          {
+            "step_id": "step_mem_iff",
+            "claim": "∀ x, x ∈ ls1 ↔ x ∈ ls2",
+            "justification": "Split the two membership hypotheses h1, h2 into iff.",
+            "depends_on": [],
+            "introduced_fact_ids": [],
+            "confidence": 0.9
+          }
+        ],
+        "alignments": [
+          {
+            "argument_step_id": "step_mem_iff",
+            "relation": "implements",
+            "lean_declaration_id": "l5_canary_rep_change",
+            "goal_fingerprint": null,
+            "source_span": null
+          }
+        ],
+        "rationale": "New representation: list equality reduced to pointwise membership iff."
+      }
+    },
+    {
+      "action": {
+        "kind": "implement",
+        "target_branch_id": "root",
+        "target_step_ids": ["step_mem_iff"],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "Close via list extensionality under the new representation."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "ext x; constructor <;> intro hx <;> simp_all"
+      }
+    }
+  ],
+  "expected_check_results": [
+    {"on_candidate_contains": "rfl", "accepted": false, "category": "unsolved_goals"},
+    {"on_candidate_contains": "ext x", "accepted": true, "category": "proof_accepted"}
+  ]
+}

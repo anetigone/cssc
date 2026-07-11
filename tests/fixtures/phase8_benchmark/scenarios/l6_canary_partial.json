@@ -1,0 +1,62 @@
+{
+  "scenario_version": 1,
+  "task_id": "l6_canary_partial",
+  "description": "Controlled partial result: helper1 accepted, helper2 left open by budget cutoff -> workspace_status=partial.",
+  "proposals": [
+    {
+      "action": {
+        "kind": "decompose",
+        "target_branch_id": "root",
+        "target_step_ids": [],
+        "allowed_mutations": ["new_structure", "obligation_dependency"],
+        "rationale": "Split the root chain into two helpers before the root proof."
+      },
+      "payload": {
+        "kind": "decompose",
+        "children": [
+          {
+            "child_id": "helper1",
+            "statement": "Q",
+            "dependency_ids": []
+          },
+          {
+            "child_id": "helper2",
+            "statement": "R",
+            "dependency_ids": ["helper1"]
+          }
+        ],
+        "strategy": "helper1 proves Q from hPQ+hP; helper2 proves R from hQR+helper1; root combines"
+      }
+    },
+    {
+      "action": {
+        "kind": "implement",
+        "target_branch_id": "helper1",
+        "target_step_ids": [],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "Prove helper1 (Q) from hPQ and hP."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "exact hPQ hP"
+      }
+    },
+    {
+      "action": {
+        "kind": "implement",
+        "target_branch_id": "helper2",
+        "target_step_ids": [],
+        "allowed_mutations": ["lean_artifact", "alignment_link"],
+        "rationale": "Attempt helper2 (R); controlled budget cutoff leaves this OPEN."
+      },
+      "payload": {
+        "kind": "implement",
+        "proof_text": "sorry"
+      }
+    }
+  ],
+  "expected_check_results": [
+    {"on_candidate_contains": "exact hPQ hP", "accepted": true, "category": "proof_accepted"},
+    {"on_candidate_contains": "sorry", "accepted": false, "category": "unsolved_goals"}
+  ]
+}

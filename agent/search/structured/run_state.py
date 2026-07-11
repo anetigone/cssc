@@ -10,6 +10,7 @@ from agent.proof_system.workspace import ObligationStatus, WorkspaceStatus
 from ..budget import BudgetManager
 from ..controller.types import AttemptRecord, ControllerResult
 from ..cost import cost_vector_from_metrics_and_budget, to_dict
+from ..cost_ledger import CostLedger
 from ..execution import ExecutionMode
 from ..metrics import new_sample_id, summarize_run
 from .budget_hints import (
@@ -53,6 +54,9 @@ class _StructuredRunState:
     # by the controller from ``Frontier.explanations()`` so the trace records
     # why each branch was scheduled regardless of policy.
     priority_explanations: list = field(default_factory=list)
+    # Phase 9 authoritative append-only runtime cost observations.
+    cost_ledger: CostLedger = field(default_factory=CostLedger)
+    proposal_cache_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 _SOLVABLE_STATUSES: frozenset[ObligationStatus] = frozenset(
@@ -164,6 +168,8 @@ def build_structured_result(
         "representation_records": tuple(state.representation_records),
         "model_usage": tuple(state.model_usage),
         "generation_failures": tuple(state.generation_failures),
+        "cost_ledger": state.cost_ledger.to_dict(),
+        "proposal_cache_events": tuple(state.proposal_cache_events),
         "cost": to_dict(cost_vector_from_metrics_and_budget(metrics, snapshot)),
         "result_summary": build_result_summary(
             workspace, assembly_result=assembly_outcome

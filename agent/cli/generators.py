@@ -46,6 +46,19 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
     for path in args.candidate_file:
         candidates.append(Path(path).read_text(encoding="utf-8"))
 
+    routing_enabled = bool(getattr(args, "enable_model_routing", False))
+    if routing_enabled:
+        if getattr(args, "execution_mode", "minimal") != "structured":
+            raise ValueError("model routing requires structured execution mode")
+        if getattr(args, "frontier_policy", "legacy") != "action_cost_aware_v1":
+            raise ValueError(
+                "model routing requires --frontier-policy action_cost_aware_v1"
+            )
+        if not getattr(args, "strong_proof_model", None):
+            raise ValueError("model routing requires --strong-proof-model")
+        if candidates or args.use_model is False:
+            raise ValueError("model routing requires model-backed proposal generation")
+
     if candidates:
         if args.use_model is True:
             logger.warning(
@@ -58,12 +71,24 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
         _ensure_env_loaded(args)
         if getattr(args, "execution_mode", "minimal") == "structured":
             from agent.agents.structured import ChatStructuredActionGenerator
+            from agent.search.structured.model_router import (
+                TieredStructuredActionGenerator,
+            )
 
-            return ChatStructuredActionGenerator(
+            tools = _proof_tools(args, project_root)
+            cheap = ChatStructuredActionGenerator(
                 _model_config(args, role="proof"),
-                tools=_proof_tools(args, project_root),
+                tools=tools,
                 max_tool_rounds=1,
             )
+            if not routing_enabled:
+                return cheap
+            strong = ChatStructuredActionGenerator(
+                _model_config(args, role="strong_proof"),
+                tools=tools,
+                max_tool_rounds=1,
+            )
+            return TieredStructuredActionGenerator(cheap, strong)
         return ChatActionGenerator(
             _model_config(args, role="proof"),
             tools=_proof_tools(args, project_root),

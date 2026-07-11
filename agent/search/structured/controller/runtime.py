@@ -21,6 +21,12 @@ from agent.proof_system.workspace import (
 )
 from agent.search.action import ActionGenerationRequest
 from agent.search.controller.context import summarize_context
+from agent.search.cost_ledger import (
+    CostLedgerEvent,
+    CostLedgerEventKind,
+    CostMeasurement,
+    CostScope,
+)
 from agent.search.safety import SafetyVerdict
 from ..branch_ops import action_rationale, root_branch_id
 from ..projection import build_context_projection
@@ -30,6 +36,7 @@ from ..proposal import (
     StructuredActionProposal,
 )
 from ..run_state import _StructuredRunState
+from ..model_router import routing_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -131,7 +138,16 @@ class StructuredControllerRuntimeMixin:
             len(state.current_retrieved),
             len(state.feedback_history),
         )
-        proposals = tuple(self.action_generator.generate(request))
+        route_decision = getattr(self, "_action_route_decision", None)
+        if (
+            route_decision is not None
+            and hasattr(self.action_generator, "generate_for_route")
+        ):
+            proposals = tuple(
+                self.action_generator.generate_for_route(request, route_decision)
+            )
+        else:
+            proposals = tuple(self.action_generator.generate(request))
         logger.info(
             "Structured proposals generated: task_id=%s branch=%s count=%d",
             task.task_id,
@@ -183,7 +199,7 @@ class StructuredControllerRuntimeMixin:
             len(projection.sibling_branches),
             selected_test_action.kind.value if selected_test_action is not None else None,
         )
-        return {
+        metadata = {
             "proof_phase": "implement" if branch.last_action is None else "repair",
             "branch_id": branch.branch_id,
             "branch_obligation": (
@@ -215,6 +231,10 @@ class StructuredControllerRuntimeMixin:
             "structured_workspace_version": workspace.version,
             "budget": self.budget.snapshot(),
         }
+        route_decision = getattr(self, "_action_route_decision", None)
+        if route_decision is not None:
+            metadata.update(routing_metadata(route_decision))
+        return metadata
 
     def _render_target(
         self,
@@ -270,6 +290,7 @@ class StructuredControllerRuntimeMixin:
         )
         if self.check_workspace is None:
             check_result = self.adapter.check(materialized.path, budget_slice)
+            self._record_checker_cost(state, check_result, edit)
             logger.info(
                 "Structured check completed: task_id=%s candidate_id=%s accepted=%s category=%s elapsed=%.3f",
                 task.task_id,
@@ -286,6 +307,7 @@ class StructuredControllerRuntimeMixin:
             extension=self.config.candidate_extension,
         ) as check_candidate:
             check_result = self.adapter.check(check_candidate.path, budget_slice)
+        self._record_checker_cost(state, check_result, edit)
         logger.info(
             "Structured check completed: task_id=%s candidate_id=%s accepted=%s category=%s elapsed=%.3f",
             task.task_id,
@@ -295,6 +317,27 @@ class StructuredControllerRuntimeMixin:
             check_result.elapsed_seconds,
         )
         return replace(check_result, candidate_file=materialized.path)
+
+    def _record_checker_cost(self, state, check_result, edit) -> None:
+        """Append one checker event on both legacy and Phase 9 structured paths."""
+        action_id = getattr(edit, "metadata", {}).get("action_node_id")
+        event_index = len(state.cost_ledger.events)
+        state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
+            event_id=f"checker:{event_index}",
+            kind=CostLedgerEventKind.CHECKER,
+            scope=CostScope.TOOL_CHECK,
+            status="completed",
+            attempt_index=state.attempt_index,
+            checker_kind=(
+                "capability"
+                if getattr(edit, "action", "") == "capability_test"
+                else "candidate"
+            ),
+            category=check_result.category.value,
+            wall_time_ms=CostMeasurement.observed(check_result.elapsed_seconds * 1000),
+            cpu_time_ms=CostMeasurement.unavailable("checker CPU time not reported"),
+            metadata={"action_id": action_id} if action_id else {},
+        ))
 
     def _review(
         self,
