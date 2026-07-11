@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Iterable
 
@@ -246,6 +246,30 @@ class ProposalCache:
             },
             "entries": [entry.to_dict() for entry in self.entries],
         }
+
+    def with_estimates(
+        self, estimates_by_node_id: dict[str, CostEstimate]
+    ) -> "ProposalCache":
+        """Return a cache view with frozen history estimates applied.
+
+        The supplied mapping is normally produced once from a Phase 9.2
+        snapshot before selection.  Nodes absent from the map retain their
+        static prior, making partial history coverage explicit rather than
+        changing an unknown dimension to zero.
+        """
+        entries: list[ActionFrontierNode] = []
+        for node in self.entries:
+            estimate = estimates_by_node_id.get(node.node_id, node.estimated_execution_cost)
+            checks = estimate.checks.value if estimate.checks is not None else 0
+            entries.append(replace(
+                node,
+                estimated_execution_cost=estimate,
+                priority_explanation=replace(
+                    node.priority_explanation,
+                    expected_incremental_cost=int(checks),
+                ),
+            ))
+        return ProposalCache(tuple(entries), self.limits)
 
 
 def proposal_cache_from_dict(data: dict[str, object]) -> ProposalCache:

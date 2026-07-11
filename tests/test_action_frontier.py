@@ -15,6 +15,8 @@ from agent.proof_system.workspace import (
 from agent.search.structured.action_frontier import (
     ActionFrontier,
     ActionFrontierPolicy,
+    CostEstimate,
+    Estimate,
     ProposalCache,
     ProposalCacheLimits,
     proposal_cache_from_dict,
@@ -113,6 +115,22 @@ class ActionFrontierTests(unittest.TestCase):
             frontier.refresh(workspace, cache)
             return [frontier.pop().node_id for _ in range(2)]
         self.assertEqual(replay(), replay())
+
+    def test_frozen_estimates_can_change_action_order(self) -> None:
+        workspace = _workspace(ProofBranch("b1", "sample", 1))
+        cache, _ = ProposalCache().add(
+            workspace,
+            (_proposal("b1", SearchActionKind.IMPLEMENT), _proposal("b1", SearchActionKind.DECOMPOSE)),
+            proposal_source="model",
+        )
+        by_kind = {node.proposal.action.kind: node.node_id for node in cache.entries}
+        historical = cache.with_estimates({
+            by_kind[SearchActionKind.IMPLEMENT]: CostEstimate(checks=Estimate(1), source="history", sample_count=3),
+            by_kind[SearchActionKind.DECOMPOSE]: CostEstimate(checks=Estimate(5), source="history", sample_count=3),
+        })
+        frontier = ActionFrontier(policy=ActionFrontierPolicy.COST_AWARE_V1)
+        frontier.refresh(workspace, historical)
+        self.assertEqual(frontier.pop().proposal.action.kind, SearchActionKind.IMPLEMENT)
 
 
 if __name__ == "__main__":
