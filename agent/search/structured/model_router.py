@@ -8,10 +8,12 @@ visible action context and frozen budget snapshot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
+from typing import Any
 
 from agent.proof_system.workspace import SearchActionKind
+from agent.search.action import ActionGenerationRequest
 
 from .action_frontier import CostEstimate, Estimate
 from .budget_snapshot import BudgetAdmission, UnifiedBudgetSnapshot, admit_estimate
@@ -124,6 +126,48 @@ def routing_metadata(decision: RouteDecision) -> dict[str, object]:
         "routed_model": decision.model,
         "routing": decision.to_dict(),
     }
+
+
+class TieredStructuredActionGenerator:
+    """One proof-agent protocol with cheap and strong execution tiers."""
+
+    _is_structured_generator = True
+    _uses_model = True
+
+    def __init__(self, cheap_generator: Any, strong_generator: Any) -> None:
+        self.cheap_generator = cheap_generator
+        self.strong_generator = strong_generator
+
+    def generate(self, request: ActionGenerationRequest):
+        """Routing-off compatibility: use the cheap tier exactly."""
+        return self.generate_for_route(
+            request,
+            RouteDecision(
+                tier=ModelTier.CHEAP,
+                model=getattr(getattr(self.cheap_generator, "config", None), "model", None),
+                reason="routing_disabled",
+                escalation_requested=False,
+                escalation_granted=False,
+            ),
+        )
+
+    def generate_for_route(
+        self,
+        request: ActionGenerationRequest,
+        decision: RouteDecision,
+    ):
+        generator = (
+            self.strong_generator
+            if decision.tier is ModelTier.STRONG
+            else self.cheap_generator
+        )
+        routed = []
+        for proposal in generator.generate(request):
+            routed.append(replace(
+                proposal,
+                metadata={**proposal.metadata, **routing_metadata(decision)},
+            ))
+        return tuple(routed)
 
 
 def _escalation_reason(context: RoutingContext, config: ModelRouterConfig) -> str | None:

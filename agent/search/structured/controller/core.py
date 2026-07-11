@@ -49,7 +49,7 @@ from ..branch_ops import (
     expand_candidate_branches,
 )
 from .actions import StructuredControllerActionMixin
-from .phase9 import StructuredControllerPhase9Mixin
+from .action_runtime import StructuredControllerActionRuntimeMixin
 from .runtime import StructuredControllerRuntimeMixin
 from ..finalize import assemble_and_finalize
 from ..frontier import Frontier, FrontierPolicy
@@ -64,12 +64,13 @@ from ..reducer import (
 from ..run_state import _StructuredRunState, build_structured_result
 from ..solution_tracker import has_complete_solution
 from ..cost_estimator import ActionCostEstimator
+from ..model_router import ModelRouterConfig
 
 logger = logging.getLogger(__name__)
 
 
 class StructuredController(
-    StructuredControllerPhase9Mixin,
+    StructuredControllerActionRuntimeMixin,
     StructuredControllerActionMixin,
     StructuredControllerRuntimeMixin,
 ):
@@ -88,6 +89,7 @@ class StructuredController(
         config: ControllerConfig | None = None,
         safety_reviewer: SafetyReviewer | None = None,
         cost_estimator: ActionCostEstimator | None = None,
+        model_router_config: ModelRouterConfig | None = None,
     ) -> None:
         self.adapter = adapter
         self.action_generator = adapt_legacy_generator(action_generator)
@@ -105,11 +107,19 @@ class StructuredController(
         self.safety_reviewer = safety_reviewer or StatementSafetyReviewer()
         self.assembler = ArtifactAssembler()
         self.cost_estimator = cost_estimator
+        self.model_router_config = model_router_config or ModelRouterConfig()
+        if (
+            self.model_router_config.enabled
+            and not hasattr(self.action_generator, "generate_for_route")
+        ):
+            raise ValueError(
+                "enabled model routing requires a tiered structured action generator"
+            )
 
     def run(self, task: ProofTask) -> ControllerResult:
         logger.info("Structured controller run started: task_id=%s", task.task_id)
         if self.config.frontier_policy == "action_cost_aware_v1":
-            return self._run_phase9(task)
+            return self._run_action_runtime(task)
         try:
             frontier_policy = FrontierPolicy(self.config.frontier_policy)
         except ValueError as exc:

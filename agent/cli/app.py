@@ -363,6 +363,18 @@ def _run_controller(
 ) -> Any:
     generator = build_action_generator(args, project_root=project_root)
     execution_mode = ExecutionMode(args.execution_mode)
+    model_router_config = None
+    if execution_mode is ExecutionMode.STRUCTURED:
+        from agent.search.structured.model_router import ModelRouterConfig
+
+        model_router_config = ModelRouterConfig(
+            enabled=bool(getattr(args, "enable_model_routing", False)),
+            cheap_model=(
+                getattr(args, "proof_model", None)
+                or getattr(args, "model", None)
+            ),
+            strong_model=getattr(args, "strong_proof_model", None),
+        )
     controller = build_controller(
         execution_mode,
         adapter=services.adapter,
@@ -384,6 +396,7 @@ def _run_controller(
             execution_mode=execution_mode,
             frontier_policy=getattr(args, "frontier_policy", "legacy"),
         ),
+        model_router_config=model_router_config,
     )
     return controller.run(task)
 

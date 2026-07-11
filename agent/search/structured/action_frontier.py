@@ -162,7 +162,11 @@ def action_frontier_node_from_dict(data: dict[str, object]) -> ActionFrontierNod
         estimated_execution_cost=cost_estimate_from_dict(estimate),
         priority_explanation=PriorityExplanation(
             branch_id=str(explanation["branch_id"]), policy=str(explanation["policy"]),
-            expected_incremental_cost=int(explanation["expected_incremental_cost"]),
+            expected_incremental_cost=(
+                int(explanation["expected_incremental_cost"])
+                if explanation.get("expected_incremental_cost") is not None
+                else None
+            ),
             unlock_value=int(explanation["unlock_value"]),
             progress_likelihood=int(explanation["progress_likelihood"]),
             information_gain=int(explanation["information_gain"]),
@@ -260,13 +264,15 @@ class ProposalCache:
         entries: list[ActionFrontierNode] = []
         for node in self.entries:
             estimate = estimates_by_node_id.get(node.node_id, node.estimated_execution_cost)
-            checks = estimate.checks.value if estimate.checks is not None else 0
+            checks = estimate.checks.value if estimate.checks is not None else None
             entries.append(replace(
                 node,
                 estimated_execution_cost=estimate,
                 priority_explanation=replace(
                     node.priority_explanation,
-                    expected_incremental_cost=int(checks),
+                    expected_incremental_cost=(
+                        int(checks) if checks is not None else None
+                    ),
                 ),
             ))
         return ProposalCache(tuple(entries), self.limits)
@@ -339,7 +345,19 @@ class ActionFrontier:
     def pop(self) -> ActionFrontierNode:
         if not self._pending:
             raise StopIteration("action frontier is empty")
-        selected = min(self._pending, key=self._priority_key)
+        # A cost dimension participates only when it is available for every
+        # competing node in this selection round. Unknown is not infinity and
+        # therefore cannot silently retire an otherwise eligible action.
+        compare_check_cost = all(
+            node.estimated_execution_cost.checks is not None
+            for node in self._pending
+        )
+        selected = min(
+            self._pending,
+            key=lambda node: self._priority_key(
+                node, compare_check_cost=compare_check_cost
+            ),
+        )
         self._pending = tuple(node for node in self._pending if node.node_id != selected.node_id)
         self._explanations.append(selected.priority_explanation)
         return selected
@@ -347,11 +365,22 @@ class ActionFrontier:
     def explanations(self) -> tuple[PriorityExplanation, ...]:
         return tuple(self._explanations)
 
-    def _priority_key(self, node: ActionFrontierNode) -> tuple:
+    def _priority_key(
+        self,
+        node: ActionFrontierNode,
+        *,
+        compare_check_cost: bool,
+    ) -> tuple:
         branch_key = _branch_legacy_key(node)
-        check_cost = node.estimated_execution_cost.checks.value if node.estimated_execution_cost.checks else float("inf")
-        if self.policy is ActionFrontierPolicy.COST_AWARE_V1:
-            return (check_cost, *branch_key, node.proposal.action.kind.value, node.node_id)
+        if self.policy is ActionFrontierPolicy.COST_AWARE_V1 and compare_check_cost:
+            check_cost = node.estimated_execution_cost.checks
+            assert check_cost is not None
+            return (
+                check_cost.value,
+                *branch_key,
+                node.proposal.action.kind.value,
+                node.node_id,
+            )
         return (*branch_key, node.proposal.action.kind.value, node.node_id)
 
 

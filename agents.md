@@ -54,7 +54,8 @@ agent/
 │   │   ├── controller/       # StructuredController 包（__init__ 向后兼容 re-export）
 │   │   │   ├── core.py       # 主循环 / StructuredController
 │   │   │   ├── actions.py    # capability/decompose/argument/representation 执行器
-│   │   │   └── runtime.py    # 生成 / 渲染 / safety review 辅助
+│   │   │   ├── runtime.py    # 生成 / 渲染 / safety review 辅助
+│   │   │   └── action_runtime.py # action cache/frontier/budget/routing opt-in 主循环
 │   │   ├── proposal/         # typed action proposal 包（__init__ 向后兼容 re-export）
 │   │   │   ├── core.py       # StructuredActionProposal / generator / legacy adapter
 │   │   │   └── types.py      # ActionPayload union / payload dataclasses
@@ -66,6 +67,10 @@ agent/
 │   │   ├── frontier_types.py # FrontierPolicy / FrontierNode / PriorityExplanation / soft-budget config
 │   │   ├── frontier_signals.py # readiness / stalled / soft envelope / node projection 纯函数
 │   │   ├── frontier_priority.py # legacy / cost-aware / value-per-cost priority keys
+│   │   ├── action_frontier.py # action-level frontier + bounded proposal cache
+│   │   ├── cost_estimator.py # 冻结历史 action 成本估计
+│   │   ├── budget_snapshot.py # token/check/time/USD 统一预算快照
+│   │   ├── model_router.py   # cheap/strong tier 路由与 tiered generator
 │   │   ├── run_state.py      # _StructuredRunState + build_structured_result
 │   │   └── solution_tracker.py # has_complete_solution / select_solution
 │   ├── execution.py     # ExecutionMode 参数（minimal / structured）
@@ -329,8 +334,9 @@ class AgentRole(str, Enum):
 - structured CLI 可通过 `--frontier-policy action_cost_aware_v1` 显式启用 Phase 9 路径；legacy / Phase 8 policy 不变。
 - Phase 9 controller 为全部 ready branch 生成 bounded proposal cache，随后以 `(branch, proposal)` action node 全局竞争；workspace version 变化会使旧 cache node 失效，不自动重绑。
 - deterministic generator 不消费 provider/model-request budget；model proposal batch、candidate/capability checker 和 assembly checker 写入 append-only `CostLedger`，结果经独立 trace snapshot 输出。
-- action 选择前从同一 ledger + global budget 构造 `UnifiedBudgetSnapshot` 并执行 hard-budget admission；历史 estimator 可由 `StructuredController(cost_estimator=...)` 注入，或通过 `ProofTask.metadata["phase9_cost_history"]` 提供冻结 snapshot。
-- `ModelRouter` 的 pure routing/预算拒绝协议已存在；cheap/strong 两套真实 generator 的 CLI 构造仍需显式配置后才可启用，不得把当前 action runtime 描述为 heterogeneous routing 已上线。
+- action 选择前从同一 ledger + global budget 构造 `UnifiedBudgetSnapshot` 并执行 hard-budget admission；历史 estimator 可由 `StructuredController(cost_estimator=...)` 注入，或通过 `ProofTask.metadata["cost_history_snapshot"]` 提供冻结 snapshot。
+- cheap/strong 路由通过 `--enable-model-routing --strong-proof-model <model>` 显式启用，并要求 `structured + action_cost_aware_v1`；controller 在 proposal request 前用当前 branch、冻结预算和失败/stall 信号选择 tier。两 tier 共用单一 Proof Agent 协议、global budget 与 ledger，决策进入 request/proposal/action/ledger trace；关闭开关严格使用 cheap tier。
+- action cost 的某一维为 unknown 时，该维在本轮所有竞争 action 间整体退出排序，不把 unknown 当成 `+∞`；硬预算 admission 同样不会把 unknown 伪装成零。
 
 ## 关键边界协议
 
@@ -348,7 +354,7 @@ class AgentRole(str, Enum):
 python -m agent.cli.app <source> --use-model
 ```
 
-常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`、`--execution-mode`。
+常用选项：`--use-model`、`--candidate`、`--max-checks`、`--max-model-calls`、`--enable-retrieval`、`--context-summarizer`、`--context-model`、`--proof-model`、`--formalizer-model`、`--model`、`--execution-mode`、`--frontier-policy`、`--enable-model-routing`、`--strong-proof-model`。
 
 模型选择按 per-role -> generic `--model` -> 环境变量 `OPENAI_MODEL` 的顺序回退。例如 `--proof-model gpt-4` 只覆盖 proof generator，未指定时 fallback 到 `--model`，再未指定时 fallback 到 `OPENAI_MODEL`。
 
@@ -389,6 +395,7 @@ python -m pytest tests/ -q
 - `tests/test_structured_proposal.py`：Phase 7.2 typed structured action proposal——payload/proposal 往返、validate kind/payload 一致 + 不支持 kind + broaden scope 拒绝、legacy adapter 正确性/idempotent/native 旁路；Phase 7.6 argument/representation payload 往返 + kind/payload 一致 + 跨 kind 拒绝。
 - `tests/test_safety.py`：statement-preservation 与 anti-cheating 检查；Phase 7.4 前置 helper 声明不触发 statement_not_preserved。
 - Phase 8 计划测试：`tests/test_cost.py` 覆盖 `CostVector` 序列化/聚合/metrics 派生；`tests/test_structured_costing.py` 覆盖 branch/obligation direct/transitive 成本归因；`tests/test_frontier.py` 已扩展 `FrontierPolicyTests`（默认 legacy + 显式 legacy 逐字节一致、cost-aware 偏好廉价 next-action / 阈值 stalled penalty / 子阈值 streak 折叠 / shallower 优先 / `branch_id` tie-break / readiness gate 仍先过滤）+ 8.3 V2 overdraft/unlock-value 测试 + 8.4 `ValuePerCostFrontierTests`（value 排序关系 / stall+overdraft gate 仍前置 / `PriorityExplanation` 字段与 int-only `final_key_or_score` / legacy·v1·v2 回归不变）；`tests/test_structured_controller.py` 覆盖 `metadata["frontier_policy"]` 透传（legacy 默认 / cost_aware_v1 / cost_aware_v2 / value_per_cost_v1 / 未知值硬失败）+ `metadata["priority_explanations"]`（legacy 路径全字段 + int-only key）；`tests/test_app_cli.py` 覆盖 `--frontier-policy` 全四档 choices 接受 + bogus 拒绝。
+- Phase 9 计划测试：`tests/test_cost_ledger.py` 覆盖 NA/unbounded/shared-batch/reconciliation；`tests/test_action_frontier.py` 覆盖 bounded cache、stale invalidation、replay、history estimate 注入与 unknown-cost 不退场；`tests/test_cost_estimator.py` 覆盖冻结 snapshot/prior/calibration；`tests/test_unified_budget_snapshot.py` 覆盖 remaining ratio、unknown admission 和 wall-time 单位；`tests/test_model_router.py` 与 `tests/test_structured_controller.py` 覆盖 routing off、strong escalation、预算拒绝，以及 request→proposal→action→ledger 的真实 tier 接线。
 
 ## 注意事项
 

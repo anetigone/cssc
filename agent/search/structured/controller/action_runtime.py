@@ -1,4 +1,4 @@
-"""Opt-in Phase 9 action-level runtime for :class:`StructuredController`."""
+"""Opt-in action-level cost runtime for :class:`StructuredController`."""
 
 from __future__ import annotations
 
@@ -27,7 +27,12 @@ from ..action_frontier import (
 from ..branch_ops import branch_by_id, edit_with_structured_metadata, expand_candidate_branches
 from ..budget_snapshot import admit_estimate, build_unified_budget_snapshot
 from ..finalize import assemble_and_finalize
-from ..frontier_signals import branch_goal_fingerprints, is_ready, stalled_streak
+from ..frontier_signals import (
+    branch_goal_fingerprints,
+    dependents_count,
+    is_ready,
+    stalled_streak,
+)
 from ..cost_estimator import (
     ActionCostEstimator,
     CostBucket,
@@ -37,28 +42,34 @@ from ..proposal import StructuredActionProposal
 from ..reducer import StructuredActionResult, apply
 from ..run_state import _StructuredRunState, build_structured_result
 from ..solution_tracker import has_complete_solution
+from ..model_router import (
+    ModelTier,
+    RoutingContext,
+    route_model,
+    routing_metadata,
+)
 
 
-class StructuredControllerPhase9Mixin:
+class StructuredControllerActionRuntimeMixin:
     """Execute cached proposals as globally competing action nodes."""
 
-    def _run_phase9(self, task: ProofTask) -> ControllerResult:
+    def _run_action_runtime(self, task: ProofTask) -> ControllerResult:
         workspace = self._initial_workspace(task)
         state = _StructuredRunState()
         estimator = self.cost_estimator
-        serialized_history = task.metadata.get("phase9_cost_history")
+        serialized_history = task.metadata.get("cost_history_snapshot")
         if estimator is None and isinstance(serialized_history, dict):
             estimator = ActionCostEstimator(
                 cost_history_snapshot_from_dict(serialized_history)
             )
-        self._phase9_active_estimator = estimator
+        self._action_runtime_estimator = estimator
         cache = ProposalCache()
         frontier = ActionFrontier(policy=ActionFrontierPolicy.COST_AWARE_V1)
 
         while True:
             cache = frontier.refresh(workspace, cache)
             if not frontier.has_work():
-                workspace, cache = self._phase9_fill_cache(task, workspace, cache, state)
+                workspace, cache = self._fill_action_cache(task, workspace, cache, state)
                 cache = frontier.refresh(workspace, cache)
             if not frontier.has_work():
                 if state.stop_reason == "budget":
@@ -80,6 +91,9 @@ class StructuredControllerPhase9Mixin:
                 "node_id": node.node_id,
                 "branch_id": node.branch_id,
                 "action_kind": node.proposal.action.kind.value,
+                "model_tier": node.proposal_model_tier,
+                "routed_model": node.proposal.metadata.get("routed_model"),
+                "routing": node.proposal.metadata.get("routing"),
                 "workspace_version": workspace.version,
                 "budget_admission": admission.to_dict(),
                 "estimated_execution_cost": node.estimated_execution_cost.to_dict(),
@@ -88,7 +102,7 @@ class StructuredControllerPhase9Mixin:
                 state.stop_reason = "budget:action"
                 break
 
-            workspace, terminal = self._phase9_execute_node(
+            workspace, terminal = self._execute_action_node(
                 task, workspace, branch, node.proposal, node.node_id, state
             )
             if terminal is not None:
@@ -106,7 +120,7 @@ class StructuredControllerPhase9Mixin:
             frontier_policy=ActionFrontierPolicy.COST_AWARE_V1.value,
         )
 
-    def _phase9_fill_cache(self, task, workspace, cache, state):
+    def _fill_action_cache(self, task, workspace, cache, state):
         ready = sorted(
             (
                 branch for branch in workspace.branches
@@ -116,7 +130,7 @@ class StructuredControllerPhase9Mixin:
             key=lambda branch: branch.branch_id,
         )
         for branch in ready:
-            uses_model = self._phase9_generator_uses_model()
+            uses_model = self._action_generator_uses_model()
             if uses_model and not self.budget.can_call_model():
                 break
             state.retrieved_this_iteration = False
@@ -126,14 +140,18 @@ class StructuredControllerPhase9Mixin:
             )
             if state.current_retrieved:
                 state.retrieved_history.extend(state.current_retrieved)
+            route_decision = self._route_proposal_generation(
+                branch, workspace, cache, state
+            )
             if uses_model:
                 self.budget.reserve_model_call()
+            self._action_route_decision = route_decision
             started = time.perf_counter()
             request_id = f"proposal:{state.sample_id}:{len(state.model_usage)}"
             try:
                 proposals = self._generate(task, branch, workspace, state)
             except ActionGenerationError as exc:
-                self._phase9_record_provider_request(
+                self._record_proposal_request(
                     state, request_id, branch, time.perf_counter() - started,
                     status="failed", proposals=(), error=type(exc).__name__,
                 )
@@ -145,7 +163,10 @@ class StructuredControllerPhase9Mixin:
                     **exc.metadata,
                 })
                 state.stop_reason = f"generation:{exc.reason}"
+                self._action_route_decision = None
                 return workspace, cache
+            finally:
+                self._action_route_decision = None
             elapsed = time.perf_counter() - started
             finalized: list[StructuredActionProposal] = []
             for proposal in proposals:
@@ -160,7 +181,7 @@ class StructuredControllerPhase9Mixin:
                         "kind": proposal.action.kind.value,
                         "errors": errors,
                     })
-            source, tier = self._phase9_record_provider_request(
+            source, tier = self._record_proposal_request(
                 state, request_id, branch, elapsed,
                 status="completed", proposals=tuple(finalized),
             )
@@ -169,7 +190,7 @@ class StructuredControllerPhase9Mixin:
                 proposal_batch_id=request_id if source == "model" else None,
                 proposal_model_tier=tier,
             )
-            cache = self._phase9_apply_estimates(
+            cache = self._apply_action_estimates(
                 task, workspace, branch, cache, state
             )
             state.proposal_cache_events.append({
@@ -184,8 +205,57 @@ class StructuredControllerPhase9Mixin:
                 cache = ProposalCache(cache.valid_nodes(workspace), cache.limits)
         return workspace, cache
 
-    def _phase9_apply_estimates(self, task, workspace, branch, cache, state):
-        estimator = self._phase9_active_estimator
+    def _route_proposal_generation(self, branch, workspace, cache, state):
+        selected = self._select_test_action(branch)
+        action_kind = (
+            selected.kind
+            if selected is not None
+            else SearchActionKind.REPAIR_IMPLEMENTATION
+            if branch.last_action is not None
+            else SearchActionKind.IMPLEMENT
+        )
+        fingerprints = branch_goal_fingerprints(branch)
+        same_goal_failures = stalled_streak(branch)
+        validation_failures = sum(
+            1
+            for item in state.skipped_proposals
+            if item.get("branch_id") == branch.branch_id and item.get("errors")
+        )
+        snapshot = build_unified_budget_snapshot(
+            self.budget.snapshot(), state.cost_ledger
+        )
+        decision = route_model(
+            RoutingContext(
+                action_kind=action_kind,
+                goal_fingerprint=fingerprints[0] if fingerprints else None,
+                cheap_failures_on_fingerprint=same_goal_failures,
+                proposal_validation_failures=validation_failures,
+                stalled_streak=same_goal_failures,
+                unlock_value=dependents_count(
+                    workspace.obligation_graph
+                ).get(branch.obligation_id, 0),
+                has_trusted_cheap_cached_action=any(
+                    node.branch_id == branch.branch_id
+                    and node.proposal_model_tier == ModelTier.CHEAP.value
+                    for node in cache.entries
+                ),
+                is_low_cost_capability_probe=(
+                    action_kind is SearchActionKind.RUN_CAPABILITY_TEST
+                ),
+            ),
+            snapshot,
+            config=self.model_router_config,
+        )
+        state.proposal_cache_events.append({
+            "event": "model_routed",
+            "branch_id": branch.branch_id,
+            "workspace_version": workspace.version,
+            **routing_metadata(decision),
+        })
+        return decision
+
+    def _apply_action_estimates(self, task, workspace, branch, cache, state):
+        estimator = self._action_runtime_estimator
         if estimator is None:
             return cache
         estimates = {}
@@ -218,7 +288,7 @@ class StructuredControllerPhase9Mixin:
             })
         return cache.with_estimates(estimates)
 
-    def _phase9_generator_uses_model(self) -> bool:
+    def _action_generator_uses_model(self) -> bool:
         """Distinguish controlled/deterministic proposal sources before spending."""
         generator = self.action_generator
         if getattr(generator, "_uses_model", False):
@@ -227,7 +297,7 @@ class StructuredControllerPhase9Mixin:
         candidate = legacy if legacy is not None else generator
         return hasattr(candidate, "config") and hasattr(candidate, "transport")
 
-    def _phase9_record_provider_request(
+    def _record_proposal_request(
         self, state, request_id, branch, elapsed, *, status, proposals, error=None
     ):
         metadata = proposals[0].metadata if proposals else {}
@@ -242,6 +312,7 @@ class StructuredControllerPhase9Mixin:
             "branch_id": branch.branch_id,
             "obligation_id": branch.obligation_id,
             "error": error,
+            "routing": metadata.get("routing"),
         }
         state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
             event_id=f"provider-request:{len(state.cost_ledger.events)}",
@@ -283,9 +354,9 @@ class StructuredControllerPhase9Mixin:
             state.model_usage.append(dict(usage))
         return "model", str(tier)
 
-    def _phase9_execute_node(self, task, workspace, branch, proposal, node_id, state):
+    def _execute_action_node(self, task, workspace, branch, proposal, node_id, state):
         kind = proposal.action.kind
-        proposal = replace(proposal, metadata={**proposal.metadata, "phase9_action_node_id": node_id})
+        proposal = replace(proposal, metadata={**proposal.metadata, "action_node_id": node_id})
         if kind is SearchActionKind.RUN_CAPABILITY_TEST:
             workspace, _ = self._run_capability_audits(task, branch, [proposal], workspace, state)
             return workspace, None

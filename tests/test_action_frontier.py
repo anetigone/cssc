@@ -104,7 +104,9 @@ class ActionFrontierTests(unittest.TestCase):
         )
         frontier = ActionFrontier(policy=ActionFrontierPolicy.COST_AWARE_V1)
         frontier.refresh(workspace, cache)
-        self.assertEqual(frontier.pop().proposal.action.kind, SearchActionKind.DECOMPOSE)
+        selected = frontier.pop()
+        self.assertEqual(selected.proposal.action.kind, SearchActionKind.DECOMPOSE)
+        self.assertEqual(selected.priority_explanation.expected_incremental_cost, 0)
 
     def test_replay_order_is_deterministic(self) -> None:
         workspace = _workspace(ProofBranch("a", "sample", 1), ProofBranch("b", "sample", 1))
@@ -131,6 +133,30 @@ class ActionFrontierTests(unittest.TestCase):
         frontier = ActionFrontier(policy=ActionFrontierPolicy.COST_AWARE_V1)
         frontier.refresh(workspace, historical)
         self.assertEqual(frontier.pop().proposal.action.kind, SearchActionKind.IMPLEMENT)
+
+    def test_unknown_check_cost_does_not_become_infinite_cost(self) -> None:
+        workspace = _workspace(ProofBranch("b1", "sample", 1))
+        cache, _ = ProposalCache().add(
+            workspace,
+            (_proposal("b1", SearchActionKind.IMPLEMENT), _proposal("b1", SearchActionKind.DECOMPOSE)),
+            proposal_source="model",
+        )
+        by_kind = {node.proposal.action.kind: node.node_id for node in cache.entries}
+        cache = cache.with_estimates({
+            by_kind[SearchActionKind.IMPLEMENT]: CostEstimate(
+                checks=Estimate(1), source="history", sample_count=3
+            ),
+            by_kind[SearchActionKind.DECOMPOSE]: CostEstimate(
+                checks=None, source="history", sample_count=3
+            ),
+        })
+        frontier = ActionFrontier(policy=ActionFrontierPolicy.COST_AWARE_V1)
+        frontier.refresh(workspace, cache)
+        # With an incomplete dimension, the round falls back to non-cost keys;
+        # DECOMPOSE remains a real competitor instead of receiving +infinity.
+        selected = frontier.pop()
+        self.assertEqual(selected.proposal.action.kind, SearchActionKind.DECOMPOSE)
+        self.assertIsNone(selected.priority_explanation.expected_incremental_cost)
 
 
 if __name__ == "__main__":

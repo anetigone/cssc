@@ -36,6 +36,7 @@ from ..proposal import (
     StructuredActionProposal,
 )
 from ..run_state import _StructuredRunState
+from ..model_router import routing_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,16 @@ class StructuredControllerRuntimeMixin:
             len(state.current_retrieved),
             len(state.feedback_history),
         )
-        proposals = tuple(self.action_generator.generate(request))
+        route_decision = getattr(self, "_action_route_decision", None)
+        if (
+            route_decision is not None
+            and hasattr(self.action_generator, "generate_for_route")
+        ):
+            proposals = tuple(
+                self.action_generator.generate_for_route(request, route_decision)
+            )
+        else:
+            proposals = tuple(self.action_generator.generate(request))
         logger.info(
             "Structured proposals generated: task_id=%s branch=%s count=%d",
             task.task_id,
@@ -189,7 +199,7 @@ class StructuredControllerRuntimeMixin:
             len(projection.sibling_branches),
             selected_test_action.kind.value if selected_test_action is not None else None,
         )
-        return {
+        metadata = {
             "proof_phase": "implement" if branch.last_action is None else "repair",
             "branch_id": branch.branch_id,
             "branch_obligation": (
@@ -221,6 +231,10 @@ class StructuredControllerRuntimeMixin:
             "structured_workspace_version": workspace.version,
             "budget": self.budget.snapshot(),
         }
+        route_decision = getattr(self, "_action_route_decision", None)
+        if route_decision is not None:
+            metadata.update(routing_metadata(route_decision))
+        return metadata
 
     def _render_target(
         self,
@@ -306,7 +320,7 @@ class StructuredControllerRuntimeMixin:
 
     def _record_checker_cost(self, state, check_result, edit) -> None:
         """Append one checker event on both legacy and Phase 9 structured paths."""
-        action_id = getattr(edit, "metadata", {}).get("phase9_action_node_id")
+        action_id = getattr(edit, "metadata", {}).get("action_node_id")
         event_index = len(state.cost_ledger.events)
         state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
             event_id=f"checker:{event_index}",

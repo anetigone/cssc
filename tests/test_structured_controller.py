@@ -149,6 +149,7 @@ class StructuredControllerTests(unittest.TestCase):
         retriever: Any = None,
         context_summarizer: Any = None,
         frontier_policy: str = "legacy",
+        model_router_config: Any = None,
     ) -> StructuredController:
         return StructuredController(
             adapter=adapter or StructuredFakeAdapter(),
@@ -163,6 +164,7 @@ class StructuredControllerTests(unittest.TestCase):
             safety_reviewer=safety_reviewer,
             retriever=retriever,
             context_summarizer=context_summarizer,
+            model_router_config=model_router_config,
         )
 
     def test_accepted_path_serializes_workspace(self) -> None:
@@ -210,7 +212,7 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         self.assertEqual(result.metadata["frontier_policy"], "cost_aware_v2")
 
-    def test_phase9_action_frontier_runs_real_controller_and_writes_ledger(self) -> None:
+    def test_action_frontier_runs_real_controller_and_writes_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = self._controller(
                 tmp,
@@ -237,7 +239,7 @@ class StructuredControllerTests(unittest.TestCase):
         # Controlled proposals do not consume provider/model-request budget.
         self.assertEqual(result.budget.model_calls_used, 0)
 
-    def test_phase9_cached_actions_compete_before_execution(self) -> None:
+    def test_cached_actions_compete_before_execution(self) -> None:
         from agent.proof_system.workspace import (
             DEFAULT_ALLOWED_MUTATIONS,
             SearchAction,
@@ -295,7 +297,7 @@ class StructuredControllerTests(unittest.TestCase):
             attempt.edit.action == "capability_test" for attempt in result.attempts
         ))
 
-    def test_phase9_decompose_helpers_and_parent_close_end_to_end(self) -> None:
+    def test_action_runtime_decompose_helpers_and_parent_close_end_to_end(self) -> None:
         from agent.proof_system.workspace import (
             DEFAULT_ALLOWED_MUTATIONS,
             SearchAction,
@@ -352,6 +354,91 @@ class StructuredControllerTests(unittest.TestCase):
         ]
         self.assertEqual(selected_kinds, ["decompose", "implement", "implement"])
         self.assertEqual(result.budget.model_calls_used, 0)
+
+    def test_action_runtime_routes_real_generation_to_strong_tier(self) -> None:
+        from agent.proof_system.workspace import (
+            DEFAULT_ALLOWED_MUTATIONS,
+            SearchAction,
+            SearchActionKind,
+        )
+        from agent.search.structured.model_router import (
+            ModelRouterConfig,
+            TieredStructuredActionGenerator,
+        )
+        from agent.search.structured.proposal import (
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class TierGenerator:
+            _is_structured_generator = True
+
+            def __init__(self, model: str, proof: str) -> None:
+                self.model = model
+                self.proof = proof
+                self.calls = 0
+                self.requests = []
+
+            def generate(self, request):
+                self.calls += 1
+                self.requests.append(request)
+                branch_id = request.metadata["branch_id"]
+                return (StructuredActionProposal(
+                    action=SearchAction(
+                        SearchActionKind.IMPLEMENT, branch_id,
+                        allowed_mutations=DEFAULT_ALLOWED_MUTATIONS[
+                            SearchActionKind.IMPLEMENT
+                        ],
+                        rationale="implement",
+                    ),
+                    payload=ImplementPayload(self.proof),
+                    metadata={
+                        "model": self.model,
+                        "token_usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 2,
+                            "reasoning_tokens": 0,
+                            "cached_tokens": 0,
+                            "provider_total_tokens": 12,
+                        },
+                    },
+                ),)
+
+        cheap = TierGenerator("small", "fail")
+        strong = TierGenerator("large", "trivial")
+        generator = TieredStructuredActionGenerator(cheap, strong)
+        router = ModelRouterConfig(
+            enabled=True,
+            cheap_model="small",
+            strong_model="large",
+            strong_action_kinds=frozenset({SearchActionKind.IMPLEMENT}),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._controller(
+                tmp, generator,  # type: ignore[arg-type]
+                frontier_policy="action_cost_aware_v1",
+                model_router_config=router,
+            ).run(_task())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(cheap.calls, 0)
+        self.assertEqual(strong.calls, 1)
+        self.assertEqual(strong.requests[0].metadata["model_tier"], "strong")
+        self.assertEqual(
+            result.attempts[0].edit.metadata["model_tier"], "strong"
+        )
+        routed = next(
+            event for event in result.metadata["proposal_cache_events"]
+            if event["event"] == "model_routed"
+        )
+        self.assertEqual(routed["model_tier"], "strong")
+        request = next(
+            event for event in result.metadata["cost_ledger"]["events"]
+            if event["kind"] == "provider_request"
+        )
+        self.assertEqual(request["model"], "large")
+        self.assertEqual(request["model_tier"], "strong")
+        self.assertTrue(request["metadata"]["routing"]["escalation_granted"])
 
     def test_budget_hints_present_in_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

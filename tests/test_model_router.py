@@ -12,6 +12,7 @@ from agent.search.structured.model_router import (
     RoutingContext,
     route_model,
     routing_metadata,
+    TieredStructuredActionGenerator,
 )
 
 
@@ -104,6 +105,49 @@ class ModelRouterTests(unittest.TestCase):
         )
         self.assertFalse(decision.escalation_granted)
         self.assertIn("input_tokens", decision.budget_admission.rejected_dimensions)
+
+    def test_tiered_generator_executes_selected_tier_and_tags_proposal(self) -> None:
+        from agent.proof_system.base import ProofTask
+        from agent.proof_system.workspace import SearchAction
+        from agent.search.action import ActionGenerationRequest
+        from agent.search.structured.proposal import (
+            ImplementPayload,
+            StructuredActionProposal,
+        )
+
+        class Generator:
+            def __init__(self, label: str) -> None:
+                self.label = label
+                self.calls = 0
+
+            def generate(self, request):
+                self.calls += 1
+                return (StructuredActionProposal(
+                    action=SearchAction(
+                        SearchActionKind.IMPLEMENT,
+                        request.metadata["branch_id"],
+                        rationale="implement",
+                    ),
+                    payload=ImplementPayload(self.label),
+                ),)
+
+        cheap = Generator("cheap")
+        strong = Generator("strong")
+        tiered = TieredStructuredActionGenerator(cheap, strong)
+        request = ActionGenerationRequest(
+            task=ProofTask("t", "theorem t : True := by {{proof}}"),
+            attempt_index=0,
+            metadata={"branch_id": "b"},
+        )
+        decision = route_model(
+            RoutingContext(SearchActionKind.DECOMPOSE), _budget(),
+            config=ModelRouterConfig(enabled=True, strong_model="large"),
+        )
+        proposal = tiered.generate_for_route(request, decision)[0]
+        self.assertEqual(cheap.calls, 0)
+        self.assertEqual(strong.calls, 1)
+        self.assertEqual(proposal.payload.proof_text, "strong")
+        self.assertEqual(proposal.metadata["model_tier"], "strong")
 
 
 if __name__ == "__main__":

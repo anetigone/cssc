@@ -60,7 +60,7 @@ class PriorityExplanation:
 
     branch_id: str
     policy: str
-    expected_incremental_cost: int
+    expected_incremental_cost: int | None
     unlock_value: int
     progress_likelihood: int
     information_gain: int
