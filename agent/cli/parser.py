@@ -149,6 +149,12 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
     group.add_argument("--max-model-calls", type=int, default=3)
     group.add_argument("--max-checks", type=int, default=3)
     group.add_argument("--max-elapsed-seconds", type=float, default=None)
+    group.add_argument("--max-input-tokens", type=float, default=None)
+    group.add_argument("--max-output-tokens", type=float, default=None)
+    group.add_argument("--max-billed-tokens", type=float, default=None)
+    group.add_argument("--max-api-cost-usd", type=float, default=None)
+    group.add_argument("--global-reserve-checks", type=int, default=0)
+    group.add_argument("--global-reserve-model-requests", type=int, default=0)
     group.add_argument(
         "--execution-mode",
         choices=("minimal", "structured"),

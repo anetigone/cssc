@@ -18,7 +18,7 @@ from ..action_frontier import (
     ProposalCache,
 )
 from ..branch_ops import branch_by_id
-from ..budget_snapshot import admit_estimate
+from ..budget_snapshot import BudgetAdmission, admit_estimate
 from ..frontier_signals import (
     branch_goal_fingerprints,
     dependents_count,
@@ -211,8 +211,14 @@ class StructuredControllerActionRuntimeMixin:
                 proposal_cost = proposal_cost_for_route(
                     route_decision, self.model_router_config
                 )
-                proposal_admission = admit_estimate(
-                    proposal_snapshot, proposal_cost, reject_unknown=True
+                proposal_admission = (
+                    admit_estimate(
+                        proposal_snapshot, proposal_cost, reject_unknown=True
+                    )
+                    if self.action_runtime_config.remaining_budget_policy
+                    else BudgetAdmission(
+                        True, (), ("remaining_budget_policy_disabled",)
+                    )
                 )
                 state.proposal_cache_events.append({
                     "event": (

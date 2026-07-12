@@ -533,6 +533,25 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertTrue(args.enable_model_routing)
         self.assertEqual(args.strong_proof_model, "large")
 
+    def test_parser_exposes_phase9_budget_limits(self) -> None:
+        args = build_parser().parse_args([
+            "solve", "Basic.lean",
+            "--max-input-tokens", "1000",
+            "--max-output-tokens", "500",
+            "--max-billed-tokens", "1200",
+            "--max-api-cost-usd", "0.25",
+            "--global-reserve-checks", "1",
+            "--global-reserve-model-requests", "2",
+            "--disable-remaining-budget-policy",
+        ])
+        self.assertEqual(args.max_input_tokens, 1000)
+        self.assertEqual(args.max_output_tokens, 500)
+        self.assertEqual(args.max_billed_tokens, 1200)
+        self.assertEqual(args.max_api_cost_usd, 0.25)
+        self.assertEqual(args.global_reserve_checks, 1)
+        self.assertEqual(args.global_reserve_model_requests, 2)
+        self.assertFalse(args.remaining_budget_policy)
+
     def test_per_role_model_flags_override_generic_model(self) -> None:
         parser = build_parser()
         formalize = parser.parse_args(

@@ -412,6 +412,14 @@ def _run_controller(
             max_model_calls=args.max_model_calls,
             per_check_timeout_seconds=args.lean_timeout,
             max_elapsed_seconds=args.max_elapsed_seconds,
+            max_input_tokens=getattr(args, "max_input_tokens", None),
+            max_output_tokens=getattr(args, "max_output_tokens", None),
+            max_billed_tokens=getattr(args, "max_billed_tokens", None),
+            max_api_cost_usd=getattr(args, "max_api_cost_usd", None),
+            global_reserve_checks=getattr(args, "global_reserve_checks", 0),
+            global_reserve_model_requests=getattr(
+                args, "global_reserve_model_requests", 0
+            ),
         ),
         config=ControllerConfig(
             max_candidates_per_model_call=args.max_candidates,
