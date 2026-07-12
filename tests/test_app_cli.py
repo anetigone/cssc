@@ -584,7 +584,7 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertTrue(args.enable_model_routing)
         self.assertEqual(args.strong_proof_model, "large")
 
-    def test_parser_exposes_phase9_budget_limits(self) -> None:
+    def test_parser_exposes_action_runtime_budget_limits(self) -> None:
         args = build_parser().parse_args([
             "solve", "Basic.lean",
             "--max-input-tokens", "1000",

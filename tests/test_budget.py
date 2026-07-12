@@ -6,7 +6,7 @@ from agent.search.budget import BudgetConfig, BudgetExhausted, BudgetManager
 
 
 class BudgetManagerTests(unittest.TestCase):
-    def test_negative_phase9_limit_is_rejected(self) -> None:
+    def test_negative_action_runtime_limit_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_api_cost_usd"):
             BudgetConfig(max_api_cost_usd=-0.01)
 

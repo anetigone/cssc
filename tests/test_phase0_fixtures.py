@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 
 
-class Phase0FixtureTests(unittest.TestCase):
+class BaselineFixtureTests(unittest.TestCase):
     def test_fixture_files_have_stable_input_shape(self) -> None:
         seen_ids: set[str] = set()
         for name in ("fixtures_simple.json", "fixtures_complex.json"):
