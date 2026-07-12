@@ -31,6 +31,17 @@ class BudgetConfig:
     global_reserve_checks: int = 0
     global_reserve_model_requests: int = 0
 
+    def __post_init__(self) -> None:
+        for name in (
+            "max_checks", "max_model_calls", "per_check_timeout_seconds",
+            "max_elapsed_seconds", "max_input_tokens", "max_output_tokens",
+            "max_billed_tokens", "max_api_cost_usd", "global_reserve_checks",
+            "global_reserve_model_requests",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} cannot be negative")
+
 
 @dataclass(frozen=True)
 class BudgetSnapshot:

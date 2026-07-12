@@ -73,7 +73,12 @@ from .proof_system.base import (
     ProgressSignal,
     ProofSystemAdapter,
 )
-from .tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
+from .tasks.task_builder import (
+    LeanTaskBuilder,
+    TaskBuildError,
+    TaskBuilderConfig,
+    materialize_task_dependencies,
+)
 from .tasks.types import ProofTask, TaskInputKind, TaskInputSpec
 from .runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace, MaterializedCandidate
 from .runtime.trace_store import JsonlTraceStore, result_events
@@ -119,6 +124,7 @@ __all__ = [
     "LeanEnvironmentToolProvider",
     "LeanProofToolProvider",
     "LeanTaskBuilder",
+    "materialize_task_dependencies",
     "LexicalLeanRetriever",
     "load_dotenv",
     "JsonlTraceStore",

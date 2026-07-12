@@ -42,4 +42,20 @@ def result_payload(result: ControllerResult, *, include_candidate_file: bool = T
         last = result.attempts[-1].check_result
         payload["last_category"] = last.category.value
         payload["last_message"] = last.parsed_feedback.message if last.parsed_feedback else ""
+    sequence = result.metadata.get("task_sequence")
+    if isinstance(sequence, (list, tuple)):
+        payload["task_sequence"] = sequence
+        payload["task_sequence_complete"] = bool(
+            result.metadata.get("task_sequence_complete")
+        )
+        payload["sequence_checks_used"] = sum(
+            int(item.get("checks_used", 0))
+            for item in sequence
+            if isinstance(item, dict)
+        )
+        payload["sequence_model_calls_used"] = sum(
+            int(item.get("model_calls_used", 0))
+            for item in sequence
+            if isinstance(item, dict)
+        )
     return payload

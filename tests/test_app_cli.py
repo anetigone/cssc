@@ -15,7 +15,7 @@ from agent.cli.config import apply_task_config
 from agent.cli.generators import build_action_generator
 from agent.cli.parser import build_parser
 from agent.cli.paths import find_lake_root, resolve_agent_path
-from agent.cli.app import _run_artifact_path
+from agent.cli.app import _run_artifact_path, _run_task_sequence
 from agent.cli.tasks import build_tasks, classify_input, select_task
 from agent.cli.workspace import build_check_workspace, _workspace_context
 from agent.agents import FormalizationResult, StaticFormalizationAgent
@@ -25,6 +25,57 @@ from agent.search.controller import AttemptRecord, ControllerResult
 
 
 class SolveLeanTaskCliTests(unittest.TestCase):
+    def test_runs_multi_hole_tasks_in_order_with_only_accepted_dependencies(self) -> None:
+        from agent.tasks.task_builder import LeanTaskBuilder, TaskBuilderConfig
+
+        tasks = LeanTaskBuilder(
+            TaskBuilderConfig(allow_multiple_sorry_tasks=True)
+        ).build_from_source(
+            "theorem one : True := by\n  sorry\n\n"
+            "theorem two : True := by\n  sorry\n",
+            task_id_prefix="chain",
+        )
+        snapshot = BudgetSnapshot(1, 1, 0.1, 0, 0)
+
+        def accepted(task, proof):
+            attempt = AttemptRecord(
+                attempt_index=0,
+                candidate_id=task.task_id,
+                edit=CandidateEdit(proof),
+                candidate_file=Path(f"{task.task_id}.lean"),
+                check_result=CheckResult(
+                    accepted=True,
+                    category=DiagnosticCategory.PROOF_ACCEPTED,
+                    raw_output="",
+                    candidate_file=Path(f"{task.task_id}.lean"),
+                ),
+            )
+            return ControllerResult(
+                task=task,
+                accepted=True,
+                attempts=(attempt,),
+                budget=snapshot,
+                stop_reason="accepted",
+                accepted_attempt=attempt,
+            )
+
+        calls = []
+
+        def run(_args, task, *_rest):
+            calls.append(task)
+            return accepted(task, "trivial")
+
+        with patch("agent.cli.app._run_controller", side_effect=run):
+            result = _run_task_sequence(
+                Namespace(), tasks, MagicMock(), Path("."), None, None
+            )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual([task.task_id for task in calls], ["chain.one", "chain.two"])
+        self.assertNotIn("{{dependency:", calls[1].source_template)
+        self.assertIn("theorem one : True := by\n  trivial", calls[1].source_template)
+        self.assertTrue(result.metadata["task_sequence_complete"])
+
     def test_build_tasks_from_file_and_select_by_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Basic.lean"
@@ -532,6 +583,25 @@ class CliSubcommandTests(unittest.TestCase):
         ])
         self.assertTrue(args.enable_model_routing)
         self.assertEqual(args.strong_proof_model, "large")
+
+    def test_parser_exposes_phase9_budget_limits(self) -> None:
+        args = build_parser().parse_args([
+            "solve", "Basic.lean",
+            "--max-input-tokens", "1000",
+            "--max-output-tokens", "500",
+            "--max-billed-tokens", "1200",
+            "--max-api-cost-usd", "0.25",
+            "--global-reserve-checks", "1",
+            "--global-reserve-model-requests", "2",
+            "--disable-remaining-budget-policy",
+        ])
+        self.assertEqual(args.max_input_tokens, 1000)
+        self.assertEqual(args.max_output_tokens, 500)
+        self.assertEqual(args.max_billed_tokens, 1200)
+        self.assertEqual(args.max_api_cost_usd, 0.25)
+        self.assertEqual(args.global_reserve_checks, 1)
+        self.assertEqual(args.global_reserve_model_requests, 2)
+        self.assertFalse(args.remaining_budget_policy)
 
     def test_per_role_model_flags_override_generic_model(self) -> None:
         parser = build_parser()

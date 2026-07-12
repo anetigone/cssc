@@ -42,6 +42,10 @@ from agent.search.structured.budget_snapshot import (
 from agent.search.structured.controller.action_runtime_selection import (
     select_admissible_action,
 )
+from agent.search.structured.action_runtime_config import (
+    ActionCostSource,
+    ActionRuntimeConfig,
+)
 
 
 def _workspace(*branches: ProofBranch):
@@ -109,6 +113,16 @@ class ProposalCacheTests(unittest.TestCase):
         self.assertEqual(restored, cache)
 
 
+class ActionRuntimeConfigTests(unittest.TestCase):
+    def test_string_cost_source_is_normalized(self) -> None:
+        config = ActionRuntimeConfig(cost_source="empirical")  # type: ignore[arg-type]
+        self.assertIs(config.cost_source, ActionCostSource.EMPIRICAL)
+
+    def test_non_boolean_budget_policy_is_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            ActionRuntimeConfig(remaining_budget_policy=1)  # type: ignore[arg-type]
+
+
 class ActionFrontierTests(unittest.TestCase):
     def test_constrained_selection_skips_rejected_higher_ranked_action(self) -> None:
         workspace = _workspace(ProofBranch("b1", "sample", 1))
@@ -145,6 +159,18 @@ class ActionFrontierTests(unittest.TestCase):
         )
         self.assertFalse(selection.choice_set[0]["budget_admission"]["allowed"])
         self.assertTrue(selection.choice_set[1]["budget_admission"]["allowed"])
+
+        unconstrained = select_admissible_action(
+            frontier, snapshot, enforce_remaining_budget=False
+        )
+        self.assertEqual(
+            unconstrained.node.proposal.action.kind, SearchActionKind.DECOMPOSE
+        )
+        self.assertTrue(unconstrained.admission.allowed)
+        self.assertIn(
+            "remaining_budget_policy_disabled",
+            unconstrained.admission.not_compared_dimensions,
+        )
 
     def test_cost_policy_prefers_free_structural_action(self) -> None:
         workspace = _workspace(ProofBranch("b1", "sample", 1))

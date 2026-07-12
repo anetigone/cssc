@@ -334,7 +334,7 @@ class AgentRole(str, Enum):
 - structured CLI 可通过 `--frontier-policy action_cost_aware_v1` 显式启用 Phase 9 路径；legacy / Phase 8 policy 不变。
 - Phase 9 controller 为全部 ready branch 生成 bounded proposal cache，随后以 `(branch, proposal)` action node 全局竞争；workspace version 变化会使旧 cache node 失效，不自动重绑。
 - deterministic generator 不消费 provider/model-request budget；model proposal batch、candidate/capability checker 和 assembly checker 写入 append-only `CostLedger`，结果经独立 trace snapshot 输出。
-- action 选择前从同一 ledger + global budget 构造 `UnifiedBudgetSnapshot` 并执行 hard-budget admission；历史 estimator 可由 `StructuredController(cost_estimator=...)` 注入，或通过 `ProofTask.metadata["cost_history_snapshot"]` 提供冻结 snapshot。
+- action 选择前从同一 ledger + global budget 构造 `UnifiedBudgetSnapshot` 并执行 hard-budget admission；历史 estimator 可由 `StructuredController(cost_estimator=...)` 注入，或通过 `ProofTask.metadata["cost_history_snapshot"]` 提供冻结 snapshot。`ActionRuntimeConfig` 将 cost source（auto/static/empirical）与 remaining-budget policy 正交冻结；关闭后 proposal-generation 与 action-execution 两处 admission 同时旁路并写明原因。CLI 暴露 token/USD/global-reserve 等 Phase 9 budget limits。
 - cheap/strong 路由通过 `--enable-model-routing --strong-proof-model <model>` 显式启用，并要求 `structured + action_cost_aware_v1`；controller 在 proposal request 前用当前 branch、冻结预算和失败/stall 信号选择 tier。两 tier 共用单一 Proof Agent 协议、global budget 与 ledger，决策进入 request/proposal/action/ledger trace；关闭开关严格使用 cheap tier。
 - action cost 的某一维为 unknown 时，该维在本轮所有竞争 action 间整体退出排序，不把 unknown 当成 `+∞`；硬预算 admission 同样不会把 unknown 伪装成零。
 

@@ -18,7 +18,7 @@ from ..action_frontier import (
     ProposalCache,
 )
 from ..branch_ops import branch_by_id
-from ..budget_snapshot import admit_estimate
+from ..budget_snapshot import BudgetAdmission, admit_estimate
 from ..frontier_signals import (
     branch_goal_fingerprints,
     dependents_count,
@@ -31,7 +31,9 @@ from ..cost_estimator import (
     actual_cost_from_events,
     cost_history_snapshot_from_dict,
     estimate_error,
+    cost_history_snapshot_fingerprint,
 )
+from ..action_runtime_config import ActionCostSource
 from ..proposal import StructuredActionProposal
 from ..run_state import _StructuredRunState, build_structured_result
 from ..model_router import (
@@ -59,11 +61,19 @@ class StructuredControllerActionRuntimeMixin:
         state = _StructuredRunState()
         estimator = self.cost_estimator
         serialized_history = task.metadata.get("cost_history_snapshot")
-        if estimator is None and isinstance(serialized_history, dict):
+        source = self.action_runtime_config.cost_source
+        if source is ActionCostSource.STATIC:
+            estimator = None
+        elif estimator is None and isinstance(serialized_history, dict):
             estimator = ActionCostEstimator(
                 cost_history_snapshot_from_dict(serialized_history)
             )
+        if source is ActionCostSource.EMPIRICAL and estimator is None:
+            raise ValueError(
+                "empirical action cost requires a frozen cost history snapshot"
+            )
         self._action_runtime_estimator = estimator
+        runtime_metadata = self._effective_action_runtime_metadata(estimator)
         cache = ProposalCache()
         frontier = ActionFrontier(policy=ActionFrontierPolicy.COST_AWARE_V1)
 
@@ -79,7 +89,13 @@ class StructuredControllerActionRuntimeMixin:
                 break
 
             snapshot = unified_budget_snapshot(self.budget, state)
-            selection = select_admissible_action(frontier, snapshot)
+            selection = select_admissible_action(
+                frontier,
+                snapshot,
+                enforce_remaining_budget=(
+                    self.action_runtime_config.remaining_budget_policy
+                ),
+            )
             state.proposal_cache_events.append({
                 "event": "choice_set",
                 "workspace_version": workspace.version,
@@ -147,6 +163,7 @@ class StructuredControllerActionRuntimeMixin:
                 ),
             })
             if terminal is not None:
+                terminal.metadata["action_runtime_config"] = runtime_metadata
                 terminal.metadata["proposal_cache_events"] = tuple(
                     state.proposal_cache_events
                 )
@@ -157,12 +174,29 @@ class StructuredControllerActionRuntimeMixin:
         if state.stop_reason == "budget":
             reason = self.budget.exhausted_reason()
             state.stop_reason = f"budget:{reason}" if reason else "no_ready_work"
-        return build_structured_result(
+        result = build_structured_result(
             state, task, workspace, accepted=False, stop_reason=state.stop_reason,
             execution_mode=ExecutionMode.STRUCTURED, budget=self.budget,
             safety_reviewer=self.safety_reviewer,
             frontier_policy=ActionFrontierPolicy.COST_AWARE_V1.value,
         )
+        result.metadata["action_runtime_config"] = runtime_metadata
+        return result
+
+    def _effective_action_runtime_metadata(self, estimator):
+        metadata = self.action_runtime_config.to_dict()
+        snapshot = getattr(estimator, "snapshot", None)
+        metadata.update({
+            "cost_history_snapshot_id": getattr(snapshot, "snapshot_id", None),
+            "cost_history_estimator_version": getattr(
+                snapshot, "estimator_version", None
+            ),
+            "cost_history_snapshot_sha256": (
+                cost_history_snapshot_fingerprint(snapshot)
+                if snapshot is not None else None
+            ),
+        })
+        return metadata
 
     def _fill_action_cache(self, task, workspace, cache, state):
         ready = sorted(
@@ -192,8 +226,14 @@ class StructuredControllerActionRuntimeMixin:
                 proposal_cost = proposal_cost_for_route(
                     route_decision, self.model_router_config
                 )
-                proposal_admission = admit_estimate(
-                    proposal_snapshot, proposal_cost, reject_unknown=True
+                proposal_admission = (
+                    admit_estimate(
+                        proposal_snapshot, proposal_cost, reject_unknown=True
+                    )
+                    if self.action_runtime_config.remaining_budget_policy
+                    else BudgetAdmission(
+                        True, (), ("remaining_budget_policy_disabled",)
+                    )
                 )
                 state.proposal_cache_events.append({
                     "event": (
@@ -241,6 +281,11 @@ class StructuredControllerActionRuntimeMixin:
             finalized: list[StructuredActionProposal] = []
             for proposal in proposals:
                 proposal = self._finalize_kind(proposal, branch)
+                if "pricing" in task.metadata and "pricing" not in proposal.metadata:
+                    proposal = replace(
+                        proposal,
+                        metadata={**proposal.metadata, "pricing": task.metadata["pricing"]},
+                    )
                 ok, errors = proposal.validate()
                 if ok:
                     finalized.append(proposal)

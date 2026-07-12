@@ -44,6 +44,7 @@ def result_metadata(
         "safety_reviewer": type(safety_reviewer).__name__,
         "model_usage": tuple(state.model_usage),
         "generation_failures": tuple(state.generation_failures),
+        "cost_ledger": state.cost_ledger.to_dict(),
         "cost": to_dict(cost),
     }
 

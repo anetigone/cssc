@@ -149,6 +149,12 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
     group.add_argument("--max-model-calls", type=int, default=3)
     group.add_argument("--max-checks", type=int, default=3)
     group.add_argument("--max-elapsed-seconds", type=float, default=None)
+    group.add_argument("--max-input-tokens", type=float, default=None)
+    group.add_argument("--max-output-tokens", type=float, default=None)
+    group.add_argument("--max-billed-tokens", type=float, default=None)
+    group.add_argument("--max-api-cost-usd", type=float, default=None)
+    group.add_argument("--global-reserve-checks", type=int, default=0)
+    group.add_argument("--global-reserve-model-requests", type=int, default=0)
     group.add_argument(
         "--execution-mode",
         choices=("minimal", "structured"),
@@ -192,6 +198,29 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
     group.add_argument("--strong-proof-model", default=None)
     group.add_argument("--strong-proof-temperature", type=float, default=None)
     group.add_argument("--strong-proof-max-tokens", type=int, default=None)
+    group.add_argument(
+        "--action-cost-source",
+        choices=("auto", "static", "empirical"),
+        default="auto",
+        help="Cost source for action_cost_aware_v1.",
+    )
+    group.add_argument(
+        "--cost-history-snapshot",
+        default=None,
+        help="Frozen CostHistorySnapshot JSON; required for empirical cost.",
+    )
+    budget_policy = group.add_mutually_exclusive_group()
+    budget_policy.add_argument(
+        "--enable-remaining-budget-policy",
+        action="store_true",
+        dest="remaining_budget_policy",
+    )
+    budget_policy.add_argument(
+        "--disable-remaining-budget-policy",
+        action="store_false",
+        dest="remaining_budget_policy",
+    )
+    group.set_defaults(remaining_budget_policy=True)
     _add_model_args(parser, role="proof")
     _add_model_args(parser, role="context", default_max_tokens=512)
 

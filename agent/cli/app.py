@@ -21,7 +21,7 @@ import logging
 import sys
 from argparse import Namespace
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -37,6 +37,7 @@ from agent import (
     TaskBuildError,
     TaskInputKind,
     build_controller,
+    materialize_task_dependencies,
 )
 from agent.agents import FormalizationRequest
 from agent.input.normalizer import InputNormalizer
@@ -268,10 +269,15 @@ def run_solve(args: Namespace, *, agent_root: Path, project_root: Path | None) -
                 print(json.dumps(payload, indent=2))
                 return 0
 
-            task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
-            logger.info("Selected task: task_id=%s", task.task_id)
             logger.debug("Using attempt workspace: %s", work_dir)
-            result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
+            if _has_dependency_sequence(tasks) and args.task_id is None:
+                result = _run_task_sequence(
+                    args, tasks, services, work_dir, check_workspace, project_root
+                )
+            else:
+                task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
+                logger.info("Selected task: task_id=%s", task.task_id)
+                result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
 
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("CLI setup failed", exc_info=True)
@@ -310,8 +316,13 @@ def run_prove(args: Namespace, *, agent_root: Path, project_root: Path | None) -
                     agent_root,
                 )
                 return 0
-            task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
-            result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
+            if _has_dependency_sequence(tasks) and args.task_id is None:
+                result = _run_task_sequence(
+                    args, tasks, services, work_dir, check_workspace, project_root
+                )
+            else:
+                task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
+                result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("prove failed", exc_info=True)
             return _fail("prove", exc)
@@ -363,9 +374,34 @@ def _run_controller(
 ) -> Any:
     generator = build_action_generator(args, project_root=project_root)
     execution_mode = ExecutionMode(args.execution_mode)
+    frontier_policy = getattr(args, "frontier_policy", "legacy")
+    cost_source_arg = getattr(args, "action_cost_source", "auto")
+    snapshot_arg = getattr(args, "cost_history_snapshot", None)
+    remaining_policy_arg = bool(getattr(args, "remaining_budget_policy", True))
+    if frontier_policy != "action_cost_aware_v1":
+        if cost_source_arg != "auto" or snapshot_arg or not remaining_policy_arg:
+            raise ValueError(
+                "action cost/history/budget-policy options require "
+                "--frontier-policy action_cost_aware_v1"
+            )
+    if cost_source_arg == "static" and snapshot_arg:
+        raise ValueError("static action cost cannot use --cost-history-snapshot")
+    if cost_source_arg == "empirical" and not snapshot_arg:
+        raise ValueError("empirical action cost requires --cost-history-snapshot")
     model_router_config = None
+    action_runtime_config = None
+    cost_estimator = None
     if execution_mode is ExecutionMode.STRUCTURED:
         from agent.search.structured.model_router import ModelRouterConfig
+        from agent.search.structured.action_runtime_config import (
+            ActionCostSource,
+            ActionRuntimeConfig,
+        )
+        from agent.search.structured.cost_estimator import (
+            ActionCostEstimator,
+            cost_history_snapshot_from_dict,
+        )
+        import json
 
         model_router_config = ModelRouterConfig(
             enabled=bool(getattr(args, "enable_model_routing", False)),
@@ -375,6 +411,16 @@ def _run_controller(
             ),
             strong_model=getattr(args, "strong_proof_model", None),
         )
+        action_runtime_config = ActionRuntimeConfig(
+            cost_source=ActionCostSource(cost_source_arg),
+            remaining_budget_policy=remaining_policy_arg,
+        )
+        if snapshot_arg:
+            snapshot_path = resolve_agent_path(Path.cwd(), snapshot_arg)
+            snapshot_data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            cost_estimator = ActionCostEstimator(
+                cost_history_snapshot_from_dict(snapshot_data)
+            )
     controller = build_controller(
         execution_mode,
         adapter=services.adapter,
@@ -388,6 +434,14 @@ def _run_controller(
             max_model_calls=args.max_model_calls,
             per_check_timeout_seconds=args.lean_timeout,
             max_elapsed_seconds=args.max_elapsed_seconds,
+            max_input_tokens=getattr(args, "max_input_tokens", None),
+            max_output_tokens=getattr(args, "max_output_tokens", None),
+            max_billed_tokens=getattr(args, "max_billed_tokens", None),
+            max_api_cost_usd=getattr(args, "max_api_cost_usd", None),
+            global_reserve_checks=getattr(args, "global_reserve_checks", 0),
+            global_reserve_model_requests=getattr(
+                args, "global_reserve_model_requests", 0
+            ),
         ),
         config=ControllerConfig(
             max_candidates_per_model_call=args.max_candidates,
@@ -397,8 +451,73 @@ def _run_controller(
             frontier_policy=getattr(args, "frontier_policy", "legacy"),
         ),
         model_router_config=model_router_config,
+        cost_estimator=cost_estimator,
+        action_runtime_config=action_runtime_config,
     )
     return controller.run(task)
+
+
+def _has_dependency_sequence(tasks: list[Any]) -> bool:
+    """Return whether TaskBuilder emitted a multi-hole source-order chain."""
+    return len(tasks) > 1 and any(
+        "dependency_task_ids" in task.metadata for task in tasks
+    )
+
+
+def _run_task_sequence(
+    args: Namespace,
+    tasks: list[Any],
+    services: _LeanServices,
+    work_dir: Path,
+    check_workspace: EphemeralCheckWorkspace | None,
+    project_root: Path | None,
+) -> Any:
+    """Solve a TaskBuilder dependency chain and inject only accepted proofs."""
+    accepted_proofs: dict[str, str] = {}
+    summaries: list[dict[str, Any]] = []
+    last_result = None
+    for task in tasks:
+        materialized = materialize_task_dependencies(task, accepted_proofs)
+        logger.info(
+            "Running dependency task: task_id=%s dependencies=%s",
+            materialized.task_id,
+            materialized.metadata.get("dependency_task_ids", ()),
+        )
+        result = _run_controller(
+            args, materialized, services, work_dir, check_workspace, project_root
+        )
+        last_result = result
+        summaries.append({
+            "task_id": materialized.task_id,
+            "accepted": result.accepted,
+            "stop_reason": result.stop_reason,
+            "attempts": len(result.attempts),
+            "checks_used": result.budget.checks_used,
+            "model_calls_used": result.budget.model_calls_used,
+        })
+        if not result.accepted or result.accepted_attempt is None:
+            return replace(
+                result,
+                metadata={
+                    **result.metadata,
+                    "task_sequence": tuple(summaries),
+                    "task_sequence_complete": False,
+                    "accepted_dependency_task_ids": tuple(accepted_proofs),
+                },
+            )
+        accepted_proofs[task.task_id] = result.accepted_attempt.edit.text
+
+    if last_result is None:
+        raise TaskBuildError("Dependency task sequence is empty")
+    return replace(
+        last_result,
+        metadata={
+            **last_result.metadata,
+            "task_sequence": tuple(summaries),
+            "task_sequence_complete": True,
+            "accepted_dependency_task_ids": tuple(accepted_proofs),
+        },
+    )
 
 
 def run_formalize(args: Namespace, *, agent_root: Path, project_root: Path | None) -> int:

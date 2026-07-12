@@ -23,14 +23,11 @@ class ProofTask:
     the keys ``natural_language_problem`` and ``natural_language_proof``. The
     verifier-facing target is still ``source_template`` plus ``hole_marker``.
 
-    Multi-hole seam: ``metadata`` may contain ``active_hole_count``,
-    ``source_hole_count`` and ``has_inactive_holes``. Current builders emit
-    exactly one active hole, but these fields let future controllers iterate
-    over multiple holes without changing the task shape.
+    Multi-hole extraction still emits exactly one active hole per task. Later
+    source-order tasks may contain explicit dependency markers recorded in
+    ``metadata['dependency_markers']``; callers must materialize those markers
+    with checker+safety accepted proofs before invoking a controller.
     """
-    # TODO: multi-hole — populate active_hole_count/source_hole_count when a
-    # builder emits tasks with more than one editable hole.
-
     task_id: str
     source_template: str
     hole_marker: str = "{{proof}}"

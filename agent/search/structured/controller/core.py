@@ -39,6 +39,7 @@ from agent.search.controller.types import (
 from agent.search.controller.context import maybe_retrieve, summarize_context
 from agent.search.execution import ExecutionMode
 from agent.search.metrics import attempt_metric
+from agent.search.runtime_ledger import record_generation_events
 from agent.search.safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
 from agent.agents.context import ContextSummarizer
 from agent.runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
@@ -65,6 +66,7 @@ from ..run_state import _StructuredRunState, build_structured_result
 from ..solution_tracker import has_complete_solution
 from ..cost_estimator import ActionCostEstimator
 from ..model_router import ModelRouterConfig
+from ..action_runtime_config import ActionRuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,7 @@ class StructuredController(
         safety_reviewer: SafetyReviewer | None = None,
         cost_estimator: ActionCostEstimator | None = None,
         model_router_config: ModelRouterConfig | None = None,
+        action_runtime_config: ActionRuntimeConfig | None = None,
     ) -> None:
         self.adapter = adapter
         self.action_generator = adapt_legacy_generator(action_generator)
@@ -108,6 +111,7 @@ class StructuredController(
         self.assembler = ArtifactAssembler()
         self.cost_estimator = cost_estimator
         self.model_router_config = model_router_config or ModelRouterConfig()
+        self.action_runtime_config = action_runtime_config or ActionRuntimeConfig()
         if (
             self.model_router_config.enabled
             and not hasattr(self.action_generator, "generate_for_route")
@@ -206,6 +210,16 @@ class StructuredController(
                     **exc.metadata,
                 }
                 state.generation_failures.append(failure)
+                cost_metadata = dict(exc.metadata)
+                if "pricing" in task.metadata:
+                    cost_metadata.setdefault("pricing", task.metadata["pricing"])
+                state.cost_ledger = record_generation_events(
+                    state.cost_ledger,
+                    metadata=cost_metadata,
+                    attempt_index=state.attempt_index,
+                    fallback_request_id=f"proposal:{state.sample_id}:{self.budget.model_calls_used}",
+                    status="failed",
+                )
                 usage = exc.metadata.get("token_usage")
                 usage_entry = dict(usage) if isinstance(usage, dict) else {}
                 usage_entry.setdefault("input_tokens", 0)
@@ -224,6 +238,17 @@ class StructuredController(
                 )
                 break
             usage = proposals[0].metadata.get("token_usage") if proposals else None
+            if proposals:
+                cost_metadata = dict(proposals[0].metadata)
+                if "pricing" in task.metadata:
+                    cost_metadata.setdefault("pricing", task.metadata["pricing"])
+                state.cost_ledger = record_generation_events(
+                    state.cost_ledger,
+                    metadata=cost_metadata,
+                    attempt_index=state.attempt_index,
+                    fallback_request_id=f"proposal:{state.sample_id}:{self.budget.model_calls_used}",
+                    status="completed",
+                )
             usage_entry = dict(usage) if isinstance(usage, dict) else {}
             usage_entry.setdefault("input_tokens", 0)
             usage_entry.setdefault("output_tokens", 0)

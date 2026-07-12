@@ -17,6 +17,7 @@ from agent.search.cost_ledger import (
     CostMeasurement,
     CostScope,
 )
+from agent.search.runtime_ledger import estimated_api_charge
 
 from ..budget_snapshot import ActionBudgetLimits, build_unified_budget_snapshot
 
@@ -181,12 +182,19 @@ def _record_charges(state, request_id: str, status: str, metadata, common) -> No
             ))
     charge = metadata.get("api_cost_usd")
     reported = isinstance(charge, (int, float)) and not isinstance(charge, bool)
+    estimated = estimated_api_charge(metadata.get("token_usage"), pricing)
     state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(
         event_id=f"charge:{len(state.cost_ledger.events)}",
         kind=CostLedgerEventKind.CHARGE, scope=CostScope.PROPOSAL_GENERATION,
         status=status, attempt_index=state.attempt_index, request_id=request_id,
-        api_cost_usd=(CostMeasurement.observed(charge) if reported else CostMeasurement.unavailable("provider did not report API cost")),
-        estimation_method="provider_reported" if reported else None,
+        api_cost_usd=(
+            CostMeasurement.observed(charge)
+            if reported
+            else CostMeasurement.estimated(estimated)
+            if estimated is not None
+            else CostMeasurement.unavailable("provider did not report API cost and no complete frozen price table was supplied")
+        ),
+        estimation_method="provider_reported" if reported else "frozen_price_table" if estimated is not None else None,
         metadata=common,
     ))
 
