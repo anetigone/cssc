@@ -187,8 +187,8 @@ def cost_ledger_payload(cost_ledger: Any) -> dict[str, Any] | None:
     """Return a ledger snapshot for traces without synthesizing legacy zeros.
 
     A missing ledger is intentionally omitted: old traces therefore remain
-    readable and consumers can display the Phase 9 dimensions as NA instead
-    of treating absent data as measured zero.
+    readable and consumers can display the action-runtime dimensions as NA
+    instead of treating absent data as measured zero.
     """
     if cost_ledger is None:
         return None

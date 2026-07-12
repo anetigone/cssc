@@ -1,13 +1,9 @@
 """Final-assembly whole-recheck for a structured proof workspace.
 
-Phase 3 delivers the obligation-graph data structures but not the frontier
-search that fills them. The :class:`ArtifactAssembler` is the one structured
-component that runs *now*: once a workspace's active obligation subtree is
-fully accepted, the assembler rebuilds a single self-contained Lean source
-from the per-obligation artifacts, asks the checker to accept the whole thing
-one final time, and applies the shared safety review. This is the
-``assemble_and_check`` step from
-``tmp/plan1.md`` §12.
+Once a workspace's active obligation subtree is fully accepted, the
+:class:`ArtifactAssembler` rebuilds a single self-contained Lean source from
+the per-obligation artifacts, asks the checker to accept the whole thing one
+final time, and applies the shared safety review.
 
 It is deterministic and never raises on a blocked workspace: structural
 problems (missing artifacts, un-accepted obligations, an invalid DAG) produce
@@ -132,9 +128,9 @@ class ArtifactAssembler:
             return AssemblyResult(accepted=False, source="", errors=tuple(errors))
 
         if len(workspace.root_obligation_ids) != 1:
-            # Phase 7.4/7.5 assumes exactly one root obligation (the one whose
-            # artifact fills the task's proof hole). Multi-root assembly is a
-            # later concern; fail loudly rather than silently mis-rendering.
+            # Assumes exactly one root obligation (the one whose artifact fills
+            # the task's proof hole). Multi-root assembly is a later concern;
+            # fail loudly rather than silently mis-rendering.
             return AssemblyResult(
                 accepted=False,
                 source="",

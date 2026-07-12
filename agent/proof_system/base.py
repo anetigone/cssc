@@ -60,9 +60,9 @@ class GoalState:
     """One open Lean goal captured from checker output.
 
     ``unsolved_goals`` on :class:`ParsedFeedback` keeps the raw goal text for
-    backward compatibility with the Phase 0 baseline fields; ``goal_state``
-    layers a structured, finger-printed view that the minimal refinement core
-    can surface in self-managed memory without re-parsing the raw output.
+    backward compatibility with the baseline fields; ``goal_state`` layers a
+    structured, finger-printed view that the minimal refinement core can
+    surface in self-managed memory without re-parsing the raw output.
     """
 
     text: str

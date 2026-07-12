@@ -95,8 +95,8 @@ def _goal_fingerprint(goal: str) -> str:
     """Stable short id for one goal.
 
     Mirrors :func:`agent.search.metrics.goal_fingerprint` so the structured
-    goal state and the Phase 0 baseline fingerprints agree on identity. Kept
-    local to avoid a ``proof_system`` -> ``search`` dependency cycle.
+    goal state and the baseline fingerprints agree on identity. Kept local to
+    avoid a ``proof_system`` -> ``search`` dependency cycle.
     """
     normalized = _normalize_goal_text(goal)
     if not normalized:

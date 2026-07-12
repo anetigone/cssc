@@ -159,7 +159,7 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
         "--execution-mode",
         choices=("minimal", "structured"),
         default="minimal",
-        help="执行模式，默认 minimal；structured 在 Phase 3 前不可用。",
+        help="执行模式，默认 minimal；structured 为结构化搜索模式。",
     )
     group.add_argument(
         "--frontier-policy",
@@ -171,7 +171,7 @@ def _add_proof_args(parser: argparse.ArgumentParser, *, include_model_toggle: bo
             "action_cost_aware_v1",
         ),
         default="legacy",
-        help="Structured frontier 排序策略（Phase 8.2+），默认 legacy；"
+        help="Structured frontier 排序策略，默认 legacy；"
         "minimal 模式忽略此参数。cost_aware_v1/v2/value_per_cost_v1/action_cost_aware_v1 为 opt-in 档位，"
         "仅影响调度顺序，不改变证明语义。",
     )
