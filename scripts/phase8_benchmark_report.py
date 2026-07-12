@@ -223,11 +223,16 @@ HEADERS = [
 ]
 
 
-def _render(rows: list[dict[str, Any]]) -> str:
+def _render(
+    rows: list[dict[str, Any]],
+    *,
+    title: str = "Phase 8.5 benchmark report",
+    footer: str = "Stage 0 skeleton: raw per-run rows only. Savings, CIs and verdicts arrive in Stage 4.",
+) -> str:
     if not rows:
-        return "# Phase 8.5 benchmark report\n\n(no traces found)\n"
+        return f"# {title}\n\n(no traces found)\n"
 
-    lines = ["# Phase 8.5 benchmark report", ""]
+    lines = [f"# {title}", ""]
     lines.append("| " + " | ".join(HEADERS) + " |")
     lines.append("|" + "|".join(["---"] * len(HEADERS)) + "|")
     for row in rows:
@@ -252,19 +257,23 @@ def _render(rows: list[dict[str, Any]]) -> str:
         ]
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
-    lines.append(
-        "_Stage 0 skeleton: raw per-run rows only. Savings, CIs and verdicts "
-        "arrive in Stage 4._"
-    )
+    lines.append(f"_{footer}_")
     return "\n".join(lines) + "\n"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    default_runs_dir: str = ".runs/phase8",
+    default_manifest: str = "tests/fixtures/phase8_benchmark/manifest.jsonl",
+    title: str = "Phase 8.5 benchmark report",
+    footer: str = "Stage 0 skeleton: raw per-run rows only. Savings, CIs and verdicts arrive in Stage 4.",
+) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs-dir", default=".runs/phase8")
+    parser.add_argument("--runs-dir", default=default_runs_dir)
     parser.add_argument(
         "--manifest",
-        default="tests/fixtures/phase8_benchmark/manifest.jsonl",
+        default=default_manifest,
     )
     parser.add_argument("--suite-version", default=None, help="filter to one suite; omit for all")
     parser.add_argument("--output", default=None, help="write markdown here; default stdout")
@@ -311,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # stable order: arm, task, rep
     rows.sort(key=lambda r: (r["arm"], r["task"], r["rep"]))
-    markdown = _render(rows)
+    markdown = _render(rows, title=title, footer=footer)
 
     if args.output:
         out_path = (ROOT / args.output).resolve()

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.phase8_benchmark_validate import validate as validate_base  # noqa: E402
+from scripts.benchmark_harness import validate_suite_base  # noqa: E402
 
 SUITE_VERSION = "phase10-canary-v1"
 ARMS = {"C0", "C1", "C2", "C3", "C4"}
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rows = load_rows(manifest)
         errors = hardening_errors(rows, fixtures)
-        base = validate_base(manifest, fixtures, lean_timeout=args.lean_timeout, skip_lean_smoke=args.skip_lean_smoke)
+        base = validate_suite_base(manifest, fixtures, lean_timeout=args.lean_timeout, skip_lean_smoke=args.skip_lean_smoke)
         errors.extend(base.errors)
         payload = {"ok": not errors, "suite_version": SUITE_VERSION, "checked_tasks": base.checked, "errors": errors, "warnings": base.warnings}
     except (OSError, ValueError, json.JSONDecodeError) as exc:

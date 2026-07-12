@@ -286,6 +286,8 @@ def _run_live(
     proof_model: str,
     proof_temperature: float,
     proof_max_tokens: int,
+    enable_model_routing: bool,
+    strong_proof_model: str | None,
     out: Path,
 ) -> int:
     max_calls, max_checks = BUDGET_TABLE[row["budget_profile"]]
@@ -318,6 +320,8 @@ def _run_live(
         "--trace-jsonl",
         str(out),
     ]
+    if enable_model_routing:
+        cmd.extend(["--enable-model-routing", "--strong-proof-model", str(strong_proof_model)])
     out.parent.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(cmd, cwd=str(ROOT))
     return completed.returncode
@@ -333,6 +337,7 @@ def _run_controlled(
     repetition: int,
     runs_root: Path,
     overwrite: bool,
+    replay_builder=build_replay_controller,
 ) -> dict[str, Any]:
     """Drive the real StructuredController with scripted components (Stage 2).
 
@@ -400,7 +405,7 @@ def _run_controlled(
     _write_json_atomic(meta, provenance)
 
     with tempfile.TemporaryDirectory() as workspace_root:
-        controller, _generator, _adapter = build_replay_controller(
+        controller, _generator, _adapter = replay_builder(
             scenario=scenario,
             frontier_policy=frontier_policy,
             budget_config=budget_config,
@@ -431,23 +436,40 @@ def _run_controlled(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(
+    argv: list[str] | None = None,
+    *,
+    arm_table: dict[str, tuple[str, str]] | None = None,
+    default_manifest: str = "tests/fixtures/phase8_benchmark/manifest.jsonl",
+    default_fixtures_dir: str = "tests/fixtures/phase8_benchmark",
+    default_runs_root: str = ".runs/phase8",
+    default_suite_version: str = "stage0-canary",
+    default_arm: str = "A0",
+    description: str | None = None,
+    replay_builder=build_replay_controller,
+    routed_arms: frozenset[str] = frozenset(),
+    single_cheap_arms: frozenset[str] = frozenset(),
+    arm_features: dict[str, dict[str, object]] | None = None,
+    controlled_arm_blocks: dict[str, str] | None = None,
+) -> int:
+    selected_arms = ARM_TABLE if arm_table is None else arm_table
+    parser = argparse.ArgumentParser(description=description or __doc__)
     parser.add_argument(
         "--manifest",
-        default="tests/fixtures/phase8_benchmark/manifest.jsonl",
+        default=default_manifest,
     )
     parser.add_argument("--task", help="task_id; omit to run all canary tasks")
-    parser.add_argument("--arm", choices=list(ARM_TABLE), default="A0")
+    parser.add_argument("--arm", choices=list(selected_arms), default=default_arm)
     parser.add_argument("--track", choices=("live", "controlled"), default="live")
     parser.add_argument("--repetition", type=int, default=1)
-    parser.add_argument("--suite-version", default="stage0-canary")
-    parser.add_argument("--runs-root", default=".runs/phase8")
+    parser.add_argument("--suite-version", default=default_suite_version)
+    parser.add_argument("--runs-root", default=default_runs_root)
     parser.add_argument("--project-root", default="lean_workspace")
-    parser.add_argument("--fixtures-dir", default="tests/fixtures/phase8_benchmark")
+    parser.add_argument("--fixtures-dir", default=default_fixtures_dir)
     parser.add_argument("--lean-timeout", type=float, default=30.0)
     parser.add_argument("--model-timeout", type=float, default=60.0)
     parser.add_argument("--proof-model", default=None)
+    parser.add_argument("--strong-proof-model", default=None)
     parser.add_argument("--proof-temperature", type=float, default=0.2)
     parser.add_argument("--proof-max-tokens", type=int, default=16384)
     parser.add_argument(
@@ -477,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.from_trace and not args.dry_run:
         print(json.dumps({"ok": False, "error": "--from-trace requires --dry-run"}))
         return 2
+    needs_routing = args.arm in routed_arms
     if args.track == "live" and not args.dry_run and not args.proof_model:
         print(
             json.dumps(
@@ -487,13 +510,27 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 2
-    if args.track == "controlled" and args.arm == "A0":
+    if args.track == "live" and not args.dry_run and needs_routing and not args.strong_proof_model:
+        print(json.dumps({"ok": False, "error": f"{args.arm} requires --strong-proof-model for Phase 9.4 routing"}))
+        return 2
+    if args.track == "controlled" and selected_arms[args.arm][0] != "structured":
         print(
             json.dumps(
                 {
                     "ok": False,
-                    "error": "controlled track requires a structured arm (A1-A4); "
-                    "A0/minimal has no frontier policy",
+                    "error": "controlled track requires a structured arm; "
+                    f"{args.arm}/minimal has no frontier policy",
+                }
+            )
+        )
+        return 2
+    controlled_block = (controlled_arm_blocks or {}).get(args.arm)
+    if args.track == "controlled" and controlled_block:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"controlled arm {args.arm} is not executable: {controlled_block}",
                 }
             )
         )
@@ -516,7 +553,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 2
 
-    execution_mode, frontier_policy = ARM_TABLE[args.arm]
+    execution_mode, frontier_policy = selected_arms[args.arm]
     copied_trace: Path | None = None
     if args.track == "live":
         copied_trace = (ROOT / args.from_trace).resolve() if args.from_trace else None
@@ -594,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
                     repetition=args.repetition,
                     runs_root=runs_root,
                     overwrite=args.overwrite,
+                    replay_builder=replay_builder,
                 )
             )
             continue
@@ -618,6 +656,9 @@ def main(argv: list[str] | None = None) -> int:
             lean_timeout=args.lean_timeout,
             dry_run=args.dry_run,
         )
+        provenance["arm_features"] = dict((arm_features or {}).get(args.arm, {}))
+        provenance["model_routing_enabled"] = needs_routing
+        provenance["strong_proof_model"] = args.strong_proof_model
         _write_json_atomic(meta, provenance)
 
         if args.dry_run:
@@ -669,8 +710,10 @@ def main(argv: list[str] | None = None) -> int:
             model_timeout=args.model_timeout,
             proof_model=args.proof_model,
             proof_temperature=args.proof_temperature,
-            proof_max_tokens=args.proof_max_tokens,
-            out=out,
+                proof_max_tokens=args.proof_max_tokens,
+                enable_model_routing=needs_routing,
+                strong_proof_model=args.strong_proof_model,
+                out=out,
         )
         summary, trace_error = _read_single_run_summary(out)
         # CLI return code 1 means a completed but unaccepted proof run. It is a
