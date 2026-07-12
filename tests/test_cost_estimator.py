@@ -17,6 +17,7 @@ from agent.search.structured.cost_estimator import (
     CostBucket,
     CostHistorySnapshot,
     cost_history_snapshot_from_dict,
+    cost_history_snapshot_fingerprint,
 )
 
 
@@ -89,6 +90,21 @@ class ActionCostEstimatorTests(unittest.TestCase):
         bucket = _bucket()
         snapshot = CostHistorySnapshot("pilot-1", (_sample("a", bucket, checks=1),))
         self.assertEqual(cost_history_snapshot_from_dict(snapshot.to_dict()), snapshot)
+        self.assertEqual(
+            cost_history_snapshot_fingerprint(snapshot),
+            cost_history_snapshot_fingerprint(
+                cost_history_snapshot_from_dict(snapshot.to_dict())
+            ),
+        )
+
+    def test_snapshot_fingerprint_changes_with_content(self) -> None:
+        bucket = _bucket()
+        low = CostHistorySnapshot("same-id", (_sample("a", bucket, checks=1),))
+        high = CostHistorySnapshot("same-id", (_sample("a", bucket, checks=2),))
+        self.assertNotEqual(
+            cost_history_snapshot_fingerprint(low),
+            cost_history_snapshot_fingerprint(high),
+        )
 
 
 class LedgerSnapshotTests(unittest.TestCase):

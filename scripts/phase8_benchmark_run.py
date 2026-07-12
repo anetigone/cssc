@@ -19,6 +19,7 @@ Output trace path: ``<runs-root>/<suite>/<arm>/<task>/<rep>.jsonl``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 from datetime import datetime, timezone
 import json
 import os
@@ -692,6 +693,10 @@ def main(
         provenance["remaining_budget_policy"] = remaining_budget_policy
         provenance["cost_history_snapshot"] = (
             _display_path(history_path) if history_path is not None else None
+        )
+        provenance["cost_history_snapshot_file_sha256"] = (
+            hashlib.sha256(history_path.read_bytes()).hexdigest()
+            if history_path is not None else None
         )
         provenance["model_routing_enabled"] = needs_routing
         provenance["strong_proof_model"] = args.strong_proof_model

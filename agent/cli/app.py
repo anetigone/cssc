@@ -363,6 +363,20 @@ def _run_controller(
 ) -> Any:
     generator = build_action_generator(args, project_root=project_root)
     execution_mode = ExecutionMode(args.execution_mode)
+    frontier_policy = getattr(args, "frontier_policy", "legacy")
+    cost_source_arg = getattr(args, "action_cost_source", "auto")
+    snapshot_arg = getattr(args, "cost_history_snapshot", None)
+    remaining_policy_arg = bool(getattr(args, "remaining_budget_policy", True))
+    if frontier_policy != "action_cost_aware_v1":
+        if cost_source_arg != "auto" or snapshot_arg or not remaining_policy_arg:
+            raise ValueError(
+                "action cost/history/budget-policy options require "
+                "--frontier-policy action_cost_aware_v1"
+            )
+    if cost_source_arg == "static" and snapshot_arg:
+        raise ValueError("static action cost cannot use --cost-history-snapshot")
+    if cost_source_arg == "empirical" and not snapshot_arg:
+        raise ValueError("empirical action cost requires --cost-history-snapshot")
     model_router_config = None
     action_runtime_config = None
     cost_estimator = None
@@ -387,12 +401,9 @@ def _run_controller(
             strong_model=getattr(args, "strong_proof_model", None),
         )
         action_runtime_config = ActionRuntimeConfig(
-            cost_source=ActionCostSource(getattr(args, "action_cost_source", "auto")),
-            remaining_budget_policy=bool(
-                getattr(args, "remaining_budget_policy", True)
-            ),
+            cost_source=ActionCostSource(cost_source_arg),
+            remaining_budget_policy=remaining_policy_arg,
         )
-        snapshot_arg = getattr(args, "cost_history_snapshot", None)
         if snapshot_arg:
             snapshot_path = resolve_agent_path(Path.cwd(), snapshot_arg)
             snapshot_data = json.loads(snapshot_path.read_text(encoding="utf-8"))

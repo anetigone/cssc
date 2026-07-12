@@ -8,6 +8,8 @@ history snapshot before replaying any policy arm.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import hashlib
+import json
 from statistics import median
 from typing import Iterable, Mapping
 
@@ -107,7 +109,6 @@ class CostHistorySnapshot:
             "ledger_event_ids": list(self.ledger_event_ids),
             "estimator_version": self.estimator_version,
         }
-
     @classmethod
     def from_completed_ledger(
         cls,
@@ -148,6 +149,18 @@ class CostHistorySnapshot:
             ledger_event_ids=tuple(consumed),
             estimator_version=estimator_version,
         )
+
+
+def cost_history_snapshot_fingerprint(snapshot: CostHistorySnapshot) -> str:
+    """Stable SHA-256 over the snapshot's canonical serialized content."""
+    # Round-trip through the public decoder so semantically identical numeric
+    # values (for example 1 and 1.0) have one canonical representation.
+    canonical = cost_history_snapshot_from_dict(snapshot.to_dict()).to_dict()
+    payload = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _estimate_from_dict(data: Mapping[str, object]) -> CostEstimate:

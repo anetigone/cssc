@@ -42,6 +42,10 @@ from agent.search.structured.budget_snapshot import (
 from agent.search.structured.controller.action_runtime_selection import (
     select_admissible_action,
 )
+from agent.search.structured.action_runtime_config import (
+    ActionCostSource,
+    ActionRuntimeConfig,
+)
 
 
 def _workspace(*branches: ProofBranch):
@@ -107,6 +111,16 @@ class ProposalCacheTests(unittest.TestCase):
         )
         restored = proposal_cache_from_dict(cache.to_dict())
         self.assertEqual(restored, cache)
+
+
+class ActionRuntimeConfigTests(unittest.TestCase):
+    def test_string_cost_source_is_normalized(self) -> None:
+        config = ActionRuntimeConfig(cost_source="empirical")  # type: ignore[arg-type]
+        self.assertIs(config.cost_source, ActionCostSource.EMPIRICAL)
+
+    def test_non_boolean_budget_policy_is_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            ActionRuntimeConfig(remaining_budget_policy=1)  # type: ignore[arg-type]
 
 
 class ActionFrontierTests(unittest.TestCase):
