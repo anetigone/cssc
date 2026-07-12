@@ -21,7 +21,7 @@ import logging
 import sys
 from argparse import Namespace
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -37,6 +37,7 @@ from agent import (
     TaskBuildError,
     TaskInputKind,
     build_controller,
+    materialize_task_dependencies,
 )
 from agent.agents import FormalizationRequest
 from agent.input.normalizer import InputNormalizer
@@ -268,10 +269,15 @@ def run_solve(args: Namespace, *, agent_root: Path, project_root: Path | None) -
                 print(json.dumps(payload, indent=2))
                 return 0
 
-            task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
-            logger.info("Selected task: task_id=%s", task.task_id)
             logger.debug("Using attempt workspace: %s", work_dir)
-            result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
+            if _has_dependency_sequence(tasks) and args.task_id is None:
+                result = _run_task_sequence(
+                    args, tasks, services, work_dir, check_workspace, project_root
+                )
+            else:
+                task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
+                logger.info("Selected task: task_id=%s", task.task_id)
+                result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
 
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("CLI setup failed", exc_info=True)
@@ -310,8 +316,13 @@ def run_prove(args: Namespace, *, agent_root: Path, project_root: Path | None) -
                     agent_root,
                 )
                 return 0
-            task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
-            result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
+            if _has_dependency_sequence(tasks) and args.task_id is None:
+                result = _run_task_sequence(
+                    args, tasks, services, work_dir, check_workspace, project_root
+                )
+            else:
+                task = select_task(tasks, task_id=args.task_id, task_index=args.task_index)
+                result = _run_controller(args, task, services, work_dir, check_workspace, project_root)
         except (TaskBuildError, ValueError, ModelAdapterError) as exc:
             logger.debug("prove failed", exc_info=True)
             return _fail("prove", exc)
@@ -444,6 +455,69 @@ def _run_controller(
         action_runtime_config=action_runtime_config,
     )
     return controller.run(task)
+
+
+def _has_dependency_sequence(tasks: list[Any]) -> bool:
+    """Return whether TaskBuilder emitted a multi-hole source-order chain."""
+    return len(tasks) > 1 and any(
+        "dependency_task_ids" in task.metadata for task in tasks
+    )
+
+
+def _run_task_sequence(
+    args: Namespace,
+    tasks: list[Any],
+    services: _LeanServices,
+    work_dir: Path,
+    check_workspace: EphemeralCheckWorkspace | None,
+    project_root: Path | None,
+) -> Any:
+    """Solve a TaskBuilder dependency chain and inject only accepted proofs."""
+    accepted_proofs: dict[str, str] = {}
+    summaries: list[dict[str, Any]] = []
+    last_result = None
+    for task in tasks:
+        materialized = materialize_task_dependencies(task, accepted_proofs)
+        logger.info(
+            "Running dependency task: task_id=%s dependencies=%s",
+            materialized.task_id,
+            materialized.metadata.get("dependency_task_ids", ()),
+        )
+        result = _run_controller(
+            args, materialized, services, work_dir, check_workspace, project_root
+        )
+        last_result = result
+        summaries.append({
+            "task_id": materialized.task_id,
+            "accepted": result.accepted,
+            "stop_reason": result.stop_reason,
+            "attempts": len(result.attempts),
+            "checks_used": result.budget.checks_used,
+            "model_calls_used": result.budget.model_calls_used,
+        })
+        if not result.accepted or result.accepted_attempt is None:
+            return replace(
+                result,
+                metadata={
+                    **result.metadata,
+                    "task_sequence": tuple(summaries),
+                    "task_sequence_complete": False,
+                    "accepted_dependency_task_ids": tuple(accepted_proofs),
+                },
+            )
+        accepted_proofs[task.task_id] = result.accepted_attempt.edit.text
+
+    if last_result is None:
+        raise TaskBuildError("Dependency task sequence is empty")
+    return replace(
+        last_result,
+        metadata={
+            **last_result.metadata,
+            "task_sequence": tuple(summaries),
+            "task_sequence_complete": True,
+            "accepted_dependency_task_ids": tuple(accepted_proofs),
+        },
+    )
 
 
 def run_formalize(args: Namespace, *, agent_root: Path, project_root: Path | None) -> int:

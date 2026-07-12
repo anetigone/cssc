@@ -15,7 +15,7 @@ from agent.cli.config import apply_task_config
 from agent.cli.generators import build_action_generator
 from agent.cli.parser import build_parser
 from agent.cli.paths import find_lake_root, resolve_agent_path
-from agent.cli.app import _run_artifact_path
+from agent.cli.app import _run_artifact_path, _run_task_sequence
 from agent.cli.tasks import build_tasks, classify_input, select_task
 from agent.cli.workspace import build_check_workspace, _workspace_context
 from agent.agents import FormalizationResult, StaticFormalizationAgent
@@ -25,6 +25,57 @@ from agent.search.controller import AttemptRecord, ControllerResult
 
 
 class SolveLeanTaskCliTests(unittest.TestCase):
+    def test_runs_multi_hole_tasks_in_order_with_only_accepted_dependencies(self) -> None:
+        from agent.tasks.task_builder import LeanTaskBuilder, TaskBuilderConfig
+
+        tasks = LeanTaskBuilder(
+            TaskBuilderConfig(allow_multiple_sorry_tasks=True)
+        ).build_from_source(
+            "theorem one : True := by\n  sorry\n\n"
+            "theorem two : True := by\n  sorry\n",
+            task_id_prefix="chain",
+        )
+        snapshot = BudgetSnapshot(1, 1, 0.1, 0, 0)
+
+        def accepted(task, proof):
+            attempt = AttemptRecord(
+                attempt_index=0,
+                candidate_id=task.task_id,
+                edit=CandidateEdit(proof),
+                candidate_file=Path(f"{task.task_id}.lean"),
+                check_result=CheckResult(
+                    accepted=True,
+                    category=DiagnosticCategory.PROOF_ACCEPTED,
+                    raw_output="",
+                    candidate_file=Path(f"{task.task_id}.lean"),
+                ),
+            )
+            return ControllerResult(
+                task=task,
+                accepted=True,
+                attempts=(attempt,),
+                budget=snapshot,
+                stop_reason="accepted",
+                accepted_attempt=attempt,
+            )
+
+        calls = []
+
+        def run(_args, task, *_rest):
+            calls.append(task)
+            return accepted(task, "trivial")
+
+        with patch("agent.cli.app._run_controller", side_effect=run):
+            result = _run_task_sequence(
+                Namespace(), tasks, MagicMock(), Path("."), None, None
+            )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual([task.task_id for task in calls], ["chain.one", "chain.two"])
+        self.assertNotIn("{{dependency:", calls[1].source_template)
+        self.assertIn("theorem one : True := by\n  trivial", calls[1].source_template)
+        self.assertTrue(result.metadata["task_sequence_complete"])
+
     def test_build_tasks_from_file_and_select_by_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Basic.lean"
