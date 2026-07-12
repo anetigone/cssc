@@ -1,4 +1,4 @@
-"""Structured branch/obligation cost attribution (Phase 8.1).
+"""Structured branch/obligation cost attribution.
 
 A pure *projection* of the trace data a structured run already records --- the
 checked attempts, the per-iteration model-usage entries, the workspace graph,
@@ -21,7 +21,7 @@ The summary keeps two non-overlapping views per branch and per obligation:
   obligation reachable along the dependency closure, so the two never
   double-count.
 
-Cost rules (``tmp/plan1.md`` §16 / ``tmp/phase8_plan.md`` §2):
+Cost rules:
 
 * decompose / argument / representation actions create no ``AttemptRecord`` and
   no extra model call, so they contribute ``checks=0, model_calls=0``; their
@@ -212,7 +212,7 @@ def build_cost_summary(
     final recheck, or ``None`` if assembly was never reached) and ``run`` (the
     same run-level projection written under ``metadata["cost"]``, so the two
     agree exactly). ``attempt_metrics`` is accepted now to reserve the seam for
-    Phase 8.4 value signals but is not consulted here.
+    value-per-cost signals but is not consulted here.
     """
     graph = workspace.obligation_graph
 

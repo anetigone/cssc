@@ -1,4 +1,4 @@
-"""Frozen cost semantics for cross-mode observation (Phase 8.0).
+"""Frozen cost semantics for cross-mode observation.
 
 A :class:`CostVector` is a small, frozen, serializable roll-up of the resources
 one proof-search run (or, later, one branch/obligation) actually consumed. It is

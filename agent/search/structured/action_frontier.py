@@ -1,9 +1,9 @@
-"""Action-level frontier and proposal cache for opt-in Phase 9 scheduling.
+"""Action-level frontier and proposal cache for opt-in action-cost scheduling.
 
-Unlike the Phase 8 branch frontier, nodes here pin a concrete typed proposal
-to the workspace version in which it was generated.  The cache is an
-optimization only: the workspace remains authoritative and a node is never
-silently rebound after a branch or obligation changes version.
+Unlike the branch frontier, nodes here pin a concrete typed proposal to the
+workspace version in which it was generated.  The cache is an optimization
+only: the workspace remains authoritative and a node is never silently
+rebound after a branch or obligation changes version.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Estimate:
-    """A scalar estimate reserved for the Phase 9 action-cost contract."""
+    """A scalar estimate reserved for the action-cost contract."""
 
     value: float
 
@@ -49,8 +49,9 @@ def estimate_from_dict(data: dict[str, object] | None) -> Estimate | None:
 class CostEstimate:
     """Comparable action execution-cost vector.
 
-    Phase 9.1 uses frozen static priors. Phase 9.2 replaces those priors with
-    history-derived values without changing the node/cache contract.
+    The static-prior estimator uses frozen priors; the history-derived
+    estimator replaces those priors with history values without changing the
+    node/cache contract.
     """
 
     model_requests: Estimate | None = None
@@ -256,7 +257,7 @@ class ProposalCache:
     ) -> "ProposalCache":
         """Return a cache view with frozen history estimates applied.
 
-        The supplied mapping is normally produced once from a Phase 9.2
+        The supplied mapping is normally produced once from a history
         snapshot before selection.  Nodes absent from the map retain their
         static prior, making partial history coverage explicit rather than
         changing an unknown dimension to zero.

@@ -1,4 +1,4 @@
-"""Unified, read-only remaining-budget snapshots for Phase 9.3.
+"""Unified, read-only remaining-budget snapshots for action selection.
 
 The snapshot is built once at an action-selection boundary and handed to both
 proposal generation and action execution.  It does not reserve anything; the

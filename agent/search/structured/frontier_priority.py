@@ -37,7 +37,7 @@ def legacy_priority_key(node: FrontierNode) -> tuple[int, int, int, str]:
 def cost_aware_priority_key(
     node: FrontierNode,
 ) -> tuple[int, int, int, int, int, str]:
-    """Deterministic cost-aware sort key (Phase 8.2 §3)."""
+    """Deterministic cost-aware sort key."""
     stalled_penalty = 1 if node.stalled_streak >= STALL_THRESHOLD else 0
     unlock_value_rank = node.depth_from_root
     return (
@@ -53,7 +53,7 @@ def cost_aware_priority_key(
 def soft_budget_priority_key(
     node: FrontierNode,
 ) -> tuple[int, int, int, int, int, int, str]:
-    """Deterministic soft-budget sort key (Phase 8.3 §4)."""
+    """Deterministic soft-budget sort key."""
     overdraft_checks = max(0, node.local_attempt_count - node.soft_checks)
     stalled_penalty = 1 if node.stalled_streak >= STALL_THRESHOLD else 0
     return (
@@ -70,7 +70,7 @@ def soft_budget_priority_key(
 def value_per_cost_priority_key(
     node: FrontierNode,
 ) -> tuple[int, int, int, int, int, int, str]:
-    """Deterministic fixed-point value/cost sort key (Phase 8.4 §5)."""
+    """Deterministic fixed-point value/cost sort key."""
     stalled_penalty = 1 if node.stalled_streak >= STALL_THRESHOLD else 0
     overdraft_checks = max(0, node.local_attempt_count - node.soft_checks)
     expected_cost = max(1, node.next_action_cost)

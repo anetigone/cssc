@@ -1,4 +1,4 @@
-"""Phase 9 ledger and budget helpers for the action runtime.
+"""Ledger and budget helpers for the action runtime.
 
 Kept separate from the scheduling loop so cost-accounting details do not make
 the controller's control flow difficult to audit.
@@ -23,7 +23,7 @@ from ..budget_snapshot import ActionBudgetLimits, build_unified_budget_snapshot
 
 
 def unified_budget_snapshot(budget: BudgetManager, state):
-    """Build the live Phase 9 budget view from the shared runtime config."""
+    """Build the live action-runtime budget view from the shared runtime config."""
     config = budget.config
     return build_unified_budget_snapshot(
         budget.snapshot(),

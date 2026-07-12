@@ -1,8 +1,8 @@
 """Post-check safety review for accepted proofs.
 
-Phase 1 adds a deterministic :class:`StatementSafetyReviewer` that runs only
-after the Lean checker has accepted a candidate. It guards against proof
-shortcuts the checker cannot always catch on its own:
+A deterministic :class:`StatementSafetyReviewer` runs only after the Lean
+checker has accepted a candidate. It guards against proof shortcuts the checker
+cannot always catch on its own:
 
 * the original theorem/lemma statement being silently rewritten;
 * residual ``sorry`` / ``admit`` tactics;

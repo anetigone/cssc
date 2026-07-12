@@ -50,11 +50,11 @@ class _StructuredRunState:
     representation_records: list[dict[str, Any]] = field(default_factory=list)
     model_usage: list[dict[str, Any]] = field(default_factory=list)
     generation_failures: list[dict[str, Any]] = field(default_factory=list)
-    # Phase 8.4: per-pop frontier priority explanations, in pop order. Captured
-    # by the controller from ``Frontier.explanations()`` so the trace records
-    # why each branch was scheduled regardless of policy.
+    # Per-pop frontier priority explanations, in pop order. Captured by the
+    # controller from ``Frontier.explanations()`` so the trace records why each
+    # branch was scheduled regardless of policy.
     priority_explanations: list = field(default_factory=list)
-    # Phase 9 authoritative append-only runtime cost observations.
+    # Authoritative append-only runtime cost observations.
     cost_ledger: CostLedger = field(default_factory=CostLedger)
     proposal_cache_events: list[dict[str, Any]] = field(default_factory=list)
 
@@ -187,9 +187,9 @@ def build_structured_result(
         assembly_outcome=assembly_outcome,
     )
     metadata["cost_summary"] = cost_summary
-    # Phase 8.3: per-obligation soft-budget hints, with realised borrowing
-    # joined from the cost summary above (single source of truth for direct
-    # spend). Both projections iterate ``graph.active()``, so every hint has a
+    # Per-obligation soft-budget hints, with realised borrowing joined from
+    # the cost summary above (single source of truth for direct spend). Both
+    # projections iterate ``graph.active()``, so every hint has a
     # matching cost entry; unworked obligations borrow nothing.
     obligation_direct = {
         entry["obligation_id"]: entry["direct_cost"]

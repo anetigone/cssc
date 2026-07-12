@@ -20,7 +20,7 @@ class BudgetConfig:
     max_model_calls: int = 4
     per_check_timeout_seconds: float = 10.0
     max_elapsed_seconds: float | None = None
-    # Phase 9 action-runtime limits.  They deliberately live beside the
+    # Action-runtime limits.  They deliberately live beside the
     # existing coarse limits so minimal mode does not need to import any
     # structured-runtime types.  Only the opt-in action frontier consumes
     # them through UnifiedBudgetSnapshot.

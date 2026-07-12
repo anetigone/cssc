@@ -1,4 +1,4 @@
-"""Structured soft-budget hints (Phase 8.3).
+"""Structured soft-budget hints.
 
 A soft-budget hint is an observation derived purely from the workspace and the
 global budget snapshot: an upper bound on the model calls / checks we *expect*
@@ -8,8 +8,8 @@ terminal status / stop-reason logic. They only
 
 * drive the ``cost_aware_v2`` frontier ordering (overdraft branches are
   deprioritised, readiness stays a hard gate), and
-* surface, alongside the Phase 8.1 cost summary, how much each obligation
-  *borrowed* past its soft budget (``metadata["budget_hints"]``).
+* surface, alongside the cost summary, how much each obligation *borrowed*
+  past its soft budget (``metadata["budget_hints"]``).
 
 Like :mod:`agent.search.cost` and :mod:`agent.search.structured.costing`, this
 module is a pure projection: it reads the public workspace surface only. Minimal
@@ -43,8 +43,8 @@ class ObligationBudgetHint:
     ``soft_*`` are the expected envelope (derived from the obligation's
     unlock value, next action, stall, and accepted-neighbour state).
     ``borrowed_*`` are filled in by :func:`build_structured_result` from the
-    Phase 8.1 cost summary: how far the obligation's realised direct cost
-    overshot its envelope. Both default to zero so a freshly-derived hint
+    cost summary: how far the obligation's realised direct cost overshot its
+    envelope. Both default to zero so a freshly-derived hint
     (before the borrow join) is well-formed.
     """
 
@@ -83,7 +83,7 @@ def build_obligation_budget_hints(
     """Derive one :class:`ObligationBudgetHint` per active obligation.
 
     ``borrowed_*`` are left at zero here; :func:`build_structured_result` joins
-    them from the Phase 8.1 cost summary after the run's direct cost is known.
+    them from the cost summary after the run's direct cost is known.
     ``budget_snapshot`` is accepted (and the run's remaining budget is observed
     here) so callers can later cap envelopes against the global budget without
     a second pass; for now it shapes the contract, not the value.

@@ -319,7 +319,7 @@ class StructuredControllerRuntimeMixin:
         return replace(check_result, candidate_file=materialized.path)
 
     def _record_checker_cost(self, state, check_result, edit) -> None:
-        """Append one checker event on both legacy and Phase 9 structured paths."""
+        """Append one checker event on both legacy and structured paths."""
         action_id = getattr(edit, "metadata", {}).get("action_node_id")
         event_index = len(state.cost_ledger.events)
         state.cost_ledger = state.cost_ledger.append(CostLedgerEvent(

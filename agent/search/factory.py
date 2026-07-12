@@ -16,11 +16,11 @@ from .execution import ExecutionMode
 class StructuredModeUnavailableError(NotImplementedError):
     """Historically raised when structured mode had no executor.
 
-    Phase 6 ships the structured executor (:class:`StructuredController`), so
-    ``build_controller`` no longer raises this for a valid structured request.
-    The class is kept for backward compatibility: ``agent.cli.app`` and any
-    external callers still import it, and it is raised if the structured
-    executor is requested with a mismatched (non-STRUCTURED) config.
+    The structured executor (:class:`StructuredController`) is now available,
+    so ``build_controller`` no longer raises this for a valid structured
+    request. The class is kept for backward compatibility: ``agent.cli.app``
+    and any external callers still import it, and it is raised if the
+    structured executor is requested with a mismatched (non-STRUCTURED) config.
     """
 
 

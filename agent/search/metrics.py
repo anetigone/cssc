@@ -1,6 +1,6 @@
 """Raw baseline observations for the existing linear proof loop.
 
-Phase 0 deliberately records facts without inferring progress, stalls, parent
+This deliberately records facts without inferring progress, stalls, parent
 relationships, or pass@k. Those semantics belong to later evaluation and
 search-policy layers, where they can be defined against real traces.
 """

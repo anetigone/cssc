@@ -11,7 +11,7 @@ from agent.proof_system.workspace import SearchActionKind
 STALL_THRESHOLD = 3
 VALUE_SCORE_SCALE = 1024
 
-#: Static expected-incremental-cost weights per action kind (Phase 8.2).
+#: Static expected-incremental-cost weights per action kind.
 #: Final assembly is run-level cost the controller reserves explicitly, never a
 #: branch-local frontier cost.
 ACTION_INCREMENTAL_COST: dict[SearchActionKind, int] = {
@@ -80,7 +80,7 @@ class PriorityExplanation:
 
 @dataclass(frozen=True)
 class BudgetHintDefaults:
-    """Tuning knobs for the soft-budget envelope (Phase 8.3 §4)."""
+    """Tuning knobs for the soft-budget envelope."""
 
     base_soft_checks: int = 1
     base_soft_model_calls: int = 1

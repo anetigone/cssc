@@ -1,14 +1,14 @@
 """Self-managed compact memory for the minimal proof-refinement loop.
 
-Phase 1 replaces the fixed stack of full attempt history in the prompt with a
-small, durable :class:`ProofMemory` that the controller updates after every
-check. The memory carries provenance (which attempts fed it) and never promotes
-a model's claim into ``established_facts`` unless the checker actually accepted
-a local conclusion.
+A small, durable :class:`ProofMemory` replaces the fixed stack of full attempt
+history in the prompt; the controller updates it after every check. The memory
+carries provenance (which attempts fed it) and never promotes a model's claim
+into ``established_facts`` unless the checker actually accepted a local
+conclusion.
 
 The :class:`MemoryProcessor` is deterministic: it reads the latest attempt's
 proposal, checker feedback and the previous memory, then returns a replacement.
-A model-driven rewriter is deliberately out of scope for Phase 1.
+A model-driven rewriter is deliberately out of scope here.
 """
 
 from __future__ import annotations
@@ -48,9 +48,8 @@ _MAX_SOURCE_ATTEMPT_IDS = 24
 class ProofMemory:
     """Compact, provenance-carrying notes passed back into the proof prompt.
 
-    Field shape follows the Phase 1 design note. ``established_facts`` only
-    ever holds checker-verified conclusions; model claims live in the trace,
-    not here.
+    ``established_facts`` only ever holds checker-verified conclusions; model
+    claims live in the trace, not here.
     """
 
     established_facts: tuple[str, ...] = ()

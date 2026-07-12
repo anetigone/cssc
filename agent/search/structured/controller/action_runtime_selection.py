@@ -1,4 +1,4 @@
-"""Budget-constrained selection helpers for the Phase 9 action runtime."""
+"""Budget-constrained selection helpers for the action runtime."""
 
 from __future__ import annotations
 

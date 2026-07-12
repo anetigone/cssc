@@ -15,7 +15,7 @@ class ExecutionMode(str, Enum):
     """由启动参数选择的执行模式，同一次运行内不可变。
 
     ``minimal`` 走线性 ``propose → check → remember → refine`` 循环；
-    ``structured`` 从任务开始建立完整 ``ProofWorkspace``，由 Phase 3+ 引入。
+    ``structured`` 从任务开始建立完整 ``ProofWorkspace``。
     """
 
     MINIMAL = "minimal"

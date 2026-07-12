@@ -1,4 +1,4 @@
-"""Execution of one selected Phase 9 action-frontier node."""
+"""Execution of one selected action-frontier node."""
 
 from __future__ import annotations
 

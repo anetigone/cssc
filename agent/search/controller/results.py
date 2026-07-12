@@ -30,10 +30,10 @@ def result_metadata(
     """Shared metadata block recorded on every controller result.
 
     Includes a snapshot of the final self-managed memory so the trace preserves
-    the compact context the loop actually carried, alongside the raw Phase 0
+    the compact context the loop actually carried, alongside the raw baseline
     fields. The memory snapshot is a plain dict, never the live object, so it
-    serializes cleanly. The Phase 8.0 ``cost`` roll-up is derived from the run
-    metrics and budget snapshot without writing back to either.
+    serializes cleanly. The ``cost`` roll-up is derived from the run metrics
+    and budget snapshot without writing back to either.
     """
     cost = cost_vector_from_metrics_and_budget(metrics, snapshot)
     return {
@@ -58,7 +58,7 @@ def run_metrics(
     execution_mode: ExecutionMode,
     budget: BudgetManager,
 ) -> RunMetrics:
-    """Build the Phase 0 baseline roll-up for the current run state."""
+    """Build the baseline roll-up for the current run state."""
     snapshot = budget.snapshot()
     return summarize_run(
         sample_id=state.sample_id,

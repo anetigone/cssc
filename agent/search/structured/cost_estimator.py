@@ -1,4 +1,4 @@
-"""Frozen-history action cost estimation for Phase 9.2.
+"""Frozen-history action cost estimation.
 
 This module consumes only explicitly completed action samples.  It neither
 reads a live controller nor mutates a ledger, so a benchmark can freeze one

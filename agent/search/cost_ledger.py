@@ -1,10 +1,10 @@
 """Append-only, event-level cost accounting for proof-search runs.
 
 The older :mod:`agent.search.cost` projection deliberately treats unavailable
-provider usage as zero.  That remains useful for backwards-compatible Phase 8
-views, but is not suitable for spending decisions.  This module is the Phase
-9 source of truth: every measured quantity carries an explicit status, so an
-unavailable measurement can never silently become a zero.
+provider usage as zero.  That remains useful for backwards-compatible legacy
+views, but is not suitable for spending decisions.  This module is the
+authoritative source of truth: every measured quantity carries an explicit
+status, so an unavailable measurement can never silently become a zero.
 """
 
 from __future__ import annotations
