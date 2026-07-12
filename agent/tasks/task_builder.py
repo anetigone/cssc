@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -12,6 +12,7 @@ from .types import ProofTask, TaskInputKind
 
 
 DEFAULT_HOLE_MARKER = "{{proof}}"
+DEPENDENCY_MARKER_PREFIX = "{{dependency:"
 _DECLARATION_RE = re.compile(
     r"\b(?:theorem|lemma|def|example)\s+([A-Za-z_][A-Za-z0-9_'.]*)",
     re.MULTILINE,
@@ -177,22 +178,39 @@ class LeanTaskBuilder:
         imports = _extract_imports(source)
         split_name = split or self.config.default_split
 
-        tasks: list[ProofTask] = []
-        for index, occurrence in enumerate(occurrences):
-            template = _source_with_active_hole(
-                source,
-                occurrences=occurrences,
-                active_index=index,
-                active_marker=self.config.hole_marker,
-                inactive_fill=self.config.inactive_hole_fill,
-            )
-            task_name = _occurrence_task_name(
+        task_names = [
+            _occurrence_task_name(
                 source,
                 base_id=safe_base_id,
                 occurrence=occurrence,
                 occurrence_count=len(occurrences),
                 index=index,
             )
+            for index, occurrence in enumerate(occurrences)
+        ]
+        if len(task_names) != len(set(task_names)):
+            raise TaskBuildError("Multiple proof holes resolved to the same task id.")
+
+        tasks: list[ProofTask] = []
+        for index, occurrence in enumerate(occurrences):
+            dependency_markers: dict[str, str] = {}
+            if len(occurrences) == 1:
+                template = _source_with_active_hole(
+                    source,
+                    occurrences=occurrences,
+                    active_index=index,
+                    active_marker=self.config.hole_marker,
+                    inactive_fill=self.config.inactive_hole_fill,
+                )
+            else:
+                template, dependency_markers = _source_with_dependency_holes(
+                    source,
+                    occurrences=occurrences,
+                    task_ids=task_names,
+                    active_index=index,
+                    active_marker=self.config.hole_marker,
+                )
+            task_name = task_names[index]
             task_id = task_name
             metadata = {
                 **self.config.metadata_defaults,
@@ -210,8 +228,11 @@ class LeanTaskBuilder:
                 "original_hole_text": original_hole_text,
                 "active_hole_count": 1,
                 "source_hole_count": len(occurrences),
-                "inactive_hole_fill": self.config.inactive_hole_fill,
-                "has_inactive_holes": len(occurrences) > 1,
+                "inactive_hole_fill": self.config.inactive_hole_fill if len(occurrences) == 1 else None,
+                "has_inactive_holes": False,
+                "dependency_task_ids": tuple(task_names[:index]),
+                "dependency_markers": dependency_markers,
+                "requires_dependency_materialization": bool(dependency_markers),
                 "source_imports": imports,
                 "ground_truth_hidden": True,
                 "allowed_retrieval_scope": self.config.allowed_retrieval_scope,
@@ -229,6 +250,38 @@ class LeanTaskBuilder:
                 )
             )
         return tasks
+
+
+def materialize_task_dependencies(
+    task: ProofTask,
+    accepted_proofs: dict[str, str],
+) -> ProofTask:
+    """Fill prior-hole markers using only checker+safety accepted proofs."""
+    markers = task.metadata.get("dependency_markers") or {}
+    if not isinstance(markers, dict):
+        raise TaskBuildError("dependency_markers metadata must be an object")
+    missing = [task_id for task_id in markers if task_id not in accepted_proofs]
+    if missing:
+        raise TaskBuildError(
+            "Missing accepted dependency proofs: " + ", ".join(sorted(missing))
+        )
+    source = task.source_template
+    for task_id, marker in markers.items():
+        proof = accepted_proofs[task_id]
+        if not isinstance(proof, str) or not proof.strip():
+            raise TaskBuildError(f"Accepted dependency proof is empty: {task_id}")
+        source = source.replace(str(marker), proof)
+    if DEPENDENCY_MARKER_PREFIX in source:
+        raise TaskBuildError("Unresolved dependency marker remains after materialization")
+    return replace(
+        task,
+        source_template=source,
+        metadata={
+            **task.metadata,
+            "requires_dependency_materialization": False,
+            "materialized_dependency_task_ids": tuple(markers),
+        },
+    )
 
 
 def _task_to_dict(task: ProofTask) -> dict[str, Any]:
@@ -339,6 +392,47 @@ def _source_with_active_hole(
         cursor = occurrence.end
     parts.append(source[cursor:])
     return "".join(parts)
+
+
+def _source_with_dependency_holes(
+    source: str,
+    *,
+    occurrences: list[HoleOccurrence],
+    task_ids: list[str],
+    active_index: int,
+    active_marker: str,
+) -> tuple[str, dict[str, str]]:
+    """Keep the source prefix through the active declaration, without sorry."""
+    declaration_starts = [_nearest_declaration_start(source, item.start) for item in occurrences]
+    if any(start is None for start in declaration_starts):
+        raise TaskBuildError("Every hole in a multi-hole source must belong to a declaration.")
+    starts = [int(start) for start in declaration_starts if start is not None]
+    if len(starts) != len(set(starts)):
+        raise TaskBuildError(
+            "Multiple holes in one declaration are unsupported; use separate declarations."
+        )
+    cutoff = starts[active_index + 1] if active_index + 1 < len(starts) else len(source)
+    parts: list[str] = []
+    cursor = 0
+    markers: dict[str, str] = {}
+    for index, occurrence in enumerate(occurrences[: active_index + 1]):
+        parts.append(source[cursor:occurrence.start])
+        if index == active_index:
+            parts.append(active_marker)
+        else:
+            marker = DEPENDENCY_MARKER_PREFIX + task_ids[index] + "}}"
+            markers[task_ids[index]] = marker
+            parts.append(marker)
+        cursor = occurrence.end
+    parts.append(source[cursor:cutoff])
+    return "".join(parts), markers
+
+
+def _nearest_declaration_start(source: str, offset: int) -> int | None:
+    nearest: int | None = None
+    for match in _DECLARATION_RE.finditer(source[:offset]):
+        nearest = match.start()
+    return nearest
 
 
 def _extract_imports(source: str) -> tuple[str, ...]:

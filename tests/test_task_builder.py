@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 
 from agent.proof_system.base import CandidateEdit
-from agent.tasks.task_builder import LeanTaskBuilder, TaskBuildError, TaskBuilderConfig
+from agent.tasks.task_builder import (
+    LeanTaskBuilder,
+    TaskBuildError,
+    TaskBuilderConfig,
+    materialize_task_dependencies,
+)
 
 
 class LeanTaskBuilderTests(unittest.TestCase):
@@ -57,11 +62,24 @@ class LeanTaskBuilderTests(unittest.TestCase):
         self.assertEqual(tasks[1].metadata["hole_line"], 5)
         self.assertIn("{{proof}}", tasks[0].source_template)
         self.assertEqual(tasks[0].source_template.count("{{proof}}"), 1)
-        self.assertEqual(tasks[0].source_template.count("sorry"), 1)
+        self.assertEqual(tasks[0].source_template.count("sorry"), 0)
+        self.assertNotIn("theorem two", tasks[0].source_template)
         self.assertEqual(tasks[0].metadata["active_hole_count"], 1)
         self.assertEqual(tasks[0].metadata["source_hole_count"], 2)
-        self.assertTrue(tasks[0].metadata["has_inactive_holes"])
-        self.assertEqual(tasks[0].metadata["inactive_hole_fill"], "sorry")
+        self.assertFalse(tasks[0].metadata["has_inactive_holes"])
+        self.assertEqual(tasks[0].metadata["dependency_task_ids"], ())
+        self.assertEqual(tasks[1].metadata["dependency_task_ids"], ("basic.one",))
+        self.assertNotIn("sorry", tasks[1].source_template)
+        self.assertIn("{{dependency:basic.one}}", tasks[1].source_template)
+
+        with self.assertRaises(TaskBuildError):
+            materialize_task_dependencies(tasks[1], {})
+        materialized = materialize_task_dependencies(
+            tasks[1], {"basic.one": "trivial"}
+        )
+        self.assertNotIn("{{dependency:", materialized.source_template)
+        self.assertEqual(materialized.source_template.count("{{proof}}"), 1)
+        self.assertIn("theorem one : True := by\n  trivial", materialized.source_template)
 
     def test_can_opt_into_one_task_per_explicit_marker(self) -> None:
         builder = LeanTaskBuilder(TaskBuilderConfig(allow_multiple_marker_tasks=True))
@@ -81,8 +99,9 @@ class LeanTaskBuilderTests(unittest.TestCase):
         self.assertEqual(tasks[1].metadata["hole_line"], 5)
         self.assertEqual(tasks[0].source_template.count("{{proof}}"), 1)
         self.assertEqual(tasks[1].source_template.count("{{proof}}"), 1)
-        self.assertEqual(tasks[0].source_template.count("sorry"), 1)
-        self.assertEqual(tasks[1].source_template.count("sorry"), 1)
+        self.assertEqual(tasks[0].source_template.count("sorry"), 0)
+        self.assertEqual(tasks[1].source_template.count("sorry"), 0)
+        self.assertIn("{{dependency:basic.one}}", tasks[1].source_template)
         self.assertEqual(tasks[0].metadata["source_hole_count"], 2)
 
     def test_ignores_sorry_inside_comments_and_strings(self) -> None:
