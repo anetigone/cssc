@@ -1,11 +1,10 @@
 """Competing failure hypotheses over collected evidence.
 
-Phase 5 (``tmp/plan1.md`` §7-8) replaces the practice of routing one checker
-failure to a single responsible layer with a step where the deterministic
-parser turns raw results into neutral :class:`Observation` records (Phase 4),
-and the model later interprets those observations into *multiple competing*
-:class:`FailureHypothesis` records — each citing evidence, carrying a
-confidence, naming affected argument steps, and proposing executable tests.
+Rather than routing one checker failure to a single responsible layer, the
+deterministic parser turns raw results into neutral :class:`Observation`
+records, and the model later interprets those observations into *multiple
+competing* :class:`FailureHypothesis` records — each citing evidence, carrying
+a confidence, naming affected argument steps, and proposing executable tests.
 
 A hypothesis is a model product: it competes with siblings rather than
 escalating up a fixed blame hierarchy. Repeated failure updates the
@@ -15,7 +14,8 @@ have no place in :class:`FailureKind`.
 
 This module ships only data + serialization + a deterministic validator. No
 hypothesis is generated here — model-driven generation and the executor that
-consumes hypotheses are Phase 6. The minimal loop never imports this package.
+consumes hypotheses live in the structured controller. The minimal loop never
+imports this package.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from .action import SearchAction, search_action_from_dict
 
 
 class FailureKind(str, Enum):
-    """Semantic failure categories a model may compete on (``tmp/plan1.md`` §7).
+    """Semantic failure categories a model may compete on.
 
     Closed set by design: adding a kind is a protocol change and should fail
     loudly on unknown values during deserialization. Infrastructure errors

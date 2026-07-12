@@ -1,20 +1,20 @@
 """Unified search actions and their declared mutation scope.
 
-Phase 5 (``tmp/plan1.md`` §7-8) represents every ProofAgent move — formalize,
-decompose, argue, implement, repair — as one :class:`SearchAction` that
-*declares which surfaces of the authoritative workspace it is allowed to
-change* via :attr:`SearchAction.allowed_mutations`. If a repair uncovers that
-the argument itself is wrong, the model must propose a *new* action rather than
-silently rewrite the math steps inside one "repair": this is not inter-agent
-permission isolation, it is so the search tree records "what changed" precisely.
+Every ProofAgent move — formalize, decompose, argue, implement, repair — is
+represented as one :class:`SearchAction` that *declares which surfaces of the
+authoritative workspace it is allowed to change* via
+:attr:`SearchAction.allowed_mutations`. If a repair uncovers that the argument
+itself is wrong, the model must propose a *new* action rather than silently
+rewrite the math steps inside one "repair": this is not inter-agent permission
+isolation, it is so the search tree records "what changed" precisely.
 
 Each :class:`SearchActionKind` carries a conservative default scope
 (:data:`DEFAULT_ALLOWED_MUTATIONS`). An action may *narrow* below its default
 but not *broaden* it; :meth:`SearchAction.validate` enforces that.
 
 This module ships only data + serialization + a deterministic validator. No
-action is ever executed here — the structured executor (frontier / AND-OR
-search) is Phase 6. The minimal loop never imports this package.
+action is ever executed here — execution is the structured executor's job
+(frontier / AND-OR search). The minimal loop never imports this package.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class MutationKind(str, Enum):
 
 
 class SearchActionKind(str, Enum):
-    """The kinds of move a ProofAgent can make (``tmp/plan1.md`` §8)."""
+    """The kinds of move a ProofAgent can make."""
 
     FORMALIZE = "formalize"
     DECOMPOSE = "decompose"
@@ -160,7 +160,7 @@ class SearchAction:
         ``target_step_ids`` are *not* cross-checked against an actual
         :class:`ArgumentGraph`: a :class:`SearchAction` is branch-agnostic, and
         cross-validation against live branch state is the structured executor's
-        job (Phase 6).
+        job.
         """
         errors: list[str] = []
 

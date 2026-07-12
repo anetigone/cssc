@@ -1,15 +1,15 @@
 """A search branch: one proof strategy for one obligation.
 
-Phase 4 (``tmp/plan1.md`` §5) ties the argument, Lean realization, alignment,
-evidence, and progress of one proof strategy into a single immutable record so
-that a failing Lean implementation does not implicitly negate its mathematical
-strategy, and a new attempt never overwrites a prior branch. Branches form a
-tree via ``parent_branch_id``: a local Lean repair or a change of mathematical
-strategy spawns a child branch.
+The argument, Lean realization, alignment, evidence, and progress of one proof
+strategy are tied into a single immutable record so that a failing Lean
+implementation does not implicitly negate its mathematical strategy, and a new
+attempt never overwrites a prior branch. Branches form a tree via
+``parent_branch_id``: a local Lean repair or a change of mathematical strategy
+spawns a child branch.
 
 This module only defines the data and its serialization. Lifecycle transitions
 (dormancy, superseding, eviction) and the frontier that selects among branches
-arrive in Phase 6.
+live in the structured controller.
 """
 
 from __future__ import annotations
@@ -57,9 +57,9 @@ class ProofBranch:
 
     ``obligation_id`` / ``obligation_version`` pin the branch to a specific
     obligation version; a branch must never silently attach to a revised
-    obligation. Phase 5's ``last_action`` and ``failure_hypotheses`` remain in
-    this authoritative record so mutation scope and evidence survive trace
-    serialization. ``last_action_summary`` only preserves older Phase 4 data.
+    obligation. ``last_action`` and ``failure_hypotheses`` remain in this
+    authoritative record so mutation scope and evidence survive trace
+    serialization. ``last_action_summary`` only preserves older trace data.
     """
 
     branch_id: str
@@ -72,7 +72,7 @@ class ProofBranch:
     observations: tuple[Observation, ...] = ()
     failure_hypotheses: tuple[FailureHypothesis, ...] = ()
     last_action: SearchAction | None = None
-    # Retained for old Phase 4 traces. New state should use ``last_action``.
+    # Retained for older traces. New state should use ``last_action``.
     last_action_summary: str | None = None
     progress: ProgressSignal = field(default_factory=ProgressSignal)
     status: BranchStatus = BranchStatus.ACTIVE

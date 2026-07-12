@@ -1,16 +1,13 @@
 """Structured proof-search state primitives.
 
-Phase 3 introduced the authoritative state for ``structured`` execution mode:
-proof obligations, their acyclic dependency DAG, and the top-level workspace.
-Phase 4 adds the argument/Lean alignment layer — versionable argument steps,
-Lean artifacts, alignment links, checker observations, and the
-:class:`ProofBranch` that ties them together — and wires branches into the
-workspace. Phase 5 adds the unified action protocol and competing failure
-hypotheses (:class:`SearchAction` / :class:`MutationKind` /
-:class:`FailureHypothesis` / :class:`FailureKind`) that the structured
-executor will eventually drive. These are proof-system-neutral frozen
-dataclasses. The minimal loop never imports this package, so it pays no DAG,
-branch, or action cost.
+The authoritative state for ``structured`` execution mode: proof obligations,
+their acyclic dependency DAG, the argument/Lean alignment layer (versionable
+argument steps, Lean artifacts, alignment links, checker observations, and the
+:class:`ProofBranch` that ties them together), and the unified action protocol
+with competing failure hypotheses (:class:`SearchAction` /
+:class:`MutationKind` / :class:`FailureHypothesis` / :class:`FailureKind`).
+These are proof-system-neutral frozen dataclasses. The minimal loop never
+imports this package, so it pays no DAG, branch, or action cost.
 """
 
 from .action import (

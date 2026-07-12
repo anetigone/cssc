@@ -1,15 +1,14 @@
 """Versionable mathematical argument steps and their DAG.
 
-Phase 4 (``tmp/plan1.md`` §5/§6) lifts a natural-language proof sketch from an
-opaque string into ordered, citeable steps. Each :class:`ArgumentStep` makes a
-claim, justifies it, and declares which prior steps it depends on and which
-facts it introduces. :class:`ArgumentGraph` validates that dependency structure
-as a DAG, mirroring the deterministic no-raise style of
-:func:`ObligationGraph.validate`.
+A natural-language proof sketch is lifted from an opaque string into ordered,
+citeable steps. Each :class:`ArgumentStep` makes a claim, justifies it, and
+declares which prior steps it depends on and which facts it introduces.
+:class:`ArgumentGraph` validates that dependency structure as a DAG, mirroring
+the deterministic no-raise style of :func:`ObligationGraph.validate`.
 
 The argument layer is proof-system-neutral: it carries no Lean text. Linking an
-argument step to a Lean declaration or checker goal is the job of the Phase 4
-alignment layer (``alignment.py``).
+argument step to a Lean declaration or checker goal is the job of the alignment
+layer (``alignment.py``).
 """
 
 from __future__ import annotations

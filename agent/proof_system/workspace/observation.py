@@ -1,12 +1,11 @@
 """Structured checker observations and the deterministic extractor.
 
-Phase 4 (``tmp/plan1.md`` §7) replaces the practice of routing a single checker
-failure to one responsible layer with a neutral translation step: the
-deterministic parser turns a raw checker result into one or more
+Rather than routing a single checker failure to one responsible layer, a
+neutral translation step turns a raw checker result into one or more
 :class:`Observation` records, which the model later interprets into competing
-failure hypotheses (Phase 5). The observation layer records only facts
-(category, declaration id, goal fingerprint, the attempt that produced it); it
-never infers blame.
+failure hypotheses. The observation layer records only facts (category,
+declaration id, goal fingerprint, the attempt that produced it); it never
+infers blame.
 
 ``category`` is stored as a plain string rather than the
 :class:`DiagnosticCategory` enum so that new categories introduced by future

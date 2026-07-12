@@ -1,12 +1,11 @@
 """Alignment between mathematical steps and Lean declarations/goals.
 
-Phase 4 (``tmp/plan1.md`` §6) requires that a mathematical step be linkable to
-the Lean declaration or checker goal that realizes it, because error
-attribution needs to answer "which Lean declaration does this step implement,
-and which step does a failing checker goal correspond to?". When the mapping
-cannot be established precisely, the link is recorded as ``UNALIGNED`` rather
-than faked — the design principle is to surface uncertain attribution, not
-disguise it as a definite classification.
+A mathematical step must be linkable to the Lean declaration or checker goal
+that realizes it, because error attribution needs to answer "which Lean
+declaration does this step implement, and which step does a failing checker
+goal correspond to?". When the mapping cannot be established precisely, the
+link is recorded as ``UNALIGNED`` rather than faked — the design principle is
+to surface uncertain attribution, not disguise it as a definite classification.
 
 This layer is proof-system-neutral data: it carries only identifiers (argument
 step id, Lean declaration id, source span, goal fingerprint) and a relation.

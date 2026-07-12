@@ -15,7 +15,7 @@ class ObligationGraphReport:
     Validation is deterministic and never raises: any structural problem is
     reported in :attr:`errors` with ``ok`` set to ``False``. The controller
     decides how to react (e.g. refuse assembly); the validator only states
-    facts, mirroring the Phase 0 principle of recording observations without
+    facts, mirroring the baseline principle of recording observations without
     inferring policy.
     """
 

@@ -36,8 +36,7 @@ class ProofWorkspaceReport:
 class ProofWorkspace:
     """The authoritative structured-mode search state.
 
-    Field shape follows the Phase 3 design note (``tmp/plan1.md`` §3). A
-    workspace is immutable: every mutation (decomposition, accepted fact, new
+    A workspace is immutable: every mutation (decomposition, accepted fact, new
     obligation version) returns a successor workspace with a bumped ``version``
     and ``parent_version`` pointing back. The minimal loop never constructs one.
     """
@@ -151,8 +150,8 @@ class ProofWorkspace:
         the proof-dependency direction: the parent cannot be accepted until
         all child obligations are available.
 
-        Phase 3 only wires the graph mutation; deciding *when* to decompose is
-        the frontier policy's job (Phase 6).
+        This method only wires the graph mutation; deciding *when* to decompose
+        is the frontier policy's job.
         """
         graph = self.obligation_graph
         if graph.by_id(obligation_id) is None:
@@ -296,8 +295,8 @@ def initialize_from_task(task: ProofTask) -> ProofWorkspace:
     task's verifier-facing source. The root ``lean_statement`` is the full
     ``source_template`` (the hole marker stays in place; a later phase replaces
     it with a proved artifact), and ``statement_nl`` is taken from the task's
-    natural-language provenance in metadata when present. Phase 3 does not
-    decompose automatically — decomposition is an explicit later action.
+    natural-language provenance in metadata when present. Initialization does
+    not decompose automatically — decomposition is an explicit later action.
     """
     metadata = dict(task.metadata)
     statement_nl = str(metadata.get("natural_language_problem") or "").strip()

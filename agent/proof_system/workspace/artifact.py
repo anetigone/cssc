@@ -1,15 +1,11 @@
 """Lean realization of one proof obligation.
 
-Phase 3 introduced a minimal :class:`LeanArtifact` inside ``assembler.py``
-carrying only the source fragment and the obligation pin. Phase 4
-(``tmp/plan1.md`` §5/§6) needs the branch layer to attach the artifact to a
-mathematical argument, so the artifact gains identifiers a branch can align
-against: the declaration id, the source span, and the proof body separated from
-the surrounding declaration.
-
-The class is relocated here from ``assembler.py`` so there is a single source
-of truth; ``assembler.py`` now imports it. All new fields default so existing
-assembly behaviour (which only reads ``source``) is unchanged.
+A :class:`LeanArtifact` carries the source fragment, the obligation pin, and
+the identifiers a branch can align against: the declaration id, the source
+span, and the proof body separated from the surrounding declaration. It is the
+single source of truth for artifact data; ``assembler.py`` imports it. All
+optional fields default so existing assembly behaviour (which only reads
+``source``) is unchanged.
 """
 
 from __future__ import annotations
@@ -30,8 +26,8 @@ class ArtifactKind(str, Enum):
     slot in the template.
 
     The single-root baseline only ever produces ``PROOF_BODY``; the default keeps
-    every existing construction unchanged. Multi-obligation assembly (Phase 7.4)
-    is where ``DECLARATION`` first appears.
+    every existing construction unchanged. ``DECLARATION`` first appears in
+    multi-obligation assembly (decomposed helper obligations).
     """
 
     PROOF_BODY = "proof_body"

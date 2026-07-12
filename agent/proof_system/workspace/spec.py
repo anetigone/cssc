@@ -16,7 +16,7 @@ class WorkspaceStatus(str, Enum):
     ACCEPTED = "accepted"
     #: A run that did not close the root obligation but left at least one
     #: non-root obligation verified — a reusable partial result, not a clean
-    #: failure. Derived deterministically by the run finalizer (Phase 7.7).
+    #: failure. Derived deterministically by the run finalizer.
     PARTIAL = "partial"
     BLOCKED = "blocked"
 
@@ -25,10 +25,10 @@ class WorkspaceStatus(str, Enum):
 class FormalSpecification:
     """The fixed target of a structured run: original problem + Lean statement.
 
-    Phase 3 only needs enough structure to seed the root obligation and let the
-    final assembler rebuild the full source. NL↔Lean alignment and a richer
-    specification (definitions, hypotheses, main goal) are Phase 4+ concerns;
-    here it is a thin carrier of provenance.
+    It carries enough structure to seed the root obligation and let the final
+    assembler rebuild the full source. NL↔Lean alignment and a richer
+    specification (definitions, hypotheses, main goal) are out of scope here;
+    this is a thin carrier of provenance.
     """
 
     statement_nl: str = ""

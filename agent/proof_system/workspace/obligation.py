@@ -22,10 +22,9 @@ class ObligationStatus(str, Enum):
 class ProofObligation:
     """One proof obligation: *what* to prove plus its dependencies.
 
-    Field shape follows the Phase 3 design note (``tmp/plan1.md`` §4). An
-    obligation only defines the statement and its dependency edges; concrete
+    An obligation only defines the statement and its dependency edges; concrete
     mathematical arguments and Lean implementations are search-branch concerns
-    (Phase 4+) and are not carried here.
+    and are not carried here.
 
     Versioning rule: when the statement, assumptions or dependencies change, a
     new :class:`ProofObligation` instance is created with a bumped ``version``
