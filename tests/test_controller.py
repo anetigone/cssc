@@ -139,6 +139,71 @@ class RejectProofTextReviewer:
 
 
 class ProofControllerTests(unittest.TestCase):
+    def test_records_authoritative_provider_and_checker_cost_ledger(self) -> None:
+        class UsageGenerator:
+            def generate(self, request):
+                return [ActionCandidate(
+                    proof_text="trivial",
+                    action="usage",
+                    metadata={
+                        "model": "test-model",
+                        "token_usage": {
+                            "input_tokens": 11,
+                            "output_tokens": 3,
+                            "reasoning_tokens": 7,
+                            "cached_tokens": 2,
+                            "provider_total_tokens": 21,
+                        },
+                        "provider_requests": [{
+                            "request_id": "req-1",
+                            "status": "completed",
+                            "wall_time_ms": 12.5,
+                            "token_usage": {
+                                "input_tokens": 11,
+                                "output_tokens": 3,
+                                "reasoning_tokens": 7,
+                                "cached_tokens": 2,
+                                "provider_total_tokens": 21,
+                            },
+                        }],
+                    },
+                )]
+
+        task = ProofTask(
+            "true",
+            "theorem sample : True := by\n  {{proof}}\n",
+            metadata={"pricing": {
+                "currency": "USD",
+                "price_table_version": "test-v1",
+                "effective_date": "2026-07-12",
+                "rates_per_million_usd": {
+                    "input": 1.0,
+                    "cached_input": 0.5,
+                    "output": 2.0,
+                    "reasoning": 2.0,
+                },
+            }},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=UsageGenerator(),
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=1, max_model_calls=1),
+            ).run(task)
+
+        ledger = result.metadata["cost_ledger"]
+        kinds = [event["kind"] for event in ledger["events"]]
+        self.assertIn("provider_request", kinds)
+        self.assertIn("provider_usage", kinds)
+        self.assertIn("checker", kinds)
+        totals = ledger["reconciliation"]["totals"]
+        self.assertEqual(totals["input_tokens"]["value"], 11)
+        self.assertEqual(totals["reasoning_tokens"]["value"], 7)
+        self.assertEqual(totals["billed_tokens"]["value"], 21)
+        self.assertAlmostEqual(totals["api_cost_usd"]["value"], 30 / 1_000_000)
+        self.assertEqual(totals["api_cost_usd"]["measurement_status"], "estimated")
+
     def test_retries_when_safety_rejects_checker_accepted_candidate(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
         generator = QueueGenerator([["trivial -- unsafe"], ["trivial"]])

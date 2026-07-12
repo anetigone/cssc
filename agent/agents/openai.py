@@ -42,11 +42,20 @@ def normalized_token_usage(response: Mapping[str, Any]) -> dict[str, int]:
             "input_tokens": 0,
             "output_tokens": 0,
             "reasoning_tokens": 0,
+            "cached_tokens": 0,
             "provider_completion_tokens": 0,
             "provider_total_tokens": 0,
         }
 
     input_tokens = _usage_int(usage.get("prompt_tokens", usage.get("input_tokens")))
+    input_details = usage.get("prompt_tokens_details")
+    if not isinstance(input_details, Mapping):
+        input_details = usage.get("input_tokens_details")
+    cached_tokens = (
+        _usage_int(input_details.get("cached_tokens"))
+        if isinstance(input_details, Mapping)
+        else 0
+    )
     completion_tokens = _usage_int(
         usage.get("completion_tokens", usage.get("output_tokens"))
     )
@@ -65,6 +74,7 @@ def normalized_token_usage(response: Mapping[str, Any]) -> dict[str, int]:
         "input_tokens": input_tokens,
         "output_tokens": completion_tokens - hidden_reasoning,
         "reasoning_tokens": reasoning_tokens,
+        "cached_tokens": min(cached_tokens, input_tokens),
         "provider_completion_tokens": completion_tokens,
         "provider_total_tokens": _usage_int(usage.get("total_tokens")),
     }
@@ -76,6 +86,7 @@ def merge_token_usage(*usages: Mapping[str, Any]) -> dict[str, int]:
         "input_tokens",
         "output_tokens",
         "reasoning_tokens",
+        "cached_tokens",
         "provider_completion_tokens",
         "provider_total_tokens",
     )

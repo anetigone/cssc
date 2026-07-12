@@ -45,7 +45,11 @@ from .openai import (
 )
 from .proof import _build_user_prompt, _should_allow_tools
 from .tools import Tool
-from .tools.loop import AGENT_TOKEN_USAGE_KEY
+from .tools.loop import (
+    AGENT_PROVIDER_REQUESTS_KEY,
+    AGENT_TOKEN_USAGE_KEY,
+    AGENT_TOOL_CALLS_KEY,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -100,6 +104,10 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
 
         token_usage = response.get(AGENT_TOKEN_USAGE_KEY)
         usage_metadata = dict(token_usage) if isinstance(token_usage, Mapping) else {}
+        provider_requests = response.get(AGENT_PROVIDER_REQUESTS_KEY)
+        provider_metadata = list(provider_requests) if isinstance(provider_requests, (list, tuple)) else []
+        tool_calls = response.get(AGENT_TOOL_CALLS_KEY)
+        tool_metadata = list(tool_calls) if isinstance(tool_calls, (list, tuple)) else []
         proposals: list[StructuredActionProposal] = []
         errors: list[str] = []
         branch_id = str(request.metadata.get("branch_id", ""))
@@ -124,6 +132,8 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
                             "choice_index": choice_index,
                             "finish_reason": choice.get("finish_reason"),
                             "token_usage": usage_metadata,
+                            "provider_requests": provider_metadata,
+                            "tool_calls": tool_metadata,
                         }
                     )
                     proposals.append(
@@ -153,6 +163,8 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
                     "model": self.config.model,
                     "errors": tuple(errors),
                     "token_usage": usage_metadata,
+                    "provider_requests": provider_metadata,
+                    "tool_calls": tool_metadata,
                 },
             )
         logger.info(
@@ -425,4 +437,3 @@ def _metadata(value: Any) -> dict[str, Any]:
 
 def _default_rationale(kind: SearchActionKind) -> str:
     return f"structured {kind.value}"
-

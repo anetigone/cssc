@@ -11,6 +11,7 @@ from ..budget import BudgetConfig, BudgetSnapshot
 from ..execution import ExecutionMode
 from ..memory import ProofMemory, empty_memory
 from ..metrics import AttemptMetric, RunMetrics, new_sample_id
+from ..cost_ledger import CostLedger
 from ...proof_system.base import CandidateEdit, CheckResult, DiagnosticCategory
 
 if TYPE_CHECKING:
@@ -111,5 +112,7 @@ class _ControllerRunState:
     # remains diagnostic data and is excluded from run-level output tokens.
     model_usage: list[dict[str, int]] = field(default_factory=list)
     generation_failures: list[dict[str, Any]] = field(default_factory=list)
+    # Authoritative event-level cost observations shared with structured mode.
+    cost_ledger: CostLedger = field(default_factory=CostLedger)
     # Unique per controller run so trace events from repeated runs never collide.
     sample_id: str = field(default_factory=new_sample_id)

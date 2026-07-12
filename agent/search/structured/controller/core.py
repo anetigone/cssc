@@ -39,6 +39,7 @@ from agent.search.controller.types import (
 from agent.search.controller.context import maybe_retrieve, summarize_context
 from agent.search.execution import ExecutionMode
 from agent.search.metrics import attempt_metric
+from agent.search.runtime_ledger import record_generation_events
 from agent.search.safety import SafetyReviewer, SafetyVerdict, StatementSafetyReviewer
 from agent.agents.context import ContextSummarizer
 from agent.runtime.workspace import AttemptWorkspace, EphemeralCheckWorkspace
@@ -209,6 +210,16 @@ class StructuredController(
                     **exc.metadata,
                 }
                 state.generation_failures.append(failure)
+                cost_metadata = dict(exc.metadata)
+                if "pricing" in task.metadata:
+                    cost_metadata.setdefault("pricing", task.metadata["pricing"])
+                state.cost_ledger = record_generation_events(
+                    state.cost_ledger,
+                    metadata=cost_metadata,
+                    attempt_index=state.attempt_index,
+                    fallback_request_id=f"proposal:{state.sample_id}:{self.budget.model_calls_used}",
+                    status="failed",
+                )
                 usage = exc.metadata.get("token_usage")
                 usage_entry = dict(usage) if isinstance(usage, dict) else {}
                 usage_entry.setdefault("input_tokens", 0)
@@ -227,6 +238,17 @@ class StructuredController(
                 )
                 break
             usage = proposals[0].metadata.get("token_usage") if proposals else None
+            if proposals:
+                cost_metadata = dict(proposals[0].metadata)
+                if "pricing" in task.metadata:
+                    cost_metadata.setdefault("pricing", task.metadata["pricing"])
+                state.cost_ledger = record_generation_events(
+                    state.cost_ledger,
+                    metadata=cost_metadata,
+                    attempt_index=state.attempt_index,
+                    fallback_request_id=f"proposal:{state.sample_id}:{self.budget.model_calls_used}",
+                    status="completed",
+                )
             usage_entry = dict(usage) if isinstance(usage, dict) else {}
             usage_entry.setdefault("input_tokens", 0)
             usage_entry.setdefault("output_tokens", 0)

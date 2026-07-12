@@ -281,6 +281,11 @@ class StructuredControllerActionRuntimeMixin:
             finalized: list[StructuredActionProposal] = []
             for proposal in proposals:
                 proposal = self._finalize_kind(proposal, branch)
+                if "pricing" in task.metadata and "pricing" not in proposal.metadata:
+                    proposal = replace(
+                        proposal,
+                        metadata={**proposal.metadata, "pricing": task.metadata["pricing"]},
+                    )
                 ok, errors = proposal.validate()
                 if ok:
                     finalized.append(proposal)

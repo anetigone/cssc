@@ -15,6 +15,7 @@ from ..budget import BudgetConfig, BudgetManager
 from .context import maybe_retrieve, summarize_context
 from ..memory import MemoryProcessor, MemoryUpdate
 from ..metrics import attempt_metric
+from ..runtime_ledger import record_checker_event, record_generation_events
 from .results import (
     build_accepted_result,
     build_final_result,
@@ -129,6 +130,16 @@ class ProofController:
                     **exc.metadata,
                 }
                 state.generation_failures.append(failure)
+                cost_metadata = dict(exc.metadata)
+                if "pricing" in task.metadata:
+                    cost_metadata.setdefault("pricing", task.metadata["pricing"])
+                state.cost_ledger = record_generation_events(
+                    state.cost_ledger,
+                    metadata=cost_metadata,
+                    attempt_index=state.attempt_index,
+                    fallback_request_id=f"proposal:{state.sample_id}:{self.budget.model_calls_used}",
+                    status="failed",
+                )
                 usage = exc.metadata.get("token_usage")
                 if isinstance(usage, dict):
                     state.model_usage.append(dict(usage))
@@ -140,6 +151,17 @@ class ProofController:
                 )
                 break
             _record_model_usage(state.model_usage, actions)
+            if actions:
+                cost_metadata = dict(actions[0].metadata)
+                if "pricing" in task.metadata:
+                    cost_metadata.setdefault("pricing", task.metadata["pricing"])
+                state.cost_ledger = record_generation_events(
+                    state.cost_ledger,
+                    metadata=cost_metadata,
+                    attempt_index=state.attempt_index,
+                    fallback_request_id=f"proposal:{state.sample_id}:{self.budget.model_calls_used}",
+                    status="completed",
+                )
             if not actions:
                 state.stop_reason = "no_actions"
                 logger.info(
@@ -384,6 +406,11 @@ class ProofController:
             ) as check_candidate:
                 check_result = self.adapter.check(check_candidate.path, budget_slice)
             check_result = replace(check_result, candidate_file=materialized.path)
+        state.cost_ledger = record_checker_event(
+            state.cost_ledger,
+            attempt_index=state.attempt_index,
+            check_result=check_result,
+        )
         return AttemptRecord(
             attempt_index=state.attempt_index,
             candidate_id=materialized.candidate_id,
