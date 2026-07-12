@@ -1,4 +1,4 @@
-"""Unit tests for the structured workspace context projection (Phase 7.1).
+"""Unit tests for the structured workspace context projection.
 
 These build :class:`ProofWorkspace` instances directly from the frozen
 dataclasses (the same style as ``test_workspace`` / ``test_branch``) so every
@@ -181,8 +181,8 @@ class DependencyClosureTest(unittest.TestCase):
         self.assertEqual(projection.accepted_facts[0].obligation_id, "helper1")
 
     def test_helper_declaration_id_propagates_to_dependency_and_fact_slots(self) -> None:
-        # Phase 7.5: a helper fact with a declaration_id surfaces in both the
-        # dependency closure and the accepted-facts slots so a parent prompt can
+        # A helper fact with a declaration_id surfaces in both the dependency
+        # closure and the accepted-facts slots so a parent prompt can
         # reuse the helper by its Lean name.
         root = _obligation("root", dependency_ids=("helper1",))
         helper1 = _obligation("helper1")

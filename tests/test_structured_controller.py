@@ -902,8 +902,8 @@ class StructuredControllerTests(unittest.TestCase):
                 self.assertEqual(last_action["target_branch_id"], branch["branch_id"])
 
     def test_native_decompose_executes_and_structures_the_workspace(self) -> None:
-        # Phase 7.4: a native StructuredActionGenerator emitting a DECOMPOSE
-        # proposal is executed (not skipped). The root obligation is split into
+        # A native StructuredActionGenerator emitting a DECOMPOSE proposal is
+        # executed (not skipped). The root obligation is split into
         # a helper, the old root branch is superseded, and new branches are
         # seeded for the helper and the new parent version. The decompose is
         # recorded under ``decompose_records`` and never reaches
@@ -975,8 +975,8 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(result.metadata["skipped_proposals"], ())
 
     def test_multi_obligation_decompose_then_helpers_then_root_assembles(self) -> None:
-        # Phase 7.4 end-to-end: a native generator decomposes the root into a
-        # helper, the helper is implemented and accepted, the new parent version
+        # End-to-end: a native generator decomposes the root into a helper,
+        # the helper is implemented and accepted, the new parent version
         # (now ready, its dependency closed) is implemented and accepted, and the
         # final whole-source assembly passes. This is the AND-OR search closing.
         from agent.proof_system.workspace.action import (
@@ -1062,8 +1062,8 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(helper_facts[0]["declaration_id"], "helper")
 
     def test_capability_audit_blocks_route_when_capability_missing(self) -> None:
-        # Phase 7.3: a native generator proposes RUN_CAPABILITY_TEST. The audit
-        # renders the signature and checks it; an UNKNOWN_IDENTIFIER result
+        # A native generator proposes RUN_CAPABILITY_TEST. The audit renders
+        # the signature and checks it; an UNKNOWN_IDENTIFIER result
         # blocks the branch AND the obligation, closes the result-summary gap,
         # and the loop terminates without spending an IMPLEMENT attempt.
         from agent.proof_system.workspace.action import (
@@ -1142,8 +1142,8 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertNotIn("theorem sample", checked_source)
 
     def test_blocked_helper_obligation_yields_blocked_stop_reason(self) -> None:
-        # Phase 7.5: when a decomposed helper is blocked (capability missing),
-        # the parent can never become ready, the frontier drains, and the run
+        # When a decomposed helper is blocked (capability missing), the parent
+        # can never become ready, the frontier drains, and the run
         # terminates with stop_reason "blocked" — distinguishing a mechanical
         # dead-end from a run that merely exhausted ready work.
         from agent.proof_system.workspace.action import (
@@ -1228,8 +1228,8 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(result.stop_reason, "blocked")
         summary = result.metadata["result_summary"]
         self.assertTrue(any(o["obligation_id"] == "helper" for o in summary["blocked_obligations"]))
-        # Phase 7.7: the blocked helper propagates transitively — the root
-        # obligation (which depends on it) is blocked too, and the run's
+        # The blocked helper propagates transitively — the root obligation
+        # (which depends on it) is blocked too, and the run's
         # terminal workspace status is BLOCKED rather than the in-progress
         # SEARCHING the loop carried.
         self.assertTrue(
@@ -1361,8 +1361,8 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(result.metrics.budget_checks_used, 3)
 
     def test_native_propose_argument_executes_and_validates(self) -> None:
-        # Phase 7.6: a native generator emitting a PROPOSE_ARGUMENT proposal is
-        # executed (not skipped). The branch carries the new argument step +
+        # A native generator emitting a PROPOSE_ARGUMENT proposal is executed
+        # (not skipped). The branch carries the new argument step +
         # alignment, the workspace validates, and the edit is recorded under
         # argument_records rather than skipped_proposals.
         from agent.proof_system.workspace.action import (
@@ -1444,8 +1444,8 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(result.metadata["skipped_proposals"], ())
 
     def test_native_change_representation_forks_branch(self) -> None:
-        # Phase 7.6: CHANGE_REPRESENTATION forks a <parent>.rep0 branch carrying
-        # the payload's argument layer and supersedes the parent.
+        # CHANGE_REPRESENTATION forks a <parent>.rep0 branch carrying the
+        # payload's argument layer and supersedes the parent.
         from agent.proof_system.workspace.action import (
             DEFAULT_ALLOWED_MUTATIONS,
             SearchAction,
@@ -1526,7 +1526,7 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(len(result.metadata["representation_records"]), 1)
 
     def test_implement_failure_records_competing_hypotheses(self) -> None:
-        # Phase 7.6: after a failing IMPLEMENT the generator emits competing
+        # After a failing IMPLEMENT the generator emits competing
         # FailureHypotheses (carried on a proposal's metadata). The controller
         # folds them onto the branch after the failure's observations are
         # present, so they appear in the workspace and projection.
@@ -1612,8 +1612,8 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertIn("h1", hyp_ids)
 
     def test_select_test_action_promotes_lowest_cost(self) -> None:
-        # Phase 7.6: _select_test_action ranks structural probes (capability
-        # audit) cheaper than a full IMPLEMENT, even when the IMPLEMENT comes
+        # _select_test_action ranks structural probes (capability audit)
+        # cheaper than a full IMPLEMENT, even when the IMPLEMENT comes
         # from a higher-confidence hypothesis.
         from agent.proof_system.workspace.action import (
             DEFAULT_ALLOWED_MUTATIONS,

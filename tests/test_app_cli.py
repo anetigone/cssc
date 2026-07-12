@@ -556,7 +556,7 @@ class CliSubcommandTests(unittest.TestCase):
         self.assertEqual(prove.model, "p-model")
 
     def test_parser_accepts_all_frontier_policy_choices(self) -> None:
-        # Phase 8.4: --frontier-policy exposes every opt-in档位 on the solve
+        # --frontier-policy exposes every opt-in档位 on the solve
         # subcommand; an unknown value must still be rejected by argparse.
         parser = build_parser()
         for value in ("legacy", "cost_aware_v1", "cost_aware_v2", "value_per_cost_v1"):

@@ -322,7 +322,7 @@ def _accepted_multi_obligation_workspace(task: ProofTask) -> ProofWorkspace:
 
 
 class ArtifactAssemblerMultiObligationTests(unittest.TestCase):
-    """Phase 7.4: helper declarations render before the root proof body."""
+    """Helper declarations render before the root proof body."""
 
     def test_helpers_injected_before_root_and_root_body_in_hole_once(self) -> None:
         task = ProofTask("demo", "theorem demo : True := by\n  {{proof}}\n")

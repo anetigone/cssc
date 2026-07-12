@@ -296,7 +296,7 @@ class ProofWorkspaceTests(unittest.TestCase):
         self.assertEqual(restored.specification.statement_nl, "show True")
 
     def test_round_trip_preserves_partial_status(self) -> None:
-        # Phase 7.7: PARTIAL is a first-class terminal status and must survive
+        # PARTIAL is a first-class terminal status and must survive
         # serialization (the run finalizer sets it; the trace reloads it).
         root = _obligation(obligation_id="root")
         graph = ObligationGraph(obligations=(root,), root_obligation_id="root")

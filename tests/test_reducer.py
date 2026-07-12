@@ -329,7 +329,7 @@ def _check_result(
 
 
 class ReducerCapabilityAuditTests(unittest.TestCase):
-    """Phase 7.3: RUN_CAPABILITY_TEST folds into an observation and may block."""
+    """RUN_CAPABILITY_TEST folds into an observation and may block."""
 
     def test_missing_capability_blocks_branch_and_obligation(self) -> None:
         workspace = _seed_workspace()
@@ -562,7 +562,7 @@ class ReducerDecomposeTests(unittest.TestCase):
 
 
 class ReducerArtifactContractTests(unittest.TestCase):
-    """Phase 7.4: root vs helper artifact kind and fact statement."""
+    """Root vs helper artifact kind and fact statement."""
 
     def _decomposed_workspace(self):
         workspace = _seed_workspace()
@@ -1031,7 +1031,7 @@ class ReducerFailureHypothesisTests(unittest.TestCase):
 
 
 class ReducerTransitiveBlockTests(unittest.TestCase):
-    """Phase 7.7: a blocked helper propagates the block to its dependents."""
+    """A blocked helper propagates the block to its dependents."""
 
     def _decomposed(self):
         # root decomposed into helper1; root (new version) depends on helper1.
@@ -1158,7 +1158,7 @@ class ReducerTransitiveBlockTests(unittest.TestCase):
 
 
 class ReducerDormantRecoveryTests(unittest.TestCase):
-    """Phase 7.7: DORMANT branches revive when new evidence unblocks them."""
+    """DORMANT branches revive when new evidence unblocks them."""
 
     def _decomposed(self):
         workspace = _seed_workspace()

@@ -1,4 +1,4 @@
-"""Phase 7.7: deterministic terminal workspace-status finalizer."""
+"""Deterministic terminal workspace-status finalizer."""
 
 from __future__ import annotations
 

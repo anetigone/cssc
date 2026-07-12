@@ -1,11 +1,10 @@
-"""Phase 8.3: structured soft-budget hints and borrowing.
+"""Structured soft-budget hints and borrowing.
 
 Covers :mod:`agent.search.structured.budget_hints`: the per-obligation soft
 envelope (root / unlock-value / capability / stalled / accepted-neighbour
-components), the realised ``borrowed_*`` join from the Phase 8.1 cost summary,
-the no-mutation / no-reserve contract, and the single-root invariant that an
-overdraft never flips a run to PARTIAL/BLOCKED. Strategy rules from
-``tmp/phase8_plan.md`` §4.
+components), the realised ``borrowed_*`` join from the cost summary, the
+no-mutation / no-reserve contract, and the single-root invariant that an
+overdraft never flips a run to PARTIAL/BLOCKED.
 """
 
 from __future__ import annotations

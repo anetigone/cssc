@@ -1,4 +1,4 @@
-"""Phase 7.0 end-to-end contract tests for the structured executor.
+"""End-to-end contract tests for the structured executor.
 
 These tests freeze the *result contract* of a structured run: the shape of
 ``metadata["result_summary"]`` (and the assembly-error pass-through) across the
@@ -7,15 +7,15 @@ adapter drives the controller the same way ``test_structured_controller.py``
 does, but here the assertions target the machine-assertable summary view, not
 mechanics like budget counts or repair-fork branch ids.
 
-Scenarios, matching the Phase 7.0/7.3 contract fixtures:
+Scenarios:
 
-* single-root acceptance (Phase 6 behavior does not regress, contract is full);
+* single-root acceptance (single-root behavior does not regress, contract is full);
 * two-helper-plus-root decomposition at the *data-structure* layer (the
-  multi-obligation *loop* is Phase 7.4 — the frontier has no AND-readiness yet);
+  multi-obligation *loop* is the frontier's AND-readiness concern);
 * no-actions → branch blocked (the residual "branch BLOCKED but obligation
   OPEN" gap that the no_actions path keeps by design);
-* capability-missing → branch + obligation blocked (Phase 7.3 closes that gap
-  on the capability-audit path).
+* capability-missing → branch + obligation blocked (the capability-audit path
+  closes that gap).
 
 Plus one regression guard: assembly failure must surface its ``errors``
 (previously dropped on ``assembly_failed``).
@@ -273,8 +273,8 @@ class StructuredEndToEndContractTests(unittest.TestCase):
         # capability gap (the generator may simply have nothing to say). This
         # is the residual "branch BLOCKED but obligation OPEN" case the result
         # contract surfaces via ``blocked_branch_obligation_ids``. The
-        # capability-audit path (Phase 7.3) closes its own copy of this gap by
-        # blocking the obligation too — see test_structured_controller.py.
+        # capability-audit path closes its own copy of this gap by blocking
+        # the obligation too — see test_structured_controller.py.
         with tempfile.TemporaryDirectory() as tmp:
             result = self._controller(tmp, _QueueGenerator([])).run(_task())
 
@@ -311,8 +311,8 @@ class StructuredEndToEndContractTests(unittest.TestCase):
     # --- scenario 3b: capability-missing → branch + obligation blocked -------
 
     def test_capability_missing_blocks_obligation(self) -> None:
-        # Phase 7.3: a capability probe the environment cannot supply blocks
-        # the route — branch AND obligation go BLOCKED together, so the
+        # A capability probe the environment cannot supply blocks the route
+        # — branch AND obligation go BLOCKED together, so the
         # result-summary gap collapses to empty and ``blocked_obligations``
         # fills. This is the closed-loop counterpart of the no_actions case.
         from agent.proof_system.workspace.action import (

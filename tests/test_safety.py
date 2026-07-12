@@ -109,8 +109,8 @@ class StatementSafetyReviewerTests(unittest.TestCase):
         self.assertIn("statement_not_preserved", verdict.reasons)
 
     def test_allows_prepended_helper_declarations(self) -> None:
-        # Phase 7.4: a structured assembly prepends helper declarations before
-        # the root. The root statement is still present verbatim, so the
+        # A structured assembly prepends helper declarations before the root.
+        # The root statement is still present verbatim, so the
         # statement-preservation check must accept it (shortcut/axiom scans
         # still run over the whole candidate to catch cheating in helpers).
         candidate = (

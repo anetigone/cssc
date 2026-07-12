@@ -361,7 +361,7 @@ class FrontierUpdateTests(unittest.TestCase):
 
 
 class FrontierReadinessGateTests(unittest.TestCase):
-    """Phase 7.4: an obligation is not ready until its dependencies accept."""
+    """An obligation is not ready until its dependencies accept."""
 
     def _branches(self):
         root = _branch("root", obligation_version=2)
@@ -456,7 +456,7 @@ def _branch_with_capability_test(
 
 
 class FrontierPolicyTests(unittest.TestCase):
-    """Phase 8.2: opt-in cost-aware frontier, legacy default unchanged."""
+    """Opt-in cost-aware frontier, legacy default unchanged."""
 
     def test_default_policy_is_legacy(self) -> None:
         self.assertIs(Frontier().policy, FrontierPolicy.LEGACY)
@@ -579,7 +579,7 @@ class FrontierPolicyTests(unittest.TestCase):
             ready.append(cost_aware_frontier.pop().branch_id)
         self.assertEqual(ready, ["helper"])
 
-    # -- Phase 8.3: cost_aware_v2 (soft-budget overdraft deprioritisation) --
+    # -- cost_aware_v2 (soft-budget overdraft deprioritisation) --
 
     def test_cost_aware_v2_deprioritizes_overdraft_branch(self) -> None:
         # Two roots with identical legacy / cost fields. The overdraft branch
@@ -781,7 +781,7 @@ class FrontierPolicyTests(unittest.TestCase):
 
 
 class ValuePerCostFrontierTests(unittest.TestCase):
-    """Phase 8.4: opt-in value/cost mixed-score frontier ordering."""
+    """Opt-in value/cost mixed-score frontier ordering."""
 
     def _two_helper_workspace(self):
         """Workspace whose root + extra parent both depend on ``sample.hot``.

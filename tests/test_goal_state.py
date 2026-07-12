@@ -56,7 +56,7 @@ class ParserGoalStateTests(unittest.TestCase):
         self.assertEqual(feedback.line, 3)
         self.assertEqual(feedback.column, 2)
         self.assertEqual(feedback.goal_state[0].source_span, (3, 2))
-        # Identity agrees with the Phase 0 baseline fingerprint helper.
+        # Identity agrees with the baseline fingerprint helper.
         self.assertEqual(
             feedback.goal_state[0].goal_fingerprint,
             goal_fingerprint(feedback.unsolved_goals[0]),

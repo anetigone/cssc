@@ -1,10 +1,10 @@
-"""Phase 8.1: structured branch/obligation cost attribution.
+"""Structured branch/obligation cost attribution.
 
 Covers :mod:`agent.search.structured.costing`: direct/transitive cost split per
 branch and obligation, the assembly and run layers, serialization, and the
-cost rules from ``tmp/phase8_plan.md`` §2 (structural actions = 0 checks /
-0 model calls; capability = 1 check / 0 extra model calls; assembly is
-run-level; transitive adds helper direct cost without double counting).
+cost rules (structural actions = 0 checks / 0 model calls; capability = 1
+check / 0 extra model calls; assembly is run-level; transitive adds helper
+direct cost without double counting).
 """
 
 from __future__ import annotations
