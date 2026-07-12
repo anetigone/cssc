@@ -80,16 +80,21 @@ class Phase10RunnerTests(unittest.TestCase):
                 )
                 return 1
 
+            snapshot = Path(tmp) / "history.json"
+            snapshot.write_text("{}", encoding="utf-8")
             with patch("scripts.phase8_benchmark_run._run_live", side_effect=fake_live):
                 rc = runner.main([
                     "--task", "l1_identity", "--arm", "A5", "--repetition", "97",
                     "--runs-root", str(Path(tmp) / "runs"),
                     "--proof-model", "cheap", "--strong-proof-model", "strong",
+                    "--cost-history-snapshot", str(snapshot),
                     "--overwrite",
                 ])
             self.assertEqual(rc, 0)
             self.assertTrue(captured["enable_model_routing"])
             self.assertEqual(captured["strong_proof_model"], "strong")
+            self.assertEqual(captured["action_cost_source"], "empirical")
+            self.assertTrue(captured["remaining_budget_policy"])
 
     def test_a6_is_single_cheap_without_routing(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as tmp:
@@ -104,14 +109,39 @@ class Phase10RunnerTests(unittest.TestCase):
                 )
                 return 1
 
+            snapshot = Path(tmp) / "history.json"
+            snapshot.write_text("{}", encoding="utf-8")
             with patch("scripts.phase8_benchmark_run._run_live", side_effect=fake_live):
                 rc = runner.main([
                     "--task", "l1_identity", "--arm", "A6", "--repetition", "98",
                     "--runs-root", str(Path(tmp) / "runs"),
-                    "--proof-model", "cheap", "--overwrite",
+                    "--proof-model", "cheap", "--cost-history-snapshot", str(snapshot), "--overwrite",
                 ])
             self.assertEqual(rc, 0)
             self.assertFalse(captured["enable_model_routing"])
+
+    def test_a2_a3_a4_map_to_distinct_runtime_configuration(self):
+        expected = {
+            "A2": ("static", False),
+            "A3": ("empirical", False),
+            "A4": ("empirical", True),
+        }
+        with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as tmp:
+            snapshot = Path(tmp) / "history.json"
+            snapshot.write_text("{}", encoding="utf-8")
+            for index, (arm, pair) in enumerate(expected.items(), 120):
+                captured = {}
+                def fake_live(*args, out: Path, **kwargs):
+                    captured.update(kwargs)
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_text(json.dumps({"event": "run_summary", "accepted": False, "metrics": {}, "metadata": {}}) + "\n", encoding="utf-8")
+                    return 1
+                argv = ["--task", "l1_identity", "--arm", arm, "--repetition", str(index), "--runs-root", str(Path(tmp) / "runs"), "--proof-model", "model", "--overwrite"]
+                if pair[0] == "empirical":
+                    argv.extend(["--cost-history-snapshot", str(snapshot)])
+                with patch("scripts.phase8_benchmark_run._run_live", side_effect=fake_live):
+                    self.assertEqual(runner.main(argv), 0)
+                self.assertEqual((captured["action_cost_source"], captured["remaining_budget_policy"]), pair)
 
 
 if __name__ == "__main__":

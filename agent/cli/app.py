@@ -364,8 +364,19 @@ def _run_controller(
     generator = build_action_generator(args, project_root=project_root)
     execution_mode = ExecutionMode(args.execution_mode)
     model_router_config = None
+    action_runtime_config = None
+    cost_estimator = None
     if execution_mode is ExecutionMode.STRUCTURED:
         from agent.search.structured.model_router import ModelRouterConfig
+        from agent.search.structured.action_runtime_config import (
+            ActionCostSource,
+            ActionRuntimeConfig,
+        )
+        from agent.search.structured.cost_estimator import (
+            ActionCostEstimator,
+            cost_history_snapshot_from_dict,
+        )
+        import json
 
         model_router_config = ModelRouterConfig(
             enabled=bool(getattr(args, "enable_model_routing", False)),
@@ -375,6 +386,19 @@ def _run_controller(
             ),
             strong_model=getattr(args, "strong_proof_model", None),
         )
+        action_runtime_config = ActionRuntimeConfig(
+            cost_source=ActionCostSource(getattr(args, "action_cost_source", "auto")),
+            remaining_budget_policy=bool(
+                getattr(args, "remaining_budget_policy", True)
+            ),
+        )
+        snapshot_arg = getattr(args, "cost_history_snapshot", None)
+        if snapshot_arg:
+            snapshot_path = resolve_agent_path(Path.cwd(), snapshot_arg)
+            snapshot_data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            cost_estimator = ActionCostEstimator(
+                cost_history_snapshot_from_dict(snapshot_data)
+            )
     controller = build_controller(
         execution_mode,
         adapter=services.adapter,
@@ -397,6 +421,8 @@ def _run_controller(
             frontier_policy=getattr(args, "frontier_policy", "legacy"),
         ),
         model_router_config=model_router_config,
+        cost_estimator=cost_estimator,
+        action_runtime_config=action_runtime_config,
     )
     return controller.run(task)
 

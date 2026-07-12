@@ -288,6 +288,9 @@ def _run_live(
     proof_max_tokens: int,
     enable_model_routing: bool,
     strong_proof_model: str | None,
+    action_cost_source: str,
+    remaining_budget_policy: bool,
+    cost_history_snapshot: Path | None,
     out: Path,
 ) -> int:
     max_calls, max_checks = BUDGET_TABLE[row["budget_profile"]]
@@ -322,6 +325,14 @@ def _run_live(
     ]
     if enable_model_routing:
         cmd.extend(["--enable-model-routing", "--strong-proof-model", str(strong_proof_model)])
+    cmd.extend(["--action-cost-source", action_cost_source])
+    cmd.append(
+        "--enable-remaining-budget-policy"
+        if remaining_budget_policy
+        else "--disable-remaining-budget-policy"
+    )
+    if cost_history_snapshot is not None:
+        cmd.extend(["--cost-history-snapshot", str(cost_history_snapshot)])
     out.parent.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(cmd, cwd=str(ROOT))
     return completed.returncode
@@ -470,6 +481,7 @@ def main(
     parser.add_argument("--model-timeout", type=float, default=60.0)
     parser.add_argument("--proof-model", default=None)
     parser.add_argument("--strong-proof-model", default=None)
+    parser.add_argument("--cost-history-snapshot", default=None)
     parser.add_argument("--proof-temperature", type=float, default=0.2)
     parser.add_argument("--proof-max-tokens", type=int, default=16384)
     parser.add_argument(
@@ -500,6 +512,14 @@ def main(
         print(json.dumps({"ok": False, "error": "--from-trace requires --dry-run"}))
         return 2
     needs_routing = args.arm in routed_arms
+    features = dict((arm_features or {}).get(args.arm, {}))
+    action_cost_source = str(features.get("cost_source", "auto"))
+    remaining_budget_policy = bool(features.get("remaining_budget", True))
+    history_path = (
+        (ROOT / args.cost_history_snapshot).resolve()
+        if args.cost_history_snapshot
+        else None
+    )
     if args.track == "live" and not args.dry_run and not args.proof_model:
         print(
             json.dumps(
@@ -512,6 +532,17 @@ def main(
         return 2
     if args.track == "live" and not args.dry_run and needs_routing and not args.strong_proof_model:
         print(json.dumps({"ok": False, "error": f"{args.arm} requires --strong-proof-model for Phase 9.4 routing"}))
+        return 2
+    if (
+        args.track == "live"
+        and not args.dry_run
+        and action_cost_source == "empirical"
+        and history_path is None
+    ):
+        print(json.dumps({"ok": False, "error": f"{args.arm} requires --cost-history-snapshot"}))
+        return 2
+    if history_path is not None and not history_path.is_file():
+        print(json.dumps({"ok": False, "error": f"cost history snapshot not found: {history_path}"}))
         return 2
     if args.track == "controlled" and selected_arms[args.arm][0] != "structured":
         print(
@@ -656,7 +687,12 @@ def main(
             lean_timeout=args.lean_timeout,
             dry_run=args.dry_run,
         )
-        provenance["arm_features"] = dict((arm_features or {}).get(args.arm, {}))
+        provenance["arm_features"] = features
+        provenance["action_cost_source"] = action_cost_source
+        provenance["remaining_budget_policy"] = remaining_budget_policy
+        provenance["cost_history_snapshot"] = (
+            _display_path(history_path) if history_path is not None else None
+        )
         provenance["model_routing_enabled"] = needs_routing
         provenance["strong_proof_model"] = args.strong_proof_model
         _write_json_atomic(meta, provenance)
@@ -713,6 +749,9 @@ def main(
                 proof_max_tokens=args.proof_max_tokens,
                 enable_model_routing=needs_routing,
                 strong_proof_model=args.strong_proof_model,
+                action_cost_source=action_cost_source,
+                remaining_budget_policy=remaining_budget_policy,
+                cost_history_snapshot=history_path,
                 out=out,
         )
         summary, trace_error = _read_single_run_summary(out)

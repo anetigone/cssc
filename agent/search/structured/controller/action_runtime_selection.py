@@ -48,6 +48,8 @@ class BudgetedPriorityExplanation:
 def select_admissible_action(
     frontier: ActionFrontier,
     snapshot: UnifiedBudgetSnapshot,
+    *,
+    enforce_remaining_budget: bool = True,
 ) -> ConstrainedSelection:
     """Pick the highest-ranked feasible action from one frozen choice set."""
     selected = None
@@ -62,9 +64,13 @@ def select_admissible_action(
             "estimated_execution_cost": node.estimated_execution_cost.to_dict(),
             "budget_admission": admission.to_dict(),
         })
-        if selected is None and admission.allowed:
+        if selected is None and (admission.allowed or not enforce_remaining_budget):
             selected = node
-            selected_admission = admission
+            selected_admission = (
+                admission if enforce_remaining_budget else BudgetAdmission(
+                    True, (), ("remaining_budget_policy_disabled",)
+                )
+            )
     return ConstrainedSelection(selected, selected_admission, tuple(rows))
 
 

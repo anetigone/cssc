@@ -146,6 +146,18 @@ class ActionFrontierTests(unittest.TestCase):
         self.assertFalse(selection.choice_set[0]["budget_admission"]["allowed"])
         self.assertTrue(selection.choice_set[1]["budget_admission"]["allowed"])
 
+        unconstrained = select_admissible_action(
+            frontier, snapshot, enforce_remaining_budget=False
+        )
+        self.assertEqual(
+            unconstrained.node.proposal.action.kind, SearchActionKind.DECOMPOSE
+        )
+        self.assertTrue(unconstrained.admission.allowed)
+        self.assertIn(
+            "remaining_budget_policy_disabled",
+            unconstrained.admission.not_compared_dimensions,
+        )
+
     def test_cost_policy_prefers_free_structural_action(self) -> None:
         workspace = _workspace(ProofBranch("b1", "sample", 1))
         cache, _ = ProposalCache().add(

@@ -26,6 +26,15 @@ independent runtime switches, and rejects `C4` because replay makes no model
 calls on which cheap/strong routing could act.  This prevents labels in
 provenance from being mistaken for real ablations.
 
-On the live track, `A5` does enable the Phase 9.4 cheap/strong router and `A6`
-does not.  That routing distinction does not make the still-unwired cost-source
-or admission-policy dimensions executable.
+The live action arms use explicit runtime configuration:
+
+- `A2`: static action costs, remaining-budget admission disabled;
+- `A3`: frozen empirical costs, remaining-budget admission disabled;
+- `A4`: frozen empirical costs, remaining-budget admission enabled;
+- `A5`: A4 plus the Phase 9.4 cheap/strong router;
+- `A6`: A4 with one cheap model and routing disabled.
+
+Empirical arms require `--cost-history-snapshot`; the runner refuses to start
+without it.  The controller trace records `action_runtime_config`, while the
+benchmark provenance records the same cost source, admission flag and snapshot
+path.

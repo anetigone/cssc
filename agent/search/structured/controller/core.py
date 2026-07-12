@@ -65,6 +65,7 @@ from ..run_state import _StructuredRunState, build_structured_result
 from ..solution_tracker import has_complete_solution
 from ..cost_estimator import ActionCostEstimator
 from ..model_router import ModelRouterConfig
+from ..action_runtime_config import ActionRuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ class StructuredController(
         safety_reviewer: SafetyReviewer | None = None,
         cost_estimator: ActionCostEstimator | None = None,
         model_router_config: ModelRouterConfig | None = None,
+        action_runtime_config: ActionRuntimeConfig | None = None,
     ) -> None:
         self.adapter = adapter
         self.action_generator = adapt_legacy_generator(action_generator)
@@ -108,6 +110,7 @@ class StructuredController(
         self.assembler = ArtifactAssembler()
         self.cost_estimator = cost_estimator
         self.model_router_config = model_router_config or ModelRouterConfig()
+        self.action_runtime_config = action_runtime_config or ActionRuntimeConfig()
         if (
             self.model_router_config.enabled
             and not hasattr(self.action_generator, "generate_for_route")
