@@ -20,13 +20,23 @@ Use `--formalizer-model` and `--proof-model` with `solve`, or the shorter
 `--model` option on an individual stage. Proof repair rounds reuse the proof
 model rather than having a separate model role.
 
+Current engineering constraints are documented in [`agents.md`](agents.md).
+Implementation milestones, historical phase mapping, open gaps, and the
+external-benchmark evaluation plan live in
+[`docs/development-roadmap.md`](docs/development-roadmap.md).
+
 ## Project Positioning
 
 This project studies how an LLM-based formal proof agent should allocate a limited inference budget. Instead of improving theorem proving mainly through larger models, more samples, or expensive training, the focus is on search control: when to expand a branch, repair a failed proof step, retrieve supporting lemmas, backtrack, prune, or escalate to a stronger model.
 
 The implementation target is Lean 4. Lean is a good fit for the initial system because it has an active LLM theorem-proving ecosystem, strong Mathlib infrastructure, practical compiler feedback, and a relatively convenient path for proof-state extraction and automated checking. Isabelle/HOL remains useful background and future comparison material, especially because the Archive of Formal Proofs contains a mature formalization of optimal binary search trees (OBST).
 
-The first benchmark should therefore be Lean-first: start with small theorem-completion tasks from Mathlib-style developments or a local Lean formalization of OBST. Isabelle AFP `Optimal_BST` should be treated as future comparison material rather than an MVP dependency. In both cases, OBST is useful because the mathematics is classical, the proof chain is nontrivial, and the final proofs are machine-checkable.
+The main evaluation is Lean-first and uses at least two public proof-completion
+benchmarks under frozen Lean/Mathlib environments. Local OBST developments and
+the historical internal canaries remain useful for integration tests and case
+studies, but they are not substitutes for the public benchmark evidence. The
+formalization and proof-search layers are evaluated separately when necessary
+so gains in search control are not confounded with statement translation.
 
 > Working title: **Cost-Sensitive Search Control for LLM-Guided Formal Proof Agents**
 >

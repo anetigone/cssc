@@ -322,13 +322,17 @@ expected value per unit cost.
 
 ### Multi-Hole Source Files
 
-The current path is source-level multi-hole extraction, not multi-hole candidate
-edits. A file with several `sorry` or `{{proof}}` markers becomes several
-single-active-hole `ProofTask` objects. This keeps the rest of the MVP stable.
+The current path is source-level dependency-task extraction, not multi-hole
+candidate edits. A file with several `sorry` or `{{proof}}` markers becomes a
+source-ordered sequence of single-active-hole `ProofTask` objects. Later tasks
+contain explicit dependency markers and cannot run until those markers are
+materialized with checker+safety accepted proof bodies.
 
-True multi-hole solving should be added as a separate task/edit contract, for
-example `CompositeProofTask` plus an edit map from `hole_id` to replacement
-text. Do not silently change `CandidateEdit.text` to mean multiple edits.
+The CLI runs such a dependency sequence in order and stops at the first failed
+task. `CandidateEdit.text` still means one proof-body edit; do not silently
+change it to an edit map. A future non-linear multi-hole scheduler should build
+on explicit obligation dependencies rather than reintroducing inactive
+`sorry` placeholders.
 
 ### Ground Truth
 

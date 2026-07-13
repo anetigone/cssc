@@ -1,40 +1,46 @@
 # Benchmark scripts
 
-The benchmark code is split into three layers:
+`benchmark_harness.py` is the suite-neutral entry point. New benchmark adapters
+and suites should configure this layer rather than mutate historical module
+globals.
 
-1. `benchmark_harness.py` is the suite-neutral API. New suites configure it;
-   they do not modify another phase's module globals.
-2. `phase8_benchmark_*.py` are the historical Phase 8 entry points and the
-   compatibility backend for trace/replay formats created in that phase.
-3. `phase10_benchmark_*.py` contain Phase 10 policy, validation gates and CLI
-   configuration. Phase 10 data lives only under
-   `tests/fixtures/phase10_benchmark` and `.runs/phase10`.
+## Historical compatibility entry points
 
-`phase8_benchmark_replay.py` remains named for compatibility with existing
-tests and imports. New code should import replay support through
-`scripts.benchmark_harness`.
+- `phase8_benchmark_*.py` retain the original trace/replay backend names.
+- `phase10_benchmark_*.py` retain the internal controlled/live canary names.
+- Their names, trace layouts and serialized arm identifiers are compatibility
+  surfaces; they do not define the current development phase.
 
-Historical `.runs/phase8/stage1-canary` data is pipeline-smoke evidence and is
-never an input to Phase 10 reports or calibration.
+The internal canaries are now pipeline/controller regression fixtures only.
+Controlled simulated costs are never billed-cost evidence, and historical
+`.runs/phase8/stage1-canary` output must not enter formal savings or accepted
+rate reports.
 
-`PHASE10_ARM_FEATURES` records the intended experiment design; it is not an
-execution mechanism.  An arm is runnable only if each declared dimension is
-wired into the controller.  Today controlled replay can execute `C0` (legacy
-branch frontier) and `C1` (the bundled action-cost-aware runtime).  It rejects
-`C2`/`C3` because empirical cost and remaining-budget admission are not
-independent runtime switches, and rejects `C4` because replay makes no model
-calls on which cheap/strong routing could act.  This prevents labels in
-provenance from being mistaken for real ablations.
+## Current benchmark direction
 
-The live action arms use explicit runtime configuration:
+Formal evaluation uses external public Lean benchmarks with:
+
+- frozen source revision, split, license and statement provenance;
+- benchmark-specific Lean/Mathlib project configuration;
+- eligibility checks completed before model runs;
+- ground-truth proof isolation from prompts and retrieval;
+- identical checker, safety, trace and cost schemas across arms;
+- action-mask baselines that isolate richer action-space effects;
+- paired repeated runs and measurement-coverage gates.
+
+The full evaluation contract and remaining work are recorded in
+[`docs/development-roadmap.md`](../docs/development-roadmap.md).
+
+## Existing live arm compatibility
+
+The historical action arms still map to explicit runtime configuration:
 
 - `A2`: static action costs, remaining-budget admission disabled;
 - `A3`: frozen empirical costs, remaining-budget admission disabled;
 - `A4`: frozen empirical costs, remaining-budget admission enabled;
-- `A5`: A4 plus the Phase 9.4 cheap/strong router;
-- `A6`: A4 with one cheap model and routing disabled.
+- `A5`: `A4` plus cheap/strong routing;
+- `A6`: `A4` with one cheap model and routing disabled.
 
-Empirical arms require `--cost-history-snapshot`; the runner refuses to start
-without it.  The controller trace records `action_runtime_config`, while the
-benchmark provenance records the same cost source, admission flag and snapshot
-path.
+Empirical arms require `--cost-history-snapshot`. The trace records the actual
+`action_runtime_config`; provenance labels alone are not evidence that an
+ablation executed.

@@ -1,5 +1,10 @@
 # Progress Log
 
+> Historical implementation log. It is retained for provenance and is not the
+> current roadmap. See [`development-roadmap.md`](development-roadmap.md) for
+> current status and planned work, and [`../agents.md`](../agents.md) for active
+> engineering constraints.
+
 ## 2026-06-15
 
 ### Architecture
