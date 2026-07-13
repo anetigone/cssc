@@ -6,3 +6,4 @@ lean_workspace/
 lean_test/
 .runs/
 tmp/
+benchmark/

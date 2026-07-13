@@ -70,6 +70,14 @@
 - ground-truth proof 只用于构造验证，不能进入模型 prompt 或 retrieval。
 - 内部 canary 只做 deterministic replay、trace schema、ledger 和 controller regression。
 
+当前 miniF2F 进度：已提供针对外部 Google DeepMind Lean 4 checkout 的离线 preparation
+adapter。它固定并记录 source revision、244/244 split、license、statement/scaffold hash、
+Lean toolchain 与 Lake dependency revision，将聚合文件拆成独立单洞任务，并隔离上游 proof。
+revision `f0a20e14c1eeccd859d51bb4c2b3ee487889c303` 的 488 个生成 scaffold 已完成
+真实 Lean 4.27 eligibility：跨题标识符引用审计为零，split 聚合检查失败时自动二分到
+单题，最终 488/488 eligible、0 ineligible、0 infrastructure failure。benchmark-specific
+live runner 和正式实验冻结仍未完成。
+
 ### 公平 baseline 与消融
 
 - 提供显式 `allowed_action_kinds` 或等价 action mask。
