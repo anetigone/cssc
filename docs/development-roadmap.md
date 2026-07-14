@@ -64,6 +64,9 @@
 
 ### 外部 benchmark
 
+接入、eligibility、runner、失败分类、trace、成本和报告的统一工程规范见
+[`benchmarks.md`](benchmarks.md)；本文只记录完成状态与待办。
+
 - 为至少两个公开 Lean benchmark 建立独立 adapter、固定 split、license/source provenance 和 statement hash。
 - 每个 benchmark 固定 Lean toolchain、Mathlib revision、Lake dependencies 与 checker 配置。
 - 在模型运行前冻结 eligibility；失败后不得按 arm 结果删题。
@@ -90,32 +93,16 @@ provider failure 时保留此前 tool call 的状态与耗时。两题真实 ser
 - 分离 action-space 收益、cost-aware selection 收益和 cheap/strong routing 收益。
 - 真实任务上报告 richer-only action 的 proposal/execution/acceptance 和独占成功案例，不预设题目必须触发某种 action。
 
-## 外部评测路线
+## 外部评测目标
 
-### 1. 工程预检
-
-- 冻结 benchmark source 和 project registry。
-- masked scaffold 可 elaboration；ground-truth 回填可通过 checker+safety。
-- 每个任务恰好一个 active hole；多洞任务依赖可 materialize。
-- 所有 arm 使用同一 trace schema、cost ledger 和基础预算定义。
-
-### 2. Live pilot
-
-- 只检查 timeout、prompt 长度、usage coverage、自然 action exposure 和预算尺度。
-- pilot 后冻结 task ids、模型版本、temperature/seed、prompt/protocol、价格表、history snapshot 和 controller 配置。
-- 不依据各 arm 成功率筛题。
-
-### 3. 正式实验
-
-至少运行：
+工程预检、live pilot、配置冻结、正式运行与报告流程统一遵守 [`benchmarks.md`](benchmarks.md)。
+当前正式实验规模至少为：
 
 ```text
 2 public benchmarks × 2 models × preregistered arms × repeated runs
 ```
 
-按 task/repetition 配对或轮换 arm 顺序，基础设施失败与数学失败分开处理，原始 trace 不覆盖。
-
-### 4. 主结果门槛
+### 主结果门槛
 
 与共享模型、prompt 信息、retrieval、checker 和预算的强 baseline 比较，至少满足一项：
 
@@ -129,5 +116,6 @@ provider failure 时保留此前 tool call 的状态与耗时。两题真实 ser
 ## 文档维护规则
 
 - 新迭代只在本文增加里程碑或状态，不在 `agents.md`、`CLAUDE.md` 和代码 docstring 复制阶段编号。
+- benchmark 工程规范只写入 `docs/benchmarks.md`，`scripts/` 不维护 Markdown 文档。
 - 完成后把“计划动作”改写为当前事实，并同步相关测试/入口说明。
 - 历史计划允许保留原始阶段编号；若其决策已经作废，在本文标记 superseded/历史用途。

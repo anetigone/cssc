@@ -6,6 +6,7 @@
 
 - 当前架构与工程规则：本文。
 - 设计动机与 proof-system redesign：[`tmp/plan1.md`](tmp/plan1.md)。
+- 外部 benchmark 接入、运行与报告规范：[`docs/benchmarks.md`](docs/benchmarks.md)。
 - 阶段里程碑、完成状态和后续计划：[`docs/development-roadmap.md`](docs/development-roadmap.md)。
 - 旧阶段的详细方案与实验记录：`tmp/phase*_plan.md`、`tmp/phase*_findings.md`，仅作历史参考。
 
@@ -29,7 +30,8 @@
 5. structured 模式可组织 obligation DAG、证明分支、数学论证、Lean artifact 和失败证据。
 6. 返回完整 accepted proof，或包含原始观测、成本和 partial/blocked 状态的失败结果。
 
-最终实验目标与判定门槛见 [`docs/development-roadmap.md`](docs/development-roadmap.md)。
+外部 benchmark 工程契约见 [`docs/benchmarks.md`](docs/benchmarks.md)；最终实验目标与判定门槛见
+[`docs/development-roadmap.md`](docs/development-roadmap.md)。
 
 ## 当前模块结构
 
