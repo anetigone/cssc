@@ -101,6 +101,8 @@ class ChatActionGenerator(ActionGenerator):
                     "provider_requests": tuple(
                         exc.metadata.get("provider_requests", ())
                     ),
+                    "tool_calls": tuple(exc.metadata.get("tool_calls", ())),
+                    "token_usage": dict(exc.metadata.get("token_usage", {})),
                 },
             ) from exc
         choices = response.get("choices")

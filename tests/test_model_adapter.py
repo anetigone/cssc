@@ -64,6 +64,63 @@ class SequenceTransport(ChatTransport):
 
 
 class ChatActionGeneratorTests(unittest.TestCase):
+    def test_provider_failure_after_tool_preserves_tool_timeline(self) -> None:
+        class ToolThenFailureTransport(ChatTransport):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def post_json(self, url, headers, payload, timeout_seconds):
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {"name": "lookup", "arguments": "{}"},
+                                        }
+                                    ],
+                                }
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+                    }
+                raise ModelAdapterError("provider unavailable")
+
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"),
+            transport=ToolThenFailureTransport(),
+            tools=[
+                FunctionTool(
+                    name="lookup",
+                    description="Lookup.",
+                    parameters={"type": "object", "properties": {}},
+                    _execute=lambda _: '{"ok": true}',
+                )
+            ],
+        )
+
+        with self.assertRaises(ActionGenerationError) as raised:
+            generator.generate(
+                ActionGenerationRequest(
+                    task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                    attempt_index=0,
+                )
+            )
+
+        self.assertEqual(raised.exception.reason, "provider_error")
+        self.assertEqual(
+            raised.exception.metadata["tool_calls"][0]["tool_kind"],
+            "lookup",
+        )
+        self.assertEqual(raised.exception.metadata["tool_calls"][0]["status"], "completed")
+        self.assertEqual(raised.exception.metadata["token_usage"]["input_tokens"], 10)
+
     def test_truncated_reasoning_only_response_is_generation_failure(self) -> None:
         transport = RecordingTransport(
             {

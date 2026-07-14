@@ -115,6 +115,20 @@ its own `result.json`, `trace.jsonl`, and candidate directory. `run.json` pins
 the benchmark revision, selected task ids and proof arguments; `summary.json`
 is updated atomically after every task.
 
+Read a task trace without expanding the raw JSONL by hand:
+
+```bash
+python scripts/trace_pretty.py \
+  .runs/benchmarks/minif2f/<run-name>/tasks/<task-id>/trace.jsonl
+```
+
+The default view puts the stop reason and generation/provider error first,
+followed by provider retries, tool timings, and concise Lean feedback. Use
+`--latest` after infrastructure retries, `--show-proof` for candidate bodies,
+`--show-cost` for ledger totals, or `--raw-events` when the complete payload is
+actually needed. Passing the task directory instead of its `trace.jsonl` file
+is also supported.
+
 Resume an interrupted run without re-running completed tasks:
 
 ```bash

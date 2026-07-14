@@ -45,6 +45,8 @@ def run_tool_loop(
     tools are removed and the model is forced to provide a final answer.
     """
     provider_requests: list[dict[str, object]] = []
+    request_usages: list[dict[str, int]] = []
+    tool_events: list[dict[str, object]] = []
 
     def post(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         started = time.perf_counter()
@@ -77,6 +79,8 @@ def run_tool_loop(
                 metadata={
                     **exc.metadata,
                     "provider_requests": tuple(provider_requests),
+                    "tool_calls": tuple(tool_events),
+                    "token_usage": merge_token_usage(*request_usages),
                 },
             ) from exc
         drain = getattr(transport, "drain_provider_request_events", None)
@@ -106,8 +110,6 @@ def run_tool_loop(
 
     tool_rounds = 0
     seen_tool_calls: set[tuple[str, str]] = set()
-    request_usages: list[dict[str, int]] = []
-    tool_events: list[dict[str, object]] = []
     while tool_rounds < max_rounds:
         payload = dict(base_payload)
         payload["n"] = 1
@@ -167,12 +169,13 @@ def run_tool_loop(
                 started = time.perf_counter()
                 try:
                     result = execute_tool(call)
-                except Exception:
+                except Exception as exc:
                     tool_events.append({
                         "call_id": call.id,
                         "tool_kind": call.name,
                         "status": "failed",
                         "wall_time_ms": (time.perf_counter() - started) * 1000,
+                        "error": type(exc).__name__,
                     })
                     raise
                 tool_events.append({
