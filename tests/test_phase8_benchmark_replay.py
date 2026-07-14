@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 
 from agent.search.budget import BudgetConfig  # noqa: E402
 from agent.tasks.task_builder import LeanTaskBuilder  # noqa: E402
-import scripts.phase8_benchmark_replay as replay  # noqa: E402
+import scripts.phase8.phase8_benchmark_replay as replay  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures" / "phase8_benchmark"
 
@@ -184,8 +184,8 @@ class RunScriptControlledTests(unittest.TestCase):
     """End-to-end: phase8_benchmark_run --track controlled writes a parseable trace."""
 
     def test_controlled_run_writes_trace_and_provenance(self) -> None:
-        import scripts.phase8_benchmark_run as run
-        import scripts.phase8_benchmark_report as rep
+        import scripts.phase8.phase8_benchmark_run as run
+        import scripts.phase8.phase8_benchmark_report as rep
 
         with tempfile.TemporaryDirectory() as runs_root:
             argv = [
@@ -230,7 +230,7 @@ class RunScriptControlledTests(unittest.TestCase):
             self.assertIn("legacy", report)
 
     def test_controlled_rejects_minimal_arm(self) -> None:
-        import scripts.phase8_benchmark_run as run
+        import scripts.phase8.phase8_benchmark_run as run
 
         with tempfile.TemporaryDirectory() as runs_root:
             argv = [
@@ -244,7 +244,7 @@ class RunScriptControlledTests(unittest.TestCase):
             self.assertNotEqual(rc, 0, "controlled + A0 should fail")
 
     def test_controlled_collision_protection(self) -> None:
-        import scripts.phase8_benchmark_run as run
+        import scripts.phase8.phase8_benchmark_run as run
 
         with tempfile.TemporaryDirectory() as runs_root:
             common = [

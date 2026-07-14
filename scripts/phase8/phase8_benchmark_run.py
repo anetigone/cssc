@@ -38,7 +38,7 @@ if str(ROOT) not in sys.path:
 from agent.runtime.trace_store import JsonlTraceStore  # noqa: E402
 from agent.search.budget import BudgetConfig  # noqa: E402
 from agent.tasks.task_builder import LeanTaskBuilder, TaskBuildError  # noqa: E402
-from scripts.phase8_benchmark_replay import build_replay_controller  # noqa: E402
+from scripts.phase8.phase8_benchmark_replay import build_replay_controller  # noqa: E402
 
 # arm -> (execution_mode, frontier_policy)
 ARM_TABLE: dict[str, tuple[str, str]] = {

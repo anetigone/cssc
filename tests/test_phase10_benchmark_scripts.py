@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts import phase10_benchmark_run as runner
-from scripts import phase10_benchmark_validate as validator
+from scripts.phase10 import phase10_benchmark_run as runner
+from scripts.phase10 import phase10_benchmark_validate as validator
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "phase10_benchmark"

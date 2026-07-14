@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts import phase8_benchmark_report as benchmark_report
-from scripts import phase8_benchmark_run as benchmark_run
+from scripts.phase8 import phase8_benchmark_report as benchmark_report
+from scripts.phase8 import phase8_benchmark_run as benchmark_run
 
 
 ROOT = Path(__file__).resolve().parents[1]

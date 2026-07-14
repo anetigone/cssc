@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from scripts import phase8_benchmark_report as report_backend
-from scripts import phase8_benchmark_run as run_backend
-from scripts.phase8_benchmark_replay import build_replay_controller
-from scripts.phase8_benchmark_validate import Report, validate
+from scripts.phase8 import phase8_benchmark_report as report_backend
+from scripts.phase8 import phase8_benchmark_run as run_backend
+from scripts.phase8.phase8_benchmark_replay import build_replay_controller
+from scripts.phase8.phase8_benchmark_validate import Report, validate
 
 ReplayBuilder = Callable[..., Any]
 

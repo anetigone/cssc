@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.benchmark_harness import report_suite
-from scripts.phase10_benchmark_run import PHASE10_SUITE
+from scripts.phase10.phase10_benchmark_run import PHASE10_SUITE
 
 
 def main(argv: list[str] | None = None) -> int:
