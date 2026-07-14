@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ...proof_system.base import BudgetSlice, ProofSystemAdapter
 from ...proof_system.lean_project import LakeProject
 from ...utils import resolve_executable
 from .base import FunctionTool, Tool
@@ -29,6 +30,7 @@ class LeanProofToolProvider:
         timeout_seconds: float = 60.0,
         max_source_chars: int = 20_000,
         max_output_chars: int = 12_000,
+        checker: ProofSystemAdapter | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.lake_executable = resolve_executable(lake_executable, "lake")
@@ -36,6 +38,7 @@ class LeanProofToolProvider:
         self.timeout_seconds = timeout_seconds
         self.max_source_chars = max_source_chars
         self.max_output_chars = max_output_chars
+        self.checker = checker
         self._project = LakeProject(self.project_root)
 
     def tools(self) -> tuple[Tool, ...]:
@@ -82,7 +85,7 @@ class LeanProofToolProvider:
             command_prefix = [self.lake_executable, "env", "lean"]
         elif self.lean_executable:
             command_prefix = [self.lean_executable]
-        if command_prefix is None:
+        if command_prefix is None and self.checker is None:
             return json.dumps({"ok": False, "error": "Lean checker is unavailable."})
 
         with tempfile.NamedTemporaryFile(
@@ -97,6 +100,31 @@ class LeanProofToolProvider:
             tmp_path = Path(tmp.name)
 
         try:
+            if self.checker is not None:
+                result = self.checker.check(
+                    tmp_path,
+                    BudgetSlice(timeout_seconds=self.timeout_seconds),
+                )
+                output = result.raw_output
+                truncated = len(output) > self.max_output_chars
+                if truncated:
+                    output = output[: self.max_output_chars] + "\n...[output truncated]"
+                return json.dumps(
+                    {
+                        "ok": result.accepted,
+                        "category": result.category.value,
+                        "exit_code": result.exit_code,
+                        "output": output,
+                        "truncated": truncated,
+                        "checker_mode": (
+                            "persistent_server"
+                            if "--server" in result.command
+                            else "subprocess"
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            assert command_prefix is not None
             completed = subprocess.run(
                 [*command_prefix, str(tmp_path)],
                 cwd=self.project_root,

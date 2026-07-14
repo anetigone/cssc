@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from unittest.mock import MagicMock, patch
 
 from agent.benchmarks.minif2f import (
     MiniF2FError,
@@ -13,6 +14,13 @@ from agent.benchmarks.minif2f import (
 )
 from agent.benchmarks.minif2f_eligibility import run_minif2f_eligibility
 from agent.proof_system.base import CheckResult, DiagnosticCategory
+from agent.proof_system.base import CandidateEdit, ParsedFeedback
+from agent.search.budget import BudgetSnapshot
+from agent.search.controller.types import AttemptRecord, ControllerResult
+from agent.benchmarks.minif2f_runner import (
+    _classify_infrastructure_failure,
+    run_minif2f_benchmark,
+)
 
 
 class _AcceptingChecker:
@@ -209,3 +217,139 @@ theorem synthetic_task : True := by
     assert {row["eligibility"] for row in rows} == {"eligible"}
     provenance = json.loads((output / "provenance.json").read_text())
     assert provenance["eligibility"]["eligible"] == 2
+
+
+def test_benchmark_runner_reuses_one_adapter_and_writes_per_task_results(tmp_path: Path) -> None:
+    root = tmp_path / "miniF2F"
+    output = tmp_path / "prepared"
+    source = """import MiniF2F.ProblemImports
+theorem synthetic_task : True := by
+  sorry
+"""
+    _write_checkout(
+        root,
+        valid=source.replace("synthetic_task", "valid_task"),
+        test=source.replace("synthetic_task", "test_task"),
+    )
+    prepare_minif2f(
+        root,
+        output,
+        expected_split_counts={"valid": 1, "test": 1},
+        source_revision="test-revision",
+    )
+    rows = [json.loads(line) for line in (output / "manifest.jsonl").read_text().splitlines()]
+    for row in rows:
+        row["eligibility"] = "eligible"
+    (output / "manifest.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    def accepted_result(args, task, services, work_dir, check_workspace, project_root):
+        check = CheckResult(
+            accepted=True,
+            category=DiagnosticCategory.PROOF_ACCEPTED,
+            raw_output="",
+            parsed_feedback=ParsedFeedback(DiagnosticCategory.PROOF_ACCEPTED),
+            command=("lean", "--server"),
+            exit_code=0,
+        )
+        attempt = AttemptRecord(0, "candidate", CandidateEdit("trivial"), Path(work_dir) / "x.lean", check)
+        return ControllerResult(
+            task=task,
+            accepted=True,
+            attempts=(attempt,),
+            accepted_attempt=attempt,
+            budget=BudgetSnapshot(1, 0, 0.1, 0, 1),
+            stop_reason="accepted",
+        )
+
+    adapter = MagicMock()
+    run_root = tmp_path / "run"
+    with (
+        patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter) as adapter_class,
+        patch("agent.benchmarks.minif2f_runner._prewarm") as prewarm,
+        patch("agent.benchmarks.minif2f_runner._run_controller", side_effect=accepted_result) as run,
+    ):
+        summary = run_minif2f_benchmark(
+            output,
+            root,
+            run_root,
+            split="valid",
+            proof_args=("--candidate", "trivial"),
+        )
+
+    assert summary.completed == summary.accepted == 1
+    adapter_class.assert_called_once()
+    assert adapter_class.call_args.kwargs["require_server"] is True
+    prewarm.assert_called_once()
+    run.assert_called_once()
+    adapter.close.assert_called_once()
+    result = json.loads((run_root / "tasks" / "valid_task" / "result.json").read_text())
+    assert result["ok"] is True
+    assert (run_root / "tasks" / "valid_task" / "trace.jsonl").is_file()
+
+    with (
+        patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
+        patch("agent.benchmarks.minif2f_runner._prewarm"),
+        patch("agent.benchmarks.minif2f_runner._run_controller") as resumed_run,
+    ):
+        resumed = run_minif2f_benchmark(
+            output,
+            root,
+            run_root,
+            split="valid",
+            proof_args=("--candidate", "trivial"),
+            resume=True,
+        )
+    assert resumed.skipped == 1
+    resumed_run.assert_not_called()
+
+    # Pre-fix results have the decisive stop_reason even though the old runner
+    # incorrectly wrote infrastructure_failure=false.
+    result_path = run_root / "tasks" / "valid_task" / "result.json"
+    saved = json.loads(result_path.read_text())
+    saved.update(
+        {
+            "ok": False,
+            "stop_reason": "generation:provider_error",
+            "infrastructure_failure": False,
+        }
+    )
+    result_path.write_text(json.dumps(saved))
+    recounted = run_minif2f_benchmark(
+        output,
+        root,
+        run_root,
+        split="valid",
+        proof_args=("--candidate", "trivial"),
+        resume=True,
+    )
+    assert recounted.failed == 0
+    assert recounted.infrastructure_failures == 1
+
+    with (
+        patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
+        patch("agent.benchmarks.minif2f_runner._prewarm"),
+        patch("agent.benchmarks.minif2f_runner._run_controller", side_effect=accepted_result) as retry,
+    ):
+        retried = run_minif2f_benchmark(
+            output,
+            root,
+            run_root,
+            split="valid",
+            proof_args=("--candidate", "trivial"),
+            resume=True,
+            retry_infrastructure_failures=True,
+        )
+    assert retried.accepted == 1
+    assert retried.infrastructure_failures == 0
+    assert retried.skipped == 0
+    retry.assert_called_once()
+
+
+def test_provider_generation_error_is_infrastructure_without_checker_attempts() -> None:
+    result = MagicMock(stop_reason="generation:provider_error", attempts=())
+    assert _classify_infrastructure_failure(result) == (
+        True,
+        "generation:provider_error",
+    )

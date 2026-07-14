@@ -48,6 +48,7 @@ class LeanAdapter(ProofSystemAdapter):
         server_startup_timeout_seconds: float = 60.0,
         server_timeout_retries: int = 1,
         server_fallback_seconds: float = 2.0,
+        require_server: bool = False,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.prefer_lake = prefer_lake
@@ -56,6 +57,9 @@ class LeanAdapter(ProofSystemAdapter):
         self.server_startup_timeout_seconds = server_startup_timeout_seconds
         self.server_timeout_retries = server_timeout_retries
         self.server_fallback_seconds = server_fallback_seconds
+        self.require_server = require_server
+        if require_server and not use_server:
+            raise ValueError("require_server=True requires use_server=True")
         self._project = LakeProject(self.project_root)
         self._command_builder = LeanCommandBuilder(
             self._project,
@@ -143,6 +147,12 @@ class LeanAdapter(ProofSystemAdapter):
                 candidate_file,
             )
             self.close()
+
+        if self.require_server:
+            return self._server_failure_result(
+                candidate_file,
+                "Persistent Lean server is required but could not complete the check.",
+            )
 
         started = time.perf_counter()
         logger.debug(
@@ -330,6 +340,7 @@ class LeanAdapter(ProofSystemAdapter):
             server_startup_timeout_seconds=self.server_startup_timeout_seconds,
             server_timeout_retries=self.server_timeout_retries,
             server_fallback_seconds=self.server_fallback_seconds,
+            require_server=False,
         )
 
     def _check_with_server(
@@ -372,7 +383,7 @@ class LeanAdapter(ProofSystemAdapter):
                 parsed_feedback=feedback,
             )
             return _with_progress(self, result)
-        except LeanServerError:
+        except LeanServerError as exc:
             # Covers both an outright server error and
             # ``LeanServerAmbiguousCompletion`` (diagnostics were published but
             # no conclusive completion signal arrived). The ambiguous case is
@@ -382,6 +393,8 @@ class LeanAdapter(ProofSystemAdapter):
             # subprocess checker, which has a deterministic exit code.
             logger.warning("Lean server check failed; falling back to subprocess check", exc_info=True)
             self.close()
+            if self.require_server:
+                return self._server_failure_result(candidate_file, str(exc), command=command)
             return None
 
         elapsed = time.perf_counter() - started
@@ -417,6 +430,32 @@ class LeanAdapter(ProofSystemAdapter):
             parsed_feedback=feedback,
         )
         return _with_progress(self, result)
+
+    def _server_failure_result(
+        self,
+        candidate_file: Path,
+        message: str,
+        *,
+        command: tuple[str, ...] | list[str] = (),
+    ) -> CheckResult:
+        raw = f"Lean server infrastructure failure: {message}"
+        feedback = ParsedFeedback(
+            category=DiagnosticCategory.CHECKER_ERROR,
+            message=raw,
+            raw_output=raw,
+        )
+        return _with_progress(
+            self,
+            CheckResult(
+                accepted=False,
+                category=DiagnosticCategory.CHECKER_ERROR,
+                raw_output=raw,
+                candidate_file=candidate_file,
+                command=tuple(command),
+                exit_code=None,
+                parsed_feedback=feedback,
+            ),
+        )
 
     def _finalize_feedback(
         self,

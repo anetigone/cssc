@@ -123,6 +123,8 @@ def _lean_services(
     kwargs = {
         "project_root": project_root,
         "prefer_lake": not args.no_lake,
+        "lean_executable": getattr(args, "lean_executable", None),
+        "lake_executable": getattr(args, "lake_executable", None),
     }
     services = _LeanServices(
         adapter=LeanAdapter(
@@ -372,7 +374,11 @@ def _run_controller(
     check_workspace: EphemeralCheckWorkspace | None,
     project_root: Path | None,
 ) -> Any:
-    generator = build_action_generator(args, project_root=project_root)
+    generator = build_action_generator(
+        args,
+        project_root=project_root,
+        proof_adapter=services.adapter,
+    )
     execution_mode = ExecutionMode(args.execution_mode)
     frontier_policy = getattr(args, "frontier_policy", "legacy")
     cost_source_arg = getattr(args, "action_cost_source", "auto")

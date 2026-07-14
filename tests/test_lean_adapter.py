@@ -52,6 +52,22 @@ class LeanAdapterTests(unittest.TestCase):
         server.close.assert_called_once()
         self.assertIsNone(adapter._server)
 
+    def test_required_server_reports_infrastructure_failure_without_subprocess(self) -> None:
+        adapter = LeanAdapter(use_server=True, require_server=True, lean_executable="lean")
+        server = MagicMock()
+        server.is_alive.return_value = True
+        server.command = ("lean", "--server")
+        server.check_file.side_effect = LeanServerAmbiguousCompletion("ambiguous")
+        adapter._server = server
+
+        with patch.object(adapter._runner, "run") as subprocess_run:
+            result = adapter.check(Path("Attempt.lean"), BudgetSlice(timeout_seconds=1))
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.category, DiagnosticCategory.CHECKER_ERROR)
+        self.assertIn("server infrastructure failure", result.raw_output)
+        subprocess_run.assert_not_called()
+
     def test_subprocess_timeout_kills_before_draining_output(self) -> None:
         process = MagicMock()
         process.returncode = -9

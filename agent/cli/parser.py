@@ -88,6 +88,8 @@ def _add_runtime_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--model-timeout", type=float, default=60.0)
     group.add_argument("--scaffold-timeout", type=float, default=None)
     group.add_argument("--no-lake", action="store_true")
+    group.add_argument("--lake-executable", default=None)
+    group.add_argument("--lean-executable", default=None)
     group.add_argument("--no-lean-server", action="store_true")
     group.add_argument("--lean-server-startup-timeout", type=float, default=60.0)
     group.add_argument(

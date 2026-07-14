@@ -90,6 +90,62 @@ only prior `eligible` evidence whose materialized candidate SHA-256 is
 unchanged. Changed tasks are checked again; failures and infrastructure results
 are never reused as success.
 
+## miniF2F execution
+
+Do not invoke `python -m agent.cli prove` 488 times.  The suite runner keeps one
+Python process and one required Lean language server alive across all selected
+tasks, while creating a fresh controller, budget, trace and result for each
+task. It never silently falls back to a cold subprocess checker.
+
+Start with the public validation split and a named pilot:
+
+```bash
+python scripts/minif2f_benchmark_run.py \
+  --split valid --limit 5 --run-name minif2f-valid-pilot \
+  -- --use-model --max-model-calls 3 --max-checks 3 \
+  --lean-timeout 300 --lean-server-startup-timeout 300
+```
+
+After freezing the configuration, run the full split by removing `--limit`.
+Run `test` only with that frozen configuration. Ordinary `cssc prove` options
+go after `--`; benchmark selection and output options go before it.
+
+Outputs are written under `.runs/benchmarks/minif2f/<run-name>/`. Each task has
+its own `result.json`, `trace.jsonl`, and candidate directory. `run.json` pins
+the benchmark revision, selected task ids and proof arguments; `summary.json`
+is updated atomically after every task.
+
+Resume an interrupted run without re-running completed tasks:
+
+```bash
+python scripts/minif2f_benchmark_run.py \
+  --split valid --limit 5 \
+  --resume .runs/benchmarks/minif2f/minif2f-valid-pilot \
+  -- --use-model --max-model-calls 3 --max-checks 3 \
+  --lean-timeout 300 --lean-server-startup-timeout 300
+```
+
+The selection and all proof arguments must match the original run exactly.
+By default the suite stops at the first checker infrastructure failure so the
+same run can be repaired and resumed without spending model budget on later
+tasks.
+
+After repairing a provider or checker outage, rerun only infrastructure results
+(including older `generation:provider_error` results that were initially
+misclassified):
+
+```bash
+python scripts/minif2f_benchmark_run.py \
+  --split valid --limit 5 \
+  --resume .runs/benchmarks/minif2f/minif2f-valid-pilot \
+  --retry-infrastructure-failures \
+  -- --use-model --max-model-calls 3 --max-checks 3 \
+  --lean-timeout 300 --lean-server-startup-timeout 300
+```
+
+`failed` counts proof/check failures only; infrastructure failures are reported
+separately and are excluded from the accepted-rate denominator.
+
 ## Existing live arm compatibility
 
 The historical action arms still map to explicit runtime configuration:

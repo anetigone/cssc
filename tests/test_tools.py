@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 import tempfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import unittest
 from pathlib import Path
 
@@ -16,6 +16,7 @@ from agent.agents import (
     extract_missing_imports,
     extract_tool_calls,
 )
+from agent.proof_system.base import CheckResult, DiagnosticCategory, ParsedFeedback
 
 
 class ExtractToolCallsTests(unittest.TestCase):
@@ -117,6 +118,26 @@ class FunctionToolTests(unittest.TestCase):
 
 
 class LeanProofToolProviderTests(unittest.TestCase):
+    def test_check_snippet_uses_injected_checker_without_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checker = MagicMock()
+            checker.check.return_value = CheckResult(
+                accepted=True,
+                category=DiagnosticCategory.PROOF_ACCEPTED,
+                raw_output="checked by server",
+                command=("lean", "--server"),
+                exit_code=0,
+                parsed_feedback=ParsedFeedback(DiagnosticCategory.PROOF_ACCEPTED),
+            )
+            provider = LeanProofToolProvider(tmp, checker=checker)
+            with patch("agent.agents.tools.lean_proof.subprocess.run") as run:
+                result = json.loads(provider.tools()[0].execute({"code": "#check Nat"}))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checker_mode"], "persistent_server")
+        checker.check.assert_called_once()
+        run.assert_not_called()
+
     def test_check_snippet_returns_bounded_json_and_removes_temp_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

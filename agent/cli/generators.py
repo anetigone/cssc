@@ -22,6 +22,7 @@ from agent.agents import (
     ScaffoldChecker,
     VerifiedFormalizationCache,
 )
+from agent.proof_system.base import ProofSystemAdapter
 
 from .paths import resolve_agent_path
 from .tasks import classify_input, require_source
@@ -41,7 +42,12 @@ def build_context_summarizer(args: Namespace) -> ChatContextSummarizer | None:
     return ChatContextSummarizer(_model_config(args, role="context"))
 
 
-def build_action_generator(args: Namespace, *, project_root: Path | None = None):
+def build_action_generator(
+    args: Namespace,
+    *,
+    project_root: Path | None = None,
+    proof_adapter: ProofSystemAdapter | None = None,
+):
     candidates = list(args.candidate)
     for path in args.candidate_file:
         candidates.append(Path(path).read_text(encoding="utf-8"))
@@ -75,7 +81,7 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
                 TieredStructuredActionGenerator,
             )
 
-            tools = _proof_tools(args, project_root)
+            tools = _proof_tools(args, project_root, proof_adapter)
             cheap = ChatStructuredActionGenerator(
                 _model_config(args, role="proof"),
                 tools=tools,
@@ -91,7 +97,7 @@ def build_action_generator(args: Namespace, *, project_root: Path | None = None)
             return TieredStructuredActionGenerator(cheap, strong)
         return ChatActionGenerator(
             _model_config(args, role="proof"),
-            tools=_proof_tools(args, project_root),
+            tools=_proof_tools(args, project_root, proof_adapter),
             max_tool_rounds=1,
         )
     raise ValueError(
@@ -170,7 +176,11 @@ def _lean_tools(args: Namespace, project_root: Path | None):
     ).tools()
 
 
-def _proof_tools(args: Namespace, project_root: Path | None):
+def _proof_tools(
+    args: Namespace,
+    project_root: Path | None,
+    proof_adapter: ProofSystemAdapter | None = None,
+):
     if project_root is None:
         return None
     return LeanProofToolProvider(
@@ -178,6 +188,7 @@ def _proof_tools(args: Namespace, project_root: Path | None):
         lake_executable=getattr(args, "lake_executable", None),
         lean_executable=getattr(args, "lean_executable", None),
         timeout_seconds=min(float(getattr(args, "lean_timeout", 60.0)), 60.0),
+        checker=proof_adapter,
     ).tools()
 
 
