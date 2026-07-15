@@ -1,93 +1,116 @@
 \section{Results}
 
-This section is a fillable results shell. The tables deliberately contain no
-synthetic measurements.
+This section is a fillable reporting shell. It contains no synthetic
+measurements; every final value must be regenerated from per-task results and
+traces under the frozen configuration hash.
 
 \subsection{Main Fixed-Budget Comparison}
 
 \begin{table}[ht]
 \centering
 \small
-\begin{tabular}{lrrrr}
+\begin{tabular}{lrrrrr}
 \toprule
-Policy & Pass@budget & Tokens/solved & Checks/solved & Cost/solved \\
+Policy & Accepted/\(N\) & \(\Delta\) pp & Tokens/task & Checks/task & Std. \$/task \\
 \midrule
-Direct strong & -- & -- & -- & -- \\
-Parallel sampling & -- & -- & -- & -- \\
-Minimal refinement & -- & -- & -- & -- \\
-Fixed escalation & -- & -- & -- & -- \\
-Structured, agnostic & -- & -- & -- & -- \\
-\system & -- & -- & -- & -- \\
+Independent sampling & -- & -- & -- & -- & -- \\
+Direct strong & -- & -- & -- & -- & -- \\
+Minimal refinement & -- & -- & -- & -- & -- \\
+Fixed escalation & -- & -- & -- & -- & -- \\
+\system & -- & -- & -- & -- & -- \\
 \bottomrule
 \end{tabular}
-\caption{Matched-budget aggregate results.
-\todo{Fill values, confidence intervals, and exact budget in the caption.}}
+\caption{Matched-budget results for
+\todo{benchmark, model, and exact resource vector}. Costs are unconditional
+means over attempted tasks. Add paired 95\% intervals, actual billed cost with
+coverage, and the reference policy for \(\Delta\).}
 \label{tab:main}
 \end{table}
 
-\todo{State the primary result in one sentence, followed by absolute values,
-confidence intervals, and the task count. Do not lead with relative percentage
-improvement alone.}
+\todo{Lead with absolute accepted counts and the percentage-point difference,
+then give the paired interval and unconditional cost difference. State whether
+the result supports higher Pass@budget, noninferior success at lower cost, or
+neither. Do not lead with a relative percentage improvement.}
 
-\subsection{Performance Across Budgets}
+Each benchmark--model cell receives its own panel. A secondary summary reports
+selected, completed, accepted, proof-failure, infrastructure-failure, retried,
+and missing counts, plus the fraction of runs that hit each resource cap.
 
-\todo{Add success--cost curves for tokens, verifier calls, and monetary cost.
-Report whether controller rankings change between low-, medium-, and
-high-budget regimes.}
+\subsection{Solve--Cost Frontier Across Budgets}
 
-\subsection{Where Structured Control Helps}
+\todo{Plot accepted rate against standardized dollars, logical tokens, checker
+calls, and the preregistered nested budget profiles. Show confidence bands and
+actual mean expenditure at every cap. Report if policy rankings change between
+low-, medium-, and high-budget regimes; do not project incomparable resource
+vectors onto one undeclared scalar curve.}
 
-\begin{table}[ht]
-\centering
-\small
-\begin{tabular}{lrrr}
-\toprule
-Task stratum & Minimal & Structured agnostic & \system \\
-\midrule
-Local completion & -- & -- & -- \\
-Olympiad theorem & -- & -- & -- \\
-Multi-obligation development & -- & -- & -- \\
-\bottomrule
-\end{tabular}
-\caption{Pass under matched budget by task structure.
-\todo{Add denominators and paired confidence intervals.}}
-\label{tab:strata}
-\end{table}
+For noninferiority claims, report the accepted-rate difference and margin next
+to the ratio of unconditional resource use. Successful-run cost and amortized
+cost per accepted proof appear as separately labeled diagnostics.
 
-\todo{Analyze the crossover point: the number of obligations, repeated-goal
-streak, or dependency depth after which structured overhead becomes worthwhile.
-Also report simple tasks where minimal refinement is strictly cheaper.}
-
-\subsection{Controller Ablations}
+\subsection{Controlled Mechanism Effects}
 
 \begin{table}[ht]
 \centering
 \small
-\begin{tabular}{lrrr}
+\begin{tabular}{llrrrr}
 \toprule
-Variant & Pass@budget & Strong calls & Wasted checks \\
+Factor & Matched contrast & \(\Delta\) pp & Token ratio & Cost ratio & NI? \\
 \midrule
-Full \system & -- & -- & -- \\
-\quad no budget conditioning & -- & -- & -- \\
-\quad no structured projection & -- & -- & -- \\
-\quad no unlock value & -- & -- & -- \\
-\quad no diagnostic repair & -- & -- & -- \\
-\quad no capability audit & -- & -- & -- \\
+Action space & \(A_{10}-A_{00}\) & -- & -- & -- & -- \\
+Action space & \(A_{11}-A_{01}\) & -- & -- & -- & -- \\
+Cost-aware selector & \(A_{01}-A_{00}\) & -- & -- & -- & -- \\
+Cost-aware selector & \(A_{11}-A_{10}\) & -- & -- & -- & -- \\
+Cost normalization & \(S_{\mathrm{ratio}}-A_{10}\) & -- & -- & -- & -- \\
+Remaining admission & \(A_{11}-S_{\mathrm{ratio}}\) & -- & -- & -- & -- \\
+Adaptive routing & \system{}-\(R_{\mathrm{fixed}}\) & -- & -- & -- & -- \\
 \bottomrule
 \end{tabular}
-\caption{Ablations under the primary budget.
-\todo{Define ``wasted check'' before using the term in final text.}}
-\label{tab:ablations}
+\caption{Mechanism-isolating contrasts under one structured harness. Ratios
+use unconditional per-task resource consumption; report paired intervals and
+the action-space--selector interaction.}
+\label{tab:mechanisms}
 \end{table}
 
-\todo{Connect each observed change to a logged decision mechanism. For example,
-show whether unlock value prevents attempts on low-impact leaves or merely
-correlates with easier goals.}
+\todo{Interpret only the factor changed by each contrast. If the
+action-space--selector interaction is material, report the two conditional
+effects rather than presenting one additive decomposition. If \system{} beats
+minimal refinement but not the matched selector or routing control, revise the
+headline claim accordingly.}
+
+\subsection{Action Evidence and Task Regimes}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+Action & Eligible & Proposed & Executed & Progress & Accepted & Exclusive \\
+\midrule
+Capability test & -- & -- & -- & -- & -- & -- \\
+Decompose & -- & -- & -- & -- & -- & -- \\
+Refine argument & -- & -- & -- & -- & -- & -- \\
+Change representation & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{Evidence for richer-only actions. The Exclusive column counts paired
+tasks solved by the expanded mask and not by its restricted control. Define
+positive progress from the frozen verifier-grounded transition rule.}
+\label{tab:actions}
+\end{table}
+
+\todo{Stratify the end-to-end comparison by preregistered task properties,
+including initial scaffold size, observed error class, obligation count, and
+dependency depth. Estimate the crossover at which structured control recovers
+its prompt/control overhead, and report simple tasks where minimal refinement
+is strictly cheaper. Treat post-run difficulty strata as exploratory.}
 
 \subsection{Decision and Failure Analysis}
 
-\todo{Report empirical success/progress per action type and diagnostic category;
-calibration of predicted utility; escalation timing; capability-audit precision;
-and representative traces. Include at least one failure where the controller
-spends budget poorly and one case where the structured state preserves a useful
-alternative that the linear baseline loses.}
+\todo{Report probability calibration for explicit success estimates, ranking
+lift for non-probabilistic priorities, cost-estimate coverage and error,
+escalation timing, repeated-state checks, and checks outside final artifact
+ancestry. Include representative paired traces: one allocation win, one case
+where preserving an alternative matters, and one failure where the controller
+spends budget poorly. Separate infrastructure faults from mathematical proof
+failures.}

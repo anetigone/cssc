@@ -5,136 +5,220 @@
 We organize the evaluation around five questions:
 
 \begin{description}
-    \item[RQ1: Fixed-budget effectiveness.] Does budget-aware control solve
-    more tasks than competing policies under the same hard budget?
-    \item[RQ2: Efficiency.] For solved tasks, does it reduce tokens, verifier
-    calls, strong-model calls, wall time, or monetary cost?
-    \item[RQ3: State representation.] Does the structured workspace improve
-    allocation enough to offset its prompt and control overhead?
-    \item[RQ4: Decision quality.] Which actions benefit most from
-    diagnostic-conditioned repair, unlock value, information gain, and
-    remaining-budget conditioning?
-    \item[RQ5: Task regime.] On which task characteristics does minimal
-    refinement remain preferable, and when does structured control pay off?
+\item[RQ1: Fixed-budget effectiveness.] Does \system{} solve more tasks than
+    complete-system baselines under the same component-wise hard resource
+    vector?
+    \item[RQ2: Efficiency.] At noninferior accepted rate, does it reduce
+    unconditional token, checker, latency, or monetary expenditure per task?
+    \item[RQ3: Mechanism attribution.] Holding the structured harness fixed,
+    what is the incremental effect of the expanded action mask, value-per-cost
+    selection, and remaining-budget admission?
+    \item[RQ4: Model routing.] Holding the action space and selector fixed,
+    does adaptive cheap/strong routing outperform a preregistered fixed
+    escalation schedule with the same model portfolio and caps?
+    \item[RQ5: Task regime and overhead.] When does the end-to-end benefit of
+    structured control outweigh its projection, prompting, and controller
+    overhead relative to minimal refinement?
 \end{description}
 
-\subsection{Tasks}
+\subsection{Tasks and Data Separation}
 
-The primary evaluation starts from fixed Lean 4 statements, imports, and proof
-holes. This isolates proof-search control from statement formalization. We plan
-three strata:
+The confirmatory evaluation starts from fixed Lean~4 statements, imports, and
+proof holes. This isolates proof-search allocation from autoformalization. We
+use two public benchmark test splits frozen before any test-arm execution:
 
 \begin{enumerate}
-    \item local theorem completion sampled from
-    \todo{freeze the LeanDojo/Mathlib task subset and split};
-    \item Olympiad-style problems from miniF2F and harder problems from
-    PutnamBench \cite{zheng2021minif2f,tsoukalas2024putnambench};
-    \item multi-obligation developments with reusable helpers and explicit
-    dependency structure, constructed from
-    \todo{freeze the local complex-proof/OBST-style suite}.
+    \item miniF2F Olympiad-style statements
+    \cite{zheng2021minif2f}; the current adapter freezes 244 validation and
+    244 test tasks and verifies all 488 masked scaffolds with the benchmark's
+    real Lean toolchain;
+    \item \todo{freeze the second public Lean benchmark, immutable revision,
+    test split, toolchain, and eligible task count}.
 \end{enumerate}
 
-We report an auxiliary end-to-end experiment from natural-language problems
-using ProofNet-style pairs \cite{azerbayev2023proofnet}. Formalization calls
-are charged to the budget and formalization failures are reported separately.
-Ground-truth proofs are inaccessible to generation, retrieval, and prompt
-construction.
+For every suite we publish the source revision, license, Lean and Mathlib
+revisions, split, eligible task count, task identifiers, and statement hashes.
+Validation tasks are used only to choose budget vectors, fixed-escalation
+thresholds, score ranks or weights, and frozen cost-history snapshots. Test
+tasks are not used to remove tasks, tune the controller, or update cost and
+success estimates. Ground-truth proofs are unavailable to generation,
+retrieval, prompts, and failure context.
 
-\subsection{Compared Policies}
+A local multi-obligation suite is a secondary mechanistic stress test for
+dependency unlocks, helper reuse, and final assembly. It is reported separately
+and is not pooled into the confirmatory public-benchmark result. Natural-language
+formalization is outside the primary causal comparison because it introduces a
+distinct failure process and resource-allocation problem.
 
-All policies use the same model endpoints, prompts where applicable, retriever,
-Lean checker, safety review, and maximum resources.
+\subsection{End-to-End Baselines}
+
+Complete-system comparisons include:
 
 \begin{enumerate}
-    \item \textbf{Direct strong}: one or more independent strong-model
-    whole-proof generations.
-    \item \textbf{Parallel sampling}: independent candidates allocated across
-    the full budget, with no feedback reuse.
+    \item \textbf{Independent sampling}: independent whole-proof candidates
+    with no feedback reuse;
+    \item \textbf{Direct strong}: the strong-tier boundary policy under the
+    same resource caps;
     \item \textbf{Minimal refinement}: propose--check--remember--refine with
-    compact memory.
-    \item \textbf{Fixed escalation}: minimal refinement with a strong-model
-    call after \(N\) failed cheap attempts.
-    \item \textbf{Structured, budget agnostic}: the same workspace and action
-    set, but a fixed frontier/action priority independent of remaining budget.
-    \item \system: the proposed budget-conditioned controller.
+    compact memory and the same retrieval corpus, checker, safety review, and
+    model access policy;
+    \item \textbf{Fixed escalation}: minimal refinement with a
+    validation-frozen cheap-to-strong schedule; and
+    \item \system: the full structured action, selector, admission, and
+    routing policy.
 \end{enumerate}
 
-Where code and task compatibility permit, we also compare with the
+Where code and task compatibility permit, we additionally compare with the
 continue-versus-redecompose cost-aware router
-\cite{rognvaldsson2026costquality}. Otherwise we report it as the closest
-conceptual method and avoid a non-equivalent numerical comparison.
+\cite{rognvaldsson2026costquality}. Otherwise it remains a conceptual
+comparison and is not assigned a non-equivalent numerical result.
 
-\subsection{Budgets and Models}
+These baselines answer whether the complete controller pays for its overhead.
+They are \emph{not} used to attribute a difference to state representation,
+action-space expansion, or selection in isolation, because the systems have
+different internal contexts and control loops.
 
-We evaluate a grid rather than one operating point:
+\subsection{Controlled Mechanism Comparisons}
+
+Mechanism attribution uses one shared structured harness. Every controlled arm
+has the same workspace, context projection, proposer template, retrieval
+corpus, checker, safety review, decoding setup, paired seed, cost-history
+snapshot, final-check reserve, and component-wise hard budget. Only the named
+factor changes.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+Arm & Action mask & Selector & Model policy \\
+\midrule
+\(A_{00}\) & implement/repair & value only & one common model \\
+\(A_{10}\) & expanded & value only & one common model \\
+\(A_{01}\) & implement/repair & full cost-aware & one common model \\
+\(A_{11}\) & expanded & full cost-aware & one common model \\
+\(S_{\mathrm{ratio}}\) & expanded & value/cost, no pre-admission & one common model \\
+\(R_{\mathrm{fixed}}\) & expanded & full cost-aware & fixed tier schedule \\
+\system & expanded & full cost-aware & adaptive tier routing \\
+\bottomrule
+\end{tabular}
+\caption{Controlled arms. The expanded mask adds capability tests,
+decomposition, argument refinement, and representation change to implementation
+and repair. Retrieval access inside proof calls is held fixed. The full
+cost-aware selector adds remaining-vector admission to value-per-cost ranking.}
+\label{tab:controlled-arms}
+\end{table}
+
+The \(2\times2\) cells \(A_{00},A_{10},A_{01},A_{11}\) estimate action-space
+and selector effects under a single common model, including their interaction.
+Within the expanded mask, \(A_{10}\rightarrow S_{\mathrm{ratio}}\) isolates
+cost normalization and \(S_{\mathrm{ratio}}\rightarrow A_{11}\) isolates
+estimated remaining-budget admission. The contrast
+\(R_{\mathrm{fixed}}\rightarrow\system\) isolates adaptive routing because both
+arms expose the identical cheap/strong endpoints, total request limit,
+strong-tier cap, token and monetary caps, selector, and action mask. Cheap-only
+and strong-only runs are reported as boundary policies, not routing ablations.
+
+We also include an attempt/terminate mask as a weak action-space reference when
+the common proposer protocol supports it. Component removals for unlock value,
+hypothesis discrimination, diagnostic repair, capability audits, and
+final-check reserves are exploratory: they can alter both state visitation and
+action availability. Controlled marginal effects are not assumed to add up to
+the full-system difference; interaction terms are reported directly.
+
+\subsection{Matched Resource Budgets}
+
+We preregister a nested sequence of component-wise budget profiles,
 \[
-\begin{split}
-c_{\mathrm{check}} &\in \{\todo{8, 16, 32}\},\\
-c_{\mathrm{tokens}} &\in \{\todo{16k, 32k, 64k}\},\\
-c_{\mathrm{strong}} &\in \{\todo{0, 1, 2}\}.
-\end{split}
+  \mathbf B^{(1)}\preceq\mathbf B^{(2)}\preceq\cdots
+  \preceq\mathbf B^{(K)},
 \]
-Each run also has a wall-clock limit and per-check timeout.
-\todo{Freeze the cheap model, version, and decoding setup.}
-\todo{Freeze the strong model, version, and decoding setup.}
-Model versions, temperatures, maximum output
-tokens, tool permissions, and prices are frozen before evaluation. Hidden
-provider reasoning tokens are reported separately when exposed and are never
-silently merged with visible output tokens.
+where a profile limits model requests, logical and provider-reported tokens,
+checker calls, wall time, standardized monetary cost, and tier-specific calls.
+\todo{Freeze the numeric low, medium, and high profiles from validation-only
+pilots.} All arms in one benchmark--model--budget cell receive the same vector,
+timeout, final-assembly accounting, and frozen price table. An arm may stop
+early; it is never forced to consume its full allowance.
 
-\subsection{Metrics}
+Each budget profile is run independently. A low-budget result is not obtained
+by truncating a high-budget trace because the controller observes remaining
+resources and may change its decisions. If wall time is used as a confirmatory
+constraint, hardware, concurrency, server warm-up, and task ordering are fixed;
+otherwise latency is descriptive. Independent sampling is run sequentially
+unless concurrency itself is explicitly matched and reported.
 
-The primary metric is \emph{pass under budget}: the fraction of tasks with a
-fully assembled, checker-accepted, safety-accepted proof. We plot success
-against each resource and report area under the success--cost curve. Secondary
-metrics include:
+Projection and prompt tokens, proposal generation, retrieval, every checker
+call, routing, and final assembly are charged. We report two monetary views:
+standardized cost computed from the frozen price table, and actual
+provider-billed cost. Cached input, hidden reasoning-token availability, and
+billed-cost measurement coverage are shown separately. Missing measurements
+are never imputed as zero.
 
-\begin{itemize}
-    \item input/output tokens, checks, wall time, and monetary cost per solved
-    task;
-    \item strong-model calls per solved task and their conditional success;
-    \item time and cost to first accepted proof;
-    \item repeated-goal attempts and spending on branches that never contribute
-    to the final solution;
-    \item accepted helper obligations and partial-result value on unsolved
-    multi-obligation tasks;
-    \item action calibration: empirical success/progress by predicted score
-    decile.
-\end{itemize}
+\subsection{Outcomes, Metrics, and Estimands}
 
-We use paired bootstrap confidence intervals across tasks and paired tests on
-per-task success. Results aggregate at least \todo{number} independent seeds
-for stochastic generation. Failures are stratified by checker category,
-budget-exhaustion reason, task difficulty, decomposition depth, and number of
-obligations.
+The primary endpoint is \emph{accepted under \(\mathbf B\)}: the run must
+produce a fully integrated proof accepted by both the Lean checker and safety
+review; multi-obligation tasks additionally require final assembly to pass.
+The accepted-rate denominator is accepted plus proof failure. Provider,
+transport, checker-server, and external timeout failures are classified as
+infrastructure, retried under the same frozen configuration, excluded from the
+primary denominator if unresolved, and reported with selected, completed,
+retried, missing, and per-arm counts.
 
-\subsection{Ablations}
-
-Starting from \system, we remove one component at a time:
+For each resource \(j\), we distinguish:
 
 \begin{itemize}
-    \item no remaining-budget conditioning;
-    \item flat attempt history instead of structured projection;
-    \item no unlock value;
-    \item no information-gain actions or failure hypotheses;
-    \item no diagnostic-conditioned repair;
-    \item no capability audit;
-    \item no model-tier escalation;
-    \item no final-assembly reserve;
-    \item heuristic versus trace-fitted value and cost estimates.
+    \item unconditional mean \(\mathbb E[C_j]\) per attempted task, including
+    proof failures---the primary efficiency quantity;
+    \item successful-run cost \(\mathbb E[C_j\mid Y=1]\), a descriptive
+    statistic that may change with the set of tasks solved; and
+    \item amortized cost per accepted proof
+    \(\mathbb E[C_j]/P(Y=1)\).
 \end{itemize}
 
-The most important ablation is minimal refinement versus structured,
-budget-agnostic search versus structured, budget-aware search. It separates the
-benefit of iterative feedback, the benefit of state structure, and the benefit
-of cost-sensitive allocation.
+We report accepted rate and actual resource use at every preregistered vector.
+Success--cost curves sweep one declared cap or a nested budget sequence while
+holding the other definitions fixed; any area-under-curve statistic uses a
+preregistered normalized interval. Additional metrics include restricted mean
+cost to solution with failures treated as censored at the cap, strong-tier
+calls and conditional outcomes, cap-hit frequencies, projection/control
+overhead, and checks outside the ancestry of the final accepted artifact.
+
+Mechanism evidence includes, for every richer-only action kind, the number of
+eligible states, proposals, executions, positive verifier-grounded transitions,
+accepted artifacts, and exclusive paired successes. Immediate success
+probabilities are assessed with reliability plots and Brier score when a
+probabilistic model exists. A non-probabilistic priority \(Q\) is evaluated by
+ranking lift and outcome by score quantile, not called calibrated.
+
+\subsection{Statistical Analysis and Claim Criteria}
+
+Task and repetition identifiers are paired across arms, and arm order is
+rotated or randomized. Confidence intervals use a paired hierarchical
+bootstrap with task as the resampling cluster; repeated generations for the
+same task are not treated as independent tasks. Accepted-rate differences are
+reported in percentage points with paired intervals for each
+benchmark--model--budget cell. Overall results are secondary and state whether
+they are macro-averaged across cells or weighted by task count.
+
+Before test execution we freeze the number of repetitions and an accepted-rate
+non-inferiority margin of \todo{1 percentage point, or another justified value
+chosen before test runs}. The allocation claim is supported if \system{} either
+(i) improves accepted rate at the same resource vector, or (ii) is noninferior
+in accepted rate while reducing unconditional resource use, with the
+corresponding paired interval. A gain of the full system over minimal refinement
+without a gain over the matched structured selector control is reported as an
+action-space or representation result, not as evidence for cost-aware
+allocation.
 
 \subsection{Reproducibility and Leakage Controls}
 
-Every run receives a unique sample identifier and records raw candidate text,
-checker category, complete goal fingerprints, structured goal states, action
-kind, branch and obligation versions, model/token usage, checks, elapsed time,
-stop reason, and the final workspace. Dataset provenance and retrieval scope
-are frozen per task. Prompt caches may reduce serving cost in deployment, but
-the main results charge logical model usage before cache discounts so systems
-with different prompt overlap remain comparable.
+Each run freezes benchmark provenance, ordered task identifiers, model
+versions, temperature and seed, prompt/tool protocol, action mask, selector,
+routing thresholds, price table, history snapshot, checker configuration, and
+all budget coordinates behind one configuration hash. Resume is rejected when
+the hash changes. Traces record raw candidates, checker categories, goal
+fingerprints, branch and obligation versions, complete selector choice sets,
+model and token use, elapsed time, stop reason, estimate errors, measurement
+coverage, and the final workspace. Summary tables are regenerated from
+per-task results and append-only traces rather than edited by hand.

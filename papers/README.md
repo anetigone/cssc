@@ -12,9 +12,10 @@ The paper treats the two execution modes asymmetrically:
   proposed budget-aware controller.
 
 The central claim is not that structure is useful by itself. The claim to test
-is that a controller can solve more tasks under the same resource budget when
-it makes verifier-grounded decisions over explicit obligations, branches,
-failure evidence, and action costs.
+is whether verifier-grounded allocation improves the solve--cost frontier after
+charging the full structured-state overhead. Hard-budget candidate selection,
+within-set ordering, action-space expansion, cost-aware selection, and model
+routing are treated as distinct mechanisms rather than one bundled gain.
 
 ## Files
 
@@ -29,14 +30,15 @@ traceable experiment behind it.
 
 ## Immediate writing/experiment TODOs
 
-1. Freeze the controller policy and decide whether its score is heuristic,
-   learned from held-out traces, or reported in both variants.
-2. Freeze task suites and prevent theorem/proof leakage.
-3. Select cheap and strong model tiers and record provider-independent token
-   accounting.
-4. Run equal-budget comparisons across checker-call, token, wall-clock, and
-   monetary budgets.
-5. Fill the result tables and replace the provisional related-work entries
-   with venue-final metadata where available.
-6. Move the manuscript into the official AAAI style only after the content and
-   page budget stabilize.
+1. Freeze the exact heuristic/learned selector, shadow prices, cost-history
+   snapshot, and unknown-cost behavior used by the confirmatory arm.
+2. Implement and verify the controlled action masks and the fixed-versus-
+   adaptive routing control under an identical cheap/strong portfolio.
+3. Freeze the second public benchmark, models, paired seeds, nested budget
+   vectors, non-inferiority margin, and leakage controls.
+4. Establish ledger parity across minimal and structured arms, then run the
+   matched-budget system comparisons and structured mechanism contrasts.
+5. Fill the result tables with absolute accepted counts, paired intervals,
+   unconditional cost, measurement coverage, and infrastructure counts.
+6. Replace provisional citation metadata where needed and move to the official
+   AAAI style only after the content and page budget stabilize.

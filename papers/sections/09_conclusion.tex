@@ -1,18 +1,24 @@
 \section{Conclusion}
 
-LLM theorem proving is not only a generation problem; under realistic
-constraints it is also a problem of choosing which computation is worth
-paying for. We presented \system, a budget-aware controller that allocates
-resources across generation, repair, retrieval, capability tests,
-decomposition, representation change, and model escalation. Its structured
-workspace gives those decisions stable semantics by representing AND
-dependencies, OR alternatives, checker evidence, aligned arguments, and
-versioned verified facts in one replayable state.
+Under a fixed test-time budget, theorem proving is not only a generation
+problem but a decision about which computation to fund next. We formulated
+this decision as multi-resource constrained metareasoning and presented
+\system, a controller over generation, repair, retrieval, capability tests,
+decomposition, representation change, and model escalation. A replayable
+workspace exposes the dependencies, alternatives, diagnostics, and verified
+artifacts needed to make those allocation decisions auditable.
 
-The proposed evaluation places this controller between two revealing
-comparators: a strong minimal refinement loop and a structured but
-budget-agnostic search policy. This design tests the actual claim of the paper:
-not that more structure or more search is automatically better, but that
-verifier-grounded allocation can convert a fixed inference budget into more
-accepted proofs. \todo{Close with the measured main result and the budget
-regime in which it holds.}
+The theory intentionally stops short of a global optimality claim. Hard-budget
+selection is already a knapsack problem in the static independent case;
+\(p_i/c_i\) optimally orders only a fixed feasible set, and cheap-first
+escalation requires a feasible fallback reserve. Residual verifier progress is
+an empirical approximation to the continuation value that becomes necessary
+when proof actions change the state.
+
+The evaluation is designed around the corresponding scientific claim. Strong
+minimal refinement tests whether allocation gains cover structured overhead,
+while matched structured contrasts separately test action-space expansion,
+cost-aware selection, remaining-budget admission, and adaptive routing.
+\todo{Close with the absolute accepted-rate difference, paired confidence
+interval, unconditional cost difference, exact budget vector, and the task
+regime in which the result holds.}

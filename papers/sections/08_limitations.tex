@@ -1,31 +1,55 @@
 \section{Limitations and Broader Considerations}
 
-Our theoretical results are local and conditional. Ordering by
-success-per-cost is optimal only under the stated sequential model; real proof
-actions have dependent outcomes, can reveal information, and can change the
-future action space. The controller's richer score is therefore a policy class
-to evaluate, not a proof of global optimality.
+Our exact results are deliberately local. The \(p_i/c_i\) theorem fixes the
+candidate set and minimizes expected expenditure until success or exhaustion;
+under hard truncation, selecting that set is a knapsack problem and greedy
+ratio selection need not maximize accepted rate. The cheap-prefix criterion
+applies only when the prefix and fallback are jointly feasible. With multiple
+resources, ratio ordering also requires a prespecified scalarization, while
+hard feasibility remains component-wise. Real proof actions update beliefs,
+change future action sets, and have dependent outcomes, so the controller's
+richer score is a policy to evaluate rather than a proof of global optimality.
 
-Verifier-derived progress is more objective than unconstrained model
-self-evaluation but is not synonymous with distance to a proof. A candidate
-with fewer goals may have replaced an easy goal with a much harder one, and a
-decomposition may create formally valid but strategically useless helpers.
-Calibration must be checked across task domains and model families.
+Verifier-grounded residual progress is a surrogate for continuation value, not
+distance to a proof. A candidate with fewer goals may have replaced an easy
+goal with a harder one; a decomposition can inflate the number of accepted
+helpers without bringing the root closer to assembly; and unlock, progress,
+and immediate success features can overlap if they are not defined carefully.
+Weights, ranks, normalization, and cost histories must be frozen on validation
+data and checked for calibration or ranking lift across domains and models.
 
-Structured search has overhead. It uses longer prompts, executes control logic,
-and may spend early budget constructing obligations that a direct model could
-solve immediately. This is why minimal refinement is retained as a first-class
-baseline and why we report task-stratified crossover behavior rather than
-claiming that structured mode should be universal.
+Multi-resource comparison has no unique scalar efficiency measure. Tokens,
+checker calls, latency, and dollars can bind different policies, and provider
+pricing or token reporting can be incomplete. We therefore report the full
+budget and realized cost vectors, standardized and billed monetary cost, and
+measurement coverage. Robustness to alternative shadow prices does not replace
+component-wise feasibility.
 
-The current system targets Lean 4. The proof-system adapter is narrow enough to
+Structured search has overhead. It uses longer projections, executes control
+logic, and may spend early budget constructing obligations that a direct model
+could solve immediately. Minimal refinement remains a first-class end-to-end
+baseline, and we report task-stratified crossover behavior rather than claiming
+that structured execution should be universal. Conversely, minimal versus
+structured execution is not a clean representation ablation because their
+contexts and control loops differ; mechanism attribution relies on matched
+structured arms.
+
+The controlled factors can interact. An expanded action space changes the
+states visited by a selector, and adaptive routing may be valuable only for
+structural actions. Marginal ablation effects are therefore conditional on the
+held-fixed configuration and need not sum to the full-system effect. A second
+public benchmark and frozen model/budget cells are required before a
+cross-domain claim; local multi-obligation stress tests cannot substitute for
+that confirmation.
+
+The current system targets Lean~4. The proof-system adapter is narrow enough to
 make another backend plausible, but obligation semantics, diagnostics, tactic
-granularity, and checker cost differ across assistants. Results should not be
-generalized to Isabelle, Rocq, or Metamath without new experiments.
+granularity, libraries, and checker cost differ across assistants. Results
+should not be generalized to Isabelle, Rocq, or Metamath without new
+experiments.
 
 Finally, a checker-accepted proof certifies the formal statement, not the
 faithfulness of an automatically formalized statement to the user's intent.
-The primary experiments fix formal statements, and the end-to-end setting
-reports formalization separately. Statement preservation and anti-cheating
-checks prevent several mechanical shortcuts, but they do not replace human
-review of high-stakes specifications.
+The primary experiments fix formal statements. Statement preservation and
+anti-cheating checks prevent several mechanical shortcuts, but they do not
+replace human review of high-stakes specifications.

@@ -1,22 +1,29 @@
 \begin{abstract}
-Large language models can generate formally checkable proofs, but strong
-performance often relies on large test-time budgets: many samples, repeated
-verifier calls, long contexts, or expensive model invocations. Existing proof
-agents usually treat the budget as a stopping condition rather than a signal
-that should shape search. We introduce \system, a budget-aware controller for
-LLM-guided theorem proving in Lean 4. The controller allocates model, token,
-verifier, retrieval, and wall-clock resources across proof generation, local
-repair, retrieval, capability tests, decomposition, representation changes,
-and model escalation. Its key substrate is a verifier-grounded structured
-state in which proof obligations form AND dependencies, alternative proof
-branches form OR choices, and every accepted fact is versioned and linked to
-checker evidence. This state makes it possible to estimate not only immediate
-success, but also residual proof progress, downstream unlock value, and the
-information gained by an action. We derive conditions under which cheap search
-should precede expensive generation and show that success probability per unit
-cost is the optimal ordering rule in a simple sequential model. We evaluate
-against direct generation, parallel sampling, fixed escalation, iterative
-refinement, and budget-agnostic structured search under matched budgets.
-\todo{Add the main solve-rate and cost reduction results after the evaluation
-is frozen.}
+At test time, an LLM theorem prover can spend the same remaining budget on
+another whole-proof sample, a local repair, retrieval, decomposition, or a
+stronger model. The control problem is therefore not only how long to search,
+but which verifier-mediated computation to purchase next. We cast Lean~4 proof
+search as budget-constrained metareasoning under explicit limits on model
+requests and tokens, checker calls, latency, and monetary cost. We introduce
+\system, a controller that schedules heterogeneous proof actions using
+estimates of marginal solve value and incremental cost. The estimates are
+grounded in a replayable workspace that records obligation dependencies,
+alternative branches, checker observations, and versioned accepted artifacts.
+
+In an idealized independent-candidate model, selecting candidates under a hard
+resource budget is a multidimensional knapsack problem. Conditional on a
+selected feasible set and a scalar accounting cost, decreasing \(p_i/c_i\)
+minimizes expected expenditure until success or exhaustion. If an expensive
+fallback of cost \(C\) is reserved and remains feasible, a cheap action of cost
+\(c\) and success probability \(p\) reduces expected expenditure exactly when
+\(c<pC\). These scoped results motivate, rather than establish the global
+optimality of, a controller based on immediate acceptance, residual verifier
+progress, and downstream unlock value.
+
+We evaluate \system{} under matched resource vectors against independent
+sampling and a strong iterative-refinement agent. Controlled comparisons hold
+the structured substrate fixed while separately varying the action mask,
+cost-aware selector, remaining-budget admission, and cheap/strong model router.
+\todo{State absolute solve rates, confidence intervals, the matched budget,
+and the task regime in which allocation gains exceed controller overhead.}
 \end{abstract}

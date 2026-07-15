@@ -1,110 +1,238 @@
 \section{Budget-Constrained Proof Search}
 
-\subsection{Interaction Model}
+\subsection{Metalevel Interaction Model}
 
-Let \(x\) be a theorem-proving task and \(s_t\) the controller state after
-\(t\) computations. The state contains a verifier-grounded proof workspace,
-the action history, and a remaining resource vector. At each step the
-controller selects an action \(a_t \in \mathcal{A}(s_t)\), observes an outcome
-\(o_t\), and applies a transition
+Let \(W_t\) be the verifier-grounded proof workspace after \(t\)
+computations, \(\mathcal H_t\) the action and cost history visible to the
+controller, and \(\mathbf b_t\) the remaining resource vector. The metalevel
+state is
 \[
-    s_{t+1} = T(s_t,a_t,o_t).
+    s_t=(W_t,\mathcal H_t,\mathbf b_t).
 \]
-The transition is deterministic given the action and tool result; uncertainty
-enters through model generations, retrieval outcomes, and the unknown
-repairability of a branch.
+At each step the controller chooses \(a_t\in\mathcal A(s_t)\). Executing it
+returns a joint random outcome--cost pair
+\[
+    (O_t,\mathbf C_t)\sim P(\cdot\mid s_t,a_t),
+\]
+after which
+\[
+    W_{t+1}=T(W_t,a_t,O_t),
+    \qquad
+    \mathbf b_{t+1}=\mathbf b_t-\mathbf C_t.
+\]
+The reducer \(T\) is deterministic given the action and observed tool result;
+uncertainty enters through model generations, retrieval results, checker
+outcomes, and realized token or wall-clock use.
+
+The resource vector records
+\[
+  \mathbf C =
+  (C_{\mathrm{request}},C_{\mathrm{in}},C_{\mathrm{out}},
+   C_{\mathrm{billed}},C_{\mathrm{check}},C_{\mathrm{retrieve}},
+   C_{\mathrm{time}},C_{\mathrm{money}}).
+\]
+Some coordinates are correlated or derived, but retaining them separately
+prevents a low monetary price from concealing excessive checker calls, tokens,
+or latency. Hard limits are enforced component-wise. Before execution, a
+configured upper bound \(\overline{\mathbf c}(s,a)\) is used for admission and
+must leave a reserve \(\mathbf b^{\mathrm{reserve}}\) for final assembly. The
+estimate \(\hat{\mathbf c}(s,a)\) used for ranking is distinct from both this
+admission bound and the realized \(\mathbf C_t\).
 
 Our action space includes proof implementation, local repair, retrieval,
 capability testing, decomposition, argument refinement, representation change,
-model escalation, branch pruning, assembly, and stopping. An action has a
-nonnegative resource cost vector
+model escalation, branch pruning, assembly, and stopping. Let
+\(Y_\pi(x,\mathbf B)\in\{0,1\}\) indicate whether policy \(\pi\) produces a
+proof accepted by Lean and by deterministic safety review before any component
+of initial budget \(\mathbf B\) is exhausted. The primary objective is
 \[
-  \mathbf{c}(s,a) =
-  (c_{\mathrm{in}}, c_{\mathrm{out}}, c_{\mathrm{model}},
-   c_{\mathrm{check}}, c_{\mathrm{retrieve}}, c_{\mathrm{time}},
-   c_{\mathrm{money}}).
+  \max_\pi\ \mathbb E_{x\sim\mathcal D}
+  [Y_\pi(x,\mathbf B)].
 \]
-The run is feasible when cumulative cost is component-wise bounded by a budget
-\(\mathbf{B}\). We retain the vector for reporting and enforce hard limits
-directly. For ranking actions, a deployment-specific nonnegative weight vector
-\(\boldsymbol{\lambda}\) converts incremental cost to
+Equivalently, the ideal value-to-go is \(V^\star(W,\mathbf b)=1\) when
+\(W\) contains an assembled checker- and safety-accepted proof. At a
+nonterminal state it obeys the metalevel recursion
 \[
-  \bar c(s,a)=\boldsymbol{\lambda}^{\top}\mathbf{c}(s,a).
+\begin{aligned}
+Q^\star(W,\mathbf b,a)
+  &=\mathbb E\!\left[
+      V^\star\!\left(T(W,a,O),\mathbf b-\mathbf C\right)\right],\\
+V^\star(W,\mathbf b)
+  &=\max\!\left\{0,
+      \sup_{a\in\mathcal A_{\mathrm{feas}}(W,\mathbf b)}
+      Q^\star(W,\mathbf b,a)\right\}.
+\end{aligned}
 \]
-This separation prevents a cheap monetary price from concealing excessive
-checker calls or latency.
+The transition law and value function are unknown and the state space is far
+too large to solve this recursion exactly. \system{} is an auditable approximate
+policy for this constrained metareasoning problem.
 
-Let \(Y_\pi(x,\mathbf{B})\in\{0,1\}\) indicate whether policy \(\pi\) produces
-a proof accepted by Lean and by the deterministic safety review before budget
-exhaustion. The primary objective is
+We evaluate the objective at preregistered, component-wise comparable budget
+vectors. For efficiency claims, expected realized resource use per attempted
+task is compared subject to a preregistered non-inferiority margin on accepted
+rate. Resource use conditional on success and amortized resource use per
+accepted proof are descriptive secondary quantities; they are not substituted
+for the fixed-budget objective.
+
+\subsection{Static Candidate Selection and Ordering}
+
+A state-invariant special case separates two decisions that are easy to
+conflate. Suppose candidate \(i\) has deterministic resource cost
+\(\mathbf c_i\succeq\mathbf 0\), independently succeeds with probability
+\(0\le p_i<1\), and neither its cost nor success probability depends on the
+order in which candidates are evaluated.
+
+\begin{proposition}[Candidate selection under a hard budget]
+Selecting a feasible candidate subset to maximize the probability of at least
+one success is equivalent to
 \[
-  \max_\pi\ \mathbb{E}_{x\sim\mathcal{D}}
-  [Y_\pi(x,\mathbf{B})],
+  \max_{S\subseteq\{1,\ldots,n\}}
+  \sum_{i\in S}-\log(1-p_i)
+  \quad\text{subject to}\quad
+  \sum_{i\in S}\mathbf c_i\preceq\mathbf B.
 \]
-evaluated over a range of budgets rather than at one arbitrary cutoff. A
-secondary objective minimizes expected cost conditional on success.
+Thus even the static multi-resource selection problem is a multidimensional
+\(0\)--\(1\) knapsack problem in general.
+\end{proposition}
 
-\subsection{Local Cost-Sensitive Decisions}
+\begin{proof}
+For a subset \(S\), independence gives success probability
+\(1-\prod_{i\in S}(1-p_i)\). Maximizing this quantity is equivalent to
+minimizing its failure probability and hence, by monotonicity of the logarithm,
+to maximizing \(\sum_{i\in S}-\log(1-p_i)\) under the same constraints.
+\end{proof}
 
-The simplest case already yields a useful policy target. Suppose candidate
-action \(i\) costs \(c_i>0\), succeeds with probability \(p_i\), outcomes are
-conditionally independent, and checking stops after the first success.
+Once a feasible subset is fixed, ordering controls expected realized
+expenditure because later candidates are skipped after success. Let
+\(c_i>0\) be a specified scalar accounting cost, such as one measured resource
+or \(c_i=\boldsymbol\lambda^\top\mathbf c_i\) for a fixed nonnegative shadow
+price vector \(\boldsymbol\lambda\).
 
-\begin{theorem}[Candidate ordering]
-Among fixed candidate orderings, sorting by nonincreasing \(p_i/c_i\)
-minimizes expected cost to the first success, with zero-probability candidates
-last.
+\begin{theorem}[Optimal ordering of a fixed candidate set]
+Assume each candidate is evaluated at most once, evaluation stops at the first
+success or after all candidates fail, and the success probabilities of
+unevaluated candidates are unchanged after any common failed prefix. Mutual
+independence is sufficient. Every ordering \(\sigma\) that is nonincreasing in
+\(p_i/c_i\) minimizes
+\[
+  \mathbb E[C_\sigma]
+  =
+  \sum_{k=1}^{n}c_{\sigma(k)}
+  \prod_{\ell<k}(1-p_{\sigma(\ell)})
+\]
+among permutations of the same candidate set. Ties may be broken arbitrarily,
+and zero-probability candidates may be placed last.
 \end{theorem}
 
 \begin{proof}
-Consider adjacent candidates \(i\) and \(j\) after a common prefix. Trying
-\(i\) first has conditional expected cost
-\(c_i+(1-p_i)c_j\); trying \(j\) first costs
-\(c_j+(1-p_j)c_i\). The first ordering is no worse exactly when
-\(p_i/c_i \ge p_j/c_j\). Repeated adjacent swaps remove all inversions.
+Condition on reaching two adjacent candidates \(i\) and \(j\). Their expected
+additional costs are \(c_i+(1-p_i)c_j\) and
+\(c_j+(1-p_j)c_i\), respectively. The former is no larger exactly when
+\(p_i/c_i\ge p_j/c_j\). The probability of reaching the pair is a common
+nonnegative factor, so repeated adjacent swaps remove every inversion.
 \end{proof}
 
-This result does not assume that proof success probabilities are easy to
-estimate. It identifies the quantity that a controller should approximate from
-verifier feedback, action type, branch history, and model tier.
+The theorem is an ordering result, not a claim that greedy selection by
+\(p_i/c_i\) maximizes Pass@budget. In the scalar fractional relaxation, the
+selection density is \(-\log(1-p_i)/c_i\), which approaches \(p_i/c_i\) only
+for small \(p_i\). With multiple hard resources there is no canonical scalar
+ratio at all. We therefore use \(p/c\) as a local policy target only after
+component-wise feasibility filtering.
 
-Now consider a cheap action of cost \(c_L\) that solves the task with
-probability \(p_L\), followed on failure by a strong-model action of cost
-\(C_H\).
+\subsection{A Feasible Cheap Prefix}
 
-\begin{proposition}[Cheap search before escalation]
-Cheap-first execution has lower expected cost than direct escalation whenever
+The same distinction clarifies when cheap search should precede escalation.
+Let a cheap action \(L\) have deterministic resource cost \(\mathbf c_L\) and
+immediate success probability \(p_L\). Conditional on its failure, suppose an
+expensive action \(H\) remains available with deterministic cost
+\(\mathbf C_H\).
+
+\begin{proposition}[Expected-cost criterion for cheap-first execution]
+Assume the worst-case sequence preserves the final reserve,
 \[
-    c_L < p_L C_H.
+  \mathbf c_L+\mathbf C_H
+  \preceq
+  \mathbf b-\mathbf b^{\mathrm{reserve}}.
+\]
+The policy \(LH\), which executes \(H\) only after \(L\) fails, has expected
+resource use
+\[
+  \mathbb E[\mathbf C_{LH}]
+  =\mathbf c_L+(1-p_L)\mathbf C_H.
+\]
+For any fixed nonnegative scalarization \(\boldsymbol\lambda\), \(LH\) has
+lower expected scalarized cost than direct \(H\) if and only if
+\[
+  \underbrace{\boldsymbol\lambda^\top\mathbf c_L}_{c_L}
+  <
+  p_L\underbrace{\boldsymbol\lambda^\top\mathbf C_H}_{C_H}.
+\]
+It Pareto-improves expected resource use when
+\(c_{L,j}\le p_L C_{H,j}\) for every resource \(j\), with strict inequality
+for at least one component.
+\end{proposition}
+
+This is an expected-resource criterion, not by itself a hard-budget success
+criterion. If \(L\) and \(H\) do not jointly fit, executing \(L\) may remove the
+fallback and the inequality \(c_L<p_LC_H\) is inapplicable.
+
+Cheap failure can also change the continuation state. Let
+\(q_0=p_H(s_0)>0\) be the success probability of direct escalation and
+\[
+  q_1=\mathbb E[p_H(S_1)\mid L\text{ fails}]
+\]
+the success probability of the same continuation after the
+failure-conditioned successor state produced by \(L\). Across repeated
+independent tasks, cheap-first improves amortized expected scalar cost per
+accepted proof exactly when
+\[
+  \frac{c_L+(1-p_L)C_H}
+       {p_L+(1-p_L)q_1}
+  <
+  \frac{C_H}{q_0},
+\]
+or equivalently,
+\[
+  c_L
+  <
+  \frac{C_H}{q_0}
+  \left[p_L+(1-p_L)(q_1-q_0)\right].
+\]
+The two terms on the right separate immediate cheap success from the residual
+effect of verifier-grounded state change on a fixed continuation policy. The
+quantity \(q_1-q_0\) may be negative: a cheap action can consume useful context
+or steer search toward a worse state.
+
+\subsection{Verifier-Grounded Residual Progress}
+
+The exact continuation difference above is unavailable online. We approximate
+it using normalized numerical features \(\phi(W)\in\mathbb R^d\) derived from
+the checker and workspace, and a potential
+\[
+  \Phi_{\mathbf w}(W)=\mathbf w^\top\phi(W).
+\]
+Features include accepted obligation mass, verified-prefix information, and
+the number of newly ready dependents. Categorical goal fingerprints and
+diagnostic transitions are action features or repetition penalties rather than
+coordinates subtracted numerically. The transition residual is
+\[
+  \Delta_\Phi(W,a,W')
+  =\Phi_{\mathbf w}(W')-\Phi_{\mathbf w}(W).
+\]
+
+\begin{proposition}[Telescoping residual]
+For any trajectory \(W_0,\ldots,W_T\),
+\[
+  \sum_{t=0}^{T-1}\Delta_\Phi(W_t,a_t,W_{t+1})
+  =\Phi_{\mathbf w}(W_T)-\Phi_{\mathbf w}(W_0).
 \]
 \end{proposition}
 
-Cheap search can also improve the state even when it does not finish the
-proof. If direct strong generation succeeds with probability \(p_H(s_0)\),
-whereas cheap search moves failures to \(s_1\), the cheap-first policy has
-lower expected cost per solved task when
-\[
-\frac{c_L+(1-p_L)C_H}
-     {p_L+(1-p_L)p_H(s_1)}
-<
-\frac{C_H}{p_H(s_0)}.
-\]
-This condition captures two distinct benefits: direct cheap success and
-verifier-grounded state improvement before escalation.
-
-\subsection{Residual Verifier Progress}
-
-Absolute LLM value judgments are often poorly calibrated. We instead derive a
-progress feature vector \(\phi(s)\) from the verifier and workspace. Components
-include accepted obligations, newly ready dependents, diagnostic transitions,
-goal fingerprints, stalled streaks, and verified-prefix information. The
-residual progress of an action is
-\[
-  \Delta(s,a,s') = \mathbf{w}^{\top}
-  \bigl(\phi(s')-\phi(s)\bigr).
-\]
-When \(\phi\) is only the terminal acceptance indicator,
-\(\mathbb{E}[\Delta]/c\) reduces exactly to \(p/c\). Richer features provide a
-denser but still verifier-grounded signal. We treat the relationship between
-these proxy features and eventual success as an empirical question rather
-than assuming that fewer goals always means an easier proof.
+The identity follows by cancellation. If \(\Phi(W)\) is only the terminal
+acceptance indicator, the current state is nonterminal, and a one-step action
+accepts with probability \(p\), then
+\(\mathbb E[\Delta_\Phi]/c=p/c\). Richer features give a denser but empirical
+surrogate; they are not assumed to be monotone distance to a proof. To avoid
+double counting in the controller, terminal acceptance, downstream unlock,
+and nonterminal residual progress are logged as distinct terms, and their
+weights or ranks are frozen without using test-task outcomes.

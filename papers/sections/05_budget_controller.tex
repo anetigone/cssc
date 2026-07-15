@@ -1,124 +1,169 @@
 \section{Budget-Aware Structured Control}
 
-\subsection{Decision State}
+\subsection{Three Independent Control Levers}
 
-At a decision point, the controller receives
+At a decision point the controller receives
 \[
-  z_t=(W_t,\mathbf{b}_t,\mathcal{H}_t),
+  s_t=(W_t,\mathcal H_t,\mathbf b_t),
 \]
-where \(W_t\) is the workspace, \(\mathbf{b}_t\) is the remaining resource
-vector, and \(\mathcal{H}_t\) contains cost and outcome statistics available
-from training or held-out traces. It first filters infeasible actions, including
-any action that would consume the verifier call reserved for final assembly.
-It then jointly ranks ready branches and applicable actions.
+where \(W_t\) is the workspace, \(\mathcal H_t\) contains only cost and
+outcome statistics available before the next result, and \(\mathbf b_t\) is the
+remaining resource vector. We separate three decisions:
 
-\subsection{Action Utility}
+\begin{enumerate}
+    \item the \emph{action mask} determines which typed computations may be
+    proposed in the current experiment;
+    \item the \emph{selector} chooses a feasible branch--action pair; and
+    \item the \emph{router} chooses the model tier used to propose or execute
+    that computation.
+\end{enumerate}
 
-For state \(s\), branch \(n\), and action \(a\), we estimate:
+This separation is both an implementation boundary and an experimental one. A
+larger action mask is not evidence for a better selector, and access to a
+strong model is not evidence for adaptive routing.
+
+\subsection{Cost Measurement and Vector Admission}
+
+Every provider request, reported token quantity, tool call, checker call,
+pricing event, and charge is appended to a common ledger. A measurement is
+marked observed, estimated, unavailable, or unbounded; unavailable quantities
+are never converted to zero. Action-cost estimates
+\(\hat{\mathbf c}(s,n,a)\) come either from frozen static priors or from a
+validation-only history snapshot bucketed by action kind and model tier. The
+snapshot, estimator version, sample count, fallback reason, and realized
+estimate error are retained in the trace.
+
+Hard feasibility remains vector-valued. Before an action is executed, the
+controller forms
+\[
+  \mathcal A_{\mathrm{feas}}(s,\mathbf b)
+  =\left\{(n,a):
+  \overline c_j(s,n,a)
+  \le b_j-b_j^{\mathrm{reserve}}
+  \text{ for every enforced resource }j\right\}.
+\]
+The final-check reserve is never available to ordinary branch actions.
+Dimensions that cannot be compared are recorded explicitly, and the
+preregistered policy determines whether an unknown estimate is rejected or
+admitted under another hard guardrail. Proposal-generation cost is charged
+separately from action-execution cost, so a structural action with no immediate
+checker call is not incorrectly treated as free.
+
+Per-obligation soft envelopes distribute checks and model requests across the
+dependency graph. A high-unlock obligation may borrow from its envelope when
+the global vector still admits the action; every such borrow is logged. These
+envelopes guide allocation but never override a global hard limit.
+
+\subsection{Verifier-Grounded Marginal Value}
+
+For state \(s\), branch \(n\), and action \(a\), the value decomposition uses:
 
 \begin{itemize}
-    \item \(\hat p_{\mathrm{succ}}\): probability that the action immediately
-    yields an accepted artifact;
-    \item \(\widehat{\Delta}\): expected verifier-grounded residual progress;
-    \item \(U\): downstream unlock value, computed from obligations that would
-    become ready if the target were accepted;
-    \item \(I\): expected information gain over explicit competing failure
-    hypotheses;
-    \item \(R\): repetition and risk penalties, including unchanged goal
-    fingerprints and mutation-scope risk;
-    \item \(\hat c\): expected incremental scalarized cost.
+    \item \(\hat p_{\mathrm{acc}}\), immediate checker-and-safety acceptance;
+    \item \(\hat\delta_{\mathrm{fail}}\), nonterminal residual progress
+    conditional on the action not accepting immediately;
+    \item \(U_{\mathrm{unlock}}\), dependents made ready if the target is
+    accepted;
+    \item \(\hat I\), the value of discriminating among explicit competing
+    failure hypotheses; and
+    \item \(\hat R\), repetition and mutation-scope risk, including unchanged
+    goal fingerprints.
 \end{itemize}
 
-The base score is
+One convenient cardinal template is
+\[
+  \widehat G(s,n,a)=
+  \alpha\hat p_{\mathrm{acc}}
+  +\beta(1-\hat p_{\mathrm{acc}})\hat\delta_{\mathrm{fail}}
+  +\eta\hat p_{\mathrm{acc}}U_{\mathrm{unlock}}
+  +\kappa\hat I
+  -\rho\hat R.
+\]
+The conditional factors prevent immediate acceptance, failure progress, and
+acceptance-dependent unlocks from being counted as the same event. When a
+scalar comparison is required, a validation-frozen nonnegative shadow-price
+vector gives
 \[
   Q(s,n,a)=
-  \frac{
-    \alpha \hat p_{\mathrm{succ}}
-    +\beta \widehat{\Delta}
-    +\eta U
-    +\kappa I
-    -\rho R
-  }{\epsilon+\hat c}.
+  \frac{\widehat G(s,n,a)}
+       {\epsilon+\boldsymbol\lambda^\top
+        \hat{\mathbf c}(s,n,a)}.
 \]
-All terms are logged separately; the combined score is not treated as a
-semantic truth. A heuristic controller can instantiate these terms from
-diagnostic categories and graph structure, while a learned variant estimates
-them from held-out traces. The main comparison must use no test-task outcomes
-to fit either version.
+This expression is a policy template, not a theorem that the terms form a
+calibrated utility or that \(Q\) is globally optimal.
 
-\subsection{Conditioning on Remaining Budget}
+The auditable heuristic instantiation uses deterministic, predeclared ranks
+when a probability or cardinal value is unavailable. Readiness and hard
+admission are gates; estimated execution cost, stalled streak, goal change,
+unlock count, hypothesis-discriminating tests, and stable identifiers form the
+rank and tie breakers. The value-only control removes estimated cost from this
+rank. The value-per-cost control uses the same state signals and action mask,
+and the remaining-budget control additionally rejects actions whose estimated
+cost cannot fit after reserve. Exact keys, weights, cost snapshots, and fallback
+behavior are serialized with every formal run and are frozen before test
+evaluation.
 
-Let \(r\in[0,1]\) be a normalized remaining-budget ratio after reserving final
-assembly. We use a budget-conditioned concentration exponent
-\[
-  \gamma(r)=\gamma_{\max}
-  -(\gamma_{\max}-\gamma_{\min})r,
-\]
-so abundant budget yields a flatter ranking and scarce budget concentrates
-probability mass on high-value actions. The final priority is
-\[
-  \operatorname{Priority}(s,n,a)
-  =\operatorname{sign}(Q)\lvert Q\rvert^{\gamma(r)}
-  \cdot G(a,r),
-\]
-where \(G\) is an action-type gate. Early in a run, \(G\) permits
-decomposition, capability tests, and representation changes that may create
-future options. Near exhaustion it favors completion and repair on branches
-with short estimated cost-to-proof, and suppresses structural actions whose
-children cannot be completed within the residual budget.
-
-For a vector budget there is no unique remaining fraction. We use the minimum
-normalized slack over hard resources,
-\[
-  r=\min_j \frac{b_j-b^{\mathrm{reserve}}_j}{B_j},
-\]
-and reject actions that violate any component. We additionally report
-alternative scalarizations as a robustness analysis.
+Unlike a positive power transform of a deterministic score, vector admission
+can change the selected action: it removes computations that would crowd out a
+binding resource or final assembly. We therefore make no claim that a monotone
+rescaling of \(Q\) alone makes a deterministic policy budget-conditioned.
 
 \subsection{Diagnostic-Conditioned Actions}
 
-Lean diagnostics change the conditional value of computation. Parser and local
+Lean diagnostics alter the conditional value of computation. Parser and local
 type errors often favor repair; unknown identifiers favor retrieval or a
-capability test; repeated unchanged goals lower the value of another identical
-implementation attempt; and a sound-looking argument with persistent
-implementation failures may favor a representation change. These rules
-initialize the heuristic policy and define features for the learned policy.
-They do not turn diagnostics into infallible mathematical diagnoses.
+capability test; a repeated unchanged goal lowers the rank of another
+equivalent implementation attempt; and a sound-looking argument with
+persistent implementation failures may favor a representation change. These
+rules initialize heuristic features and action applicability. They do not turn
+diagnostics into infallible mathematical diagnoses.
 
-Competing failure hypotheses make information-seeking actions explicit. If a
-cheap signature test can distinguish ``missing theorem'' from ``incorrect
-argument,'' its value includes the avoided cost of pursuing the wrong route.
-Infrastructure failures, by contrast, are handled by deterministic rules and
-are not presented to the model as mathematical hypotheses.
+Competing failure hypotheses make information-seeking actions explicit. A
+signature test may distinguish a missing declaration from an incorrect
+argument and thereby avoid an expensive wrong route. We call this a
+hypothesis-discrimination feature unless a probabilistic information-gain
+model is actually fitted and calibrated. Infrastructure failures are handled
+by deterministic runtime rules and are never presented as mathematical
+hypotheses.
 
-\subsection{Two-Tier Model Escalation}
+\subsection{Cheap/Strong Model Routing}
 
-The controller treats model tiers as actions with different cost and success
-models. A cheap model handles short implementation and repair attempts; a
-strong model is available for detailed proofs, decomposition, or strategy
-revision. Escalation is selected when its estimated success gain per cost
-exceeds cheap alternatives, not after a fixed number of failures. To prevent
-the learned score from starving the strong model until it is unusable, the
-policy can reserve a configurable strong-call budget and expose an ablation
-without that reserve.
+Both model tiers implement the same proof-agent protocol and share the same
+workspace and ledger. The adaptive router defaults to the cheap tier and may
+request the strong tier for structural actions, repeated failures on the same
+goal fingerprint, repeated proposal-validation failures, a stalled repair
+streak, or a high-unlock state with poor frozen cheap-tier success. Escalation
+is granted only if the strong-tier cost estimate fits the remaining vector and
+reserve. Thresholds and tier-specific cost estimates are selected on validation
+data and frozen.
+
+The cheap-first proposition in Section~3 motivates this router but does not
+prove it optimal: real actions change state and their probabilities are only
+estimated. The routing ablation therefore compares adaptive routing with a
+validation-frozen escalation schedule that has the \emph{same} cheap/strong
+model portfolio, tier caps, action mask, selector, and total resource vector.
+Cheap-only and strong-only runs are useful boundary policies, but are not
+interpreted as isolated routing effects.
 
 \subsection{Controller Loop}
 
 The structured loop is:
 
 \begin{enumerate}
-    \item initialize a workspace and seed all ready branches;
+    \item initialize the workspace and seed all ready branches;
     \item reserve resources required for final assembly;
-    \item enumerate type-valid actions on ready branches;
-    \item filter actions that violate hard budgets or workspace invariants;
-    \item score branch--action pairs using the remaining budget;
-    \item execute the highest-priority computation and charge its realized
-    cost;
-    \item deterministically reduce the result into a successor workspace;
-    \item if a complete compatible solution exists, assemble and recheck it;
-    otherwise continue until no useful feasible action remains.
+    \item enumerate actions permitted by the experimental mask;
+    \item estimate costs, filter stale or vector-infeasible actions, and record
+    the full rejected choice set;
+    \item rank the remaining branch--action pairs and route the selected
+    computation to an admitted model tier;
+    \item execute it, charge realized cost, and deterministically reduce the
+    result into a successor workspace;
+    \item if a compatible solution exists, assemble and recheck it; otherwise
+    continue until no useful feasible action remains.
 \end{enumerate}
 
 On termination, the system returns an accepted proof or a structured partial
-result containing accepted helpers, blocked/open obligations, preserved
-alternatives, raw checker observations, and exact resource usage.
+result containing accepted helpers, blocked or open obligations, preserved
+alternatives, raw checker observations, exact resource use, measurement
+coverage, and the reason no further action was selected.
