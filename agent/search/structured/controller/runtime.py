@@ -230,6 +230,7 @@ class StructuredControllerRuntimeMixin:
             else None,
             "structured_workspace_version": workspace.version,
             "budget": self.budget.snapshot(),
+            "generation_failures": tuple(state.generation_failures),
         }
         route_decision = getattr(self, "_action_route_decision", None)
         if route_decision is not None:

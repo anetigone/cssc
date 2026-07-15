@@ -244,12 +244,14 @@ candidate SHA-256 未变化的 eligible 证据。
 ```bash
 python scripts/minif2f_benchmark_run.py \
   --split valid --limit 5 --run-name minif2f-valid-pilot \
+  --execution-mode minimal \
   -- --use-model --max-model-calls 3 --max-checks 3 \
   --lean-timeout 300 --lean-server-startup-timeout 300
 ```
 
-普通 prove 参数放在 `--` 后；suite selection 和输出参数放在 `--` 前。冻结配置后移除 `--limit` 运行完整
-valid split，之后才运行 test split。
+普通 prove 参数放在 `--` 后；suite selection 和输出参数放在 `--` 前。benchmark 默认使用
+`--execution-mode minimal`；显式改为 `structured` 可运行结构化搜索消融。冻结配置后移除 `--limit`
+运行完整 valid split，之后才运行 test split。
 
 Resume 必须保留原 selection 和 proof 参数：
 
@@ -261,7 +263,10 @@ python scripts/minif2f_benchmark_run.py \
   --lean-timeout 300 --lean-server-startup-timeout 300
 ```
 
-修复 provider/checker 故障后只重跑 infrastructure result：
+普通 resume 会自动重跑 provider/checker 等 infrastructure result，以及
+`generation:model_output_truncated` 这类可恢复的生成失败；它仍会跳过已有 accepted 和普通证明失败。
+若需要保留这些结果，可显式传 `--skip-infrastructure-failures` 或
+`--skip-transient-generation-failures`。兼容的显式写法为：
 
 ```bash
 python scripts/minif2f_benchmark_run.py \

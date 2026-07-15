@@ -384,12 +384,46 @@ class ProofControllerTests(unittest.TestCase):
         self.assertEqual(
             result.stop_reason, "generation:model_output_truncated"
         )
-        self.assertEqual(result.metrics.model_input_tokens, 10)
+        self.assertEqual(result.metrics.model_input_tokens, 20)
         self.assertEqual(result.metrics.model_output_tokens, 0)
         self.assertEqual(
             result.metadata["generation_failures"][0]["reason"],
             "model_output_truncated",
         )
+        self.assertEqual(result.budget.model_calls_used, 2)
+        self.assertEqual(len(result.metadata["generation_failures"]), 2)
+
+    def test_retries_truncated_generation_within_model_budget(self) -> None:
+        class TruncatedThenProofGenerator:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, request):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ActionGenerationError(
+                        "model_output_truncated",
+                        "reasoning consumed the response budget",
+                    )
+                assert request.metadata["generation_failures"][-1]["reason"] == (
+                    "model_output_truncated"
+                )
+                return [ActionCandidate("trivial")]
+
+        task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")
+        generator = TruncatedThenProofGenerator()
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = ProofController(
+                adapter=FakeAdapter(),
+                action_generator=generator,
+                workspace=AttemptWorkspace(tmp),
+                budget_config=BudgetConfig(max_checks=2, max_model_calls=2),
+            )
+            result = controller.run(task)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(generator.calls, 2)
+        self.assertEqual(result.budget.model_calls_used, 2)
 
     def test_caps_feedback_history(self) -> None:
         task = ProofTask("true", "theorem sample : True := by\n  {{proof}}\n")

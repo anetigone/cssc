@@ -28,6 +28,7 @@ from agent.search.action import (
     ActionGenerationError,
     ActionGenerationRequest,
     ActionGenerator,
+    is_retryable_generation_failure,
 )
 from agent.search.budget import BudgetConfig, BudgetManager
 from agent.search.controller.types import (
@@ -236,6 +237,13 @@ class StructuredController(
                     branch.branch_id,
                     state.stop_reason,
                 )
+                if (
+                    is_retryable_generation_failure(exc)
+                    and self.budget.can_call_model()
+                ):
+                    state.stop_reason = ""
+                    frontier.update(workspace, branch.branch_id, accepted=False)
+                    continue
                 break
             usage = proposals[0].metadata.get("token_usage") if proposals else None
             if proposals:

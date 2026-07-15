@@ -209,6 +209,15 @@ def _build_messages(
             " First plan the mathematical construction and its Lean API usage, then return "
             "one coherent proof body."
         )
+    generation_failures = request.metadata.get("generation_failures", ())
+    if (
+        generation_failures
+        and generation_failures[-1].get("reason") == "model_output_truncated"
+    ):
+        phase_guidance += (
+            " The previous response hit the output limit before producing a usable proof; "
+            "make this proof body concise and return it before any extended explanation."
+        )
     return [
         {
             "role": "system",

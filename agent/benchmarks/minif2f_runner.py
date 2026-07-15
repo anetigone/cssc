@@ -58,7 +58,8 @@ def run_minif2f_benchmark(
     offset: int = 0,
     limit: int | None = None,
     resume: bool = False,
-    retry_infrastructure_failures: bool = False,
+    retry_infrastructure_failures: bool | None = None,
+    retry_transient_generation_failures: bool | None = None,
     continue_on_infrastructure_failure: bool = False,
     progress: Callable[[int, int, str, str], None] | None = None,
 ) -> MiniF2FRunSummary:
@@ -70,8 +71,16 @@ def run_minif2f_benchmark(
     provenance_path = prepared / "provenance.json"
     if split not in {"valid", "test"}:
         raise MiniF2FError("split must be 'valid' or 'test'")
+    if retry_infrastructure_failures is None:
+        retry_infrastructure_failures = resume
+    if retry_transient_generation_failures is None:
+        retry_transient_generation_failures = resume
     if retry_infrastructure_failures and not resume:
         raise MiniF2FError("retry_infrastructure_failures requires resume=True")
+    if retry_transient_generation_failures and not resume:
+        raise MiniF2FError(
+            "retry_transient_generation_failures requires resume=True"
+        )
     if not manifest.is_file() or not provenance_path.is_file():
         raise MiniF2FError("prepared miniF2F manifest/provenance is missing")
     if not (project / "lakefile.lean").is_file() and not (project / "lakefile.toml").is_file():
@@ -138,7 +147,13 @@ def run_minif2f_benchmark(
                 continue
             previous_result = json.loads(result_path.read_text(encoding="utf-8"))
             infrastructure = _saved_result_is_infrastructure(previous_result)
-            if retry_infrastructure_failures and infrastructure:
+            if (
+                (retry_infrastructure_failures and infrastructure)
+                or (
+                    retry_transient_generation_failures
+                    and _saved_result_is_transient_generation(previous_result)
+                )
+            ):
                 continue
             completed += 1
             skipped += 1
@@ -148,7 +163,7 @@ def run_minif2f_benchmark(
     if completed == len(rows):
         _write_summary(
             root, run_id, len(rows), completed, accepted, failed, skipped,
-            infrastructure_failures, "complete",
+            infrastructure_failures, [str(row["task_id"]) for row in rows], "complete",
         )
         metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
         metadata["status"] = "complete"
@@ -194,8 +209,14 @@ def run_minif2f_benchmark(
             if resume and result_path.is_file():
                 previous_result = json.loads(result_path.read_text(encoding="utf-8"))
                 if not (
-                    retry_infrastructure_failures
-                    and _saved_result_is_infrastructure(previous_result)
+                    (
+                        retry_infrastructure_failures
+                        and _saved_result_is_infrastructure(previous_result)
+                    )
+                    or (
+                        retry_transient_generation_failures
+                        and _saved_result_is_transient_generation(previous_result)
+                    )
                 ):
                     if progress:
                         progress(index, len(rows), task_id, "skipped")
@@ -236,7 +257,12 @@ def run_minif2f_benchmark(
             accepted += int(result.accepted)
             failed += int(not result.accepted and not infrastructure)
             infrastructure_failures += int(infrastructure)
-            _write_summary(root, run_id, len(rows), completed, accepted, failed, skipped, infrastructure_failures, "running")
+            _write_summary(
+                root, run_id, len(rows), completed, accepted, failed, skipped,
+                infrastructure_failures,
+                [str(selected_row["task_id"]) for selected_row in rows],
+                "running",
+            )
             if progress:
                 progress(index, len(rows), task_id, "accepted" if result.accepted else "failed")
             if infrastructure and not continue_on_infrastructure_failure:
@@ -246,7 +272,10 @@ def run_minif2f_benchmark(
         adapter.close()
 
     status = "aborted_infrastructure" if aborted else "complete"
-    _write_summary(root, run_id, len(rows), completed, accepted, failed, skipped, infrastructure_failures, status)
+    _write_summary(
+        root, run_id, len(rows), completed, accepted, failed, skipped,
+        infrastructure_failures, [str(row["task_id"]) for row in rows], status,
+    )
     metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
     metadata["status"] = status
     metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -287,6 +316,10 @@ def _saved_result_is_infrastructure(payload: dict[str, Any]) -> bool:
     )
 
 
+def _saved_result_is_transient_generation(payload: dict[str, Any]) -> bool:
+    return payload.get("stop_reason") == "generation:model_output_truncated"
+
+
 def _prewarm(adapter: LeanAdapter, root: Path, *, timeout_seconds: float) -> None:
     root.mkdir(parents=True, exist_ok=True)
     path = root / "Prewarm.lean"
@@ -312,8 +345,13 @@ def _write_summary(
     failed: int,
     skipped: int,
     infrastructure_failures: int,
+    task_ids: Sequence[str],
     status: str,
 ) -> None:
+    failed_tasks, infrastructure_failure_tasks = _failure_task_details(
+        root, task_ids
+    )
+    run_metadata = json.loads((root / "run.json").read_text(encoding="utf-8"))
     _atomic_json(
         root / "summary.json",
         {
@@ -321,15 +359,63 @@ def _write_summary(
             "suite": "minif2f",
             "run_id": run_id,
             "status": status,
+            "execution_mode": _execution_mode_from_proof_args(
+                run_metadata.get("proof_args", ())
+            ),
             "selected": selected,
             "completed": completed,
             "accepted": accepted,
             "failed": failed,
             "skipped": skipped,
             "infrastructure_failures": infrastructure_failures,
+            "failed_tasks": failed_tasks,
+            "infrastructure_failure_tasks": infrastructure_failure_tasks,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+
+def _failure_task_details(
+    root: Path, task_ids: Sequence[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    failed: list[dict[str, Any]] = []
+    infrastructure: list[dict[str, Any]] = []
+    for task_id in task_ids:
+        result_path = root / "tasks" / task_id / "result.json"
+        if not result_path.is_file():
+            continue
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        if payload.get("ok"):
+            continue
+        detail: dict[str, Any] = {
+            "task_id": task_id,
+            "stop_reason": payload.get("stop_reason"),
+        }
+        if payload.get("last_category"):
+            detail["last_category"] = payload["last_category"]
+        if payload.get("last_message"):
+            detail["message"] = payload["last_message"]
+        generation_failures = payload.get("generation_failures")
+        if isinstance(generation_failures, list) and generation_failures:
+            last_failure = generation_failures[-1]
+            if isinstance(last_failure, dict) and last_failure.get("message"):
+                detail["message"] = last_failure["message"]
+        if _saved_result_is_infrastructure(payload):
+            detail["kind"] = payload.get("infrastructure_failure_kind")
+            infrastructure.append(detail)
+        else:
+            failed.append(detail)
+    return failed, infrastructure
+
+
+def _execution_mode_from_proof_args(proof_args: Sequence[str]) -> str:
+    mode = "minimal"
+    for index, argument in enumerate(proof_args):
+        if argument.startswith("--execution-mode="):
+            mode = argument.partition("=")[2]
+        elif argument == "--execution-mode" and index + 1 < len(proof_args):
+            mode = proof_args[index + 1]
+    return mode
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

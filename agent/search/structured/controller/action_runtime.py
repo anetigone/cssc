@@ -9,7 +9,10 @@ from agent.proof_system.base import ProofTask
 from agent.proof_system.workspace import BranchStatus, SearchActionKind
 from agent.search.controller.context import maybe_retrieve
 from agent.search.controller.types import ControllerResult
-from agent.search.action import ActionGenerationError
+from agent.search.action import (
+    ActionGenerationError,
+    is_retryable_generation_failure,
+)
 from agent.search.execution import ExecutionMode
 
 from ..action_frontier import (
@@ -274,6 +277,13 @@ class StructuredControllerActionRuntimeMixin:
                 })
                 state.stop_reason = f"generation:{exc.reason}"
                 self._action_route_decision = None
+                if (
+                    uses_model
+                    and is_retryable_generation_failure(exc)
+                    and self.budget.can_call_model()
+                ):
+                    state.stop_reason = ""
+                    return self._fill_action_cache(task, workspace, cache, state)
                 return workspace, cache
             finally:
                 self._action_route_decision = None

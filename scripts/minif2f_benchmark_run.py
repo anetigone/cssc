@@ -33,11 +33,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--run-name")
+    parser.add_argument(
+        "--execution-mode",
+        choices=("minimal", "structured"),
+        default=None,
+        help="Proof-search mode for this benchmark run (default: minimal).",
+    )
     parser.add_argument("--resume", help="Existing .runs benchmark directory to resume.")
     parser.add_argument(
         "--retry-infrastructure-failures",
         action="store_true",
-        help="With --resume, rerun only tasks whose saved result is infrastructure_failure.",
+        default=None,
+        help="With --resume, rerun saved infrastructure failures (the default).",
+    )
+    parser.add_argument(
+        "--skip-infrastructure-failures",
+        action="store_false",
+        dest="retry_infrastructure_failures",
+        help="With --resume, keep saved infrastructure failures instead of rerunning them.",
+    )
+    parser.add_argument(
+        "--retry-transient-generation-failures",
+        action="store_true",
+        default=None,
+        help="With --resume, rerun saved truncated model outputs (the default).",
+    )
+    parser.add_argument(
+        "--skip-transient-generation-failures",
+        action="store_false",
+        dest="retry_transient_generation_failures",
+        help="With --resume, keep saved truncated-output failures.",
     )
     parser.add_argument("--continue-on-infrastructure-failure", action="store_true")
     parser.add_argument("proof_args", nargs=argparse.REMAINDER)
@@ -49,6 +74,16 @@ def main(argv: list[str] | None = None) -> int:
     proof_args = list(args.proof_args)
     if proof_args[:1] == ["--"]:
         proof_args.pop(0)
+    proof_args_has_execution_mode = any(
+        arg == "--execution-mode" or arg.startswith("--execution-mode=")
+        for arg in proof_args
+    )
+    if proof_args_has_execution_mode and args.execution_mode is not None:
+        raise SystemExit(
+            "Specify --execution-mode either before or after `--`, not both."
+        )
+    if args.execution_mode is not None:
+        proof_args[0:0] = ["--execution-mode", args.execution_mode]
     if args.resume:
         run_root = _rooted(args.resume)
         resume = True
@@ -73,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             resume=resume,
             retry_infrastructure_failures=args.retry_infrastructure_failures,
+            retry_transient_generation_failures=(
+                args.retry_transient_generation_failures
+            ),
             continue_on_infrastructure_failure=args.continue_on_infrastructure_failure,
             progress=progress,
         )

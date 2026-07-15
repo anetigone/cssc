@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+
+import scripts.minif2f_benchmark_run as benchmark_cli
 
 from agent.benchmarks.minif2f import (
     MiniF2FError,
@@ -287,6 +290,9 @@ theorem synthetic_task : True := by
     result = json.loads((run_root / "tasks" / "valid_task" / "result.json").read_text())
     assert result["ok"] is True
     assert (run_root / "tasks" / "valid_task" / "trace.jsonl").is_file()
+    assert json.loads((run_root / "summary.json").read_text())["execution_mode"] == (
+        "minimal"
+    )
 
     with (
         patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
@@ -315,6 +321,8 @@ theorem synthetic_task : True := by
             "infrastructure_failure": False,
         }
     )
+    saved.pop("last_category", None)
+    saved.pop("last_message", None)
     result_path.write_text(json.dumps(saved))
     recounted = run_minif2f_benchmark(
         output,
@@ -323,9 +331,19 @@ theorem synthetic_task : True := by
         split="valid",
         proof_args=("--candidate", "trivial"),
         resume=True,
+        retry_infrastructure_failures=False,
     )
     assert recounted.failed == 0
     assert recounted.infrastructure_failures == 1
+    recounted_payload = json.loads((run_root / "summary.json").read_text())
+    assert recounted_payload["failed_tasks"] == []
+    assert recounted_payload["infrastructure_failure_tasks"] == [
+        {
+            "kind": None,
+            "stop_reason": "generation:provider_error",
+            "task_id": "valid_task",
+        }
+    ]
 
     with (
         patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
@@ -339,12 +357,67 @@ theorem synthetic_task : True := by
             split="valid",
             proof_args=("--candidate", "trivial"),
             resume=True,
-            retry_infrastructure_failures=True,
         )
     assert retried.accepted == 1
     assert retried.infrastructure_failures == 0
     assert retried.skipped == 0
     retry.assert_called_once()
+
+    saved = json.loads(result_path.read_text())
+    saved.update(
+        {
+            "ok": False,
+            "stop_reason": "generation:model_output_truncated",
+            "infrastructure_failure": False,
+            "generation_failures": [
+                {
+                    "reason": "model_output_truncated",
+                    "message": "Model produced no usable proof candidate.",
+                }
+            ],
+        }
+    )
+    saved.pop("last_category", None)
+    saved.pop("last_message", None)
+    result_path.write_text(json.dumps(saved))
+    ordinary_failure = run_minif2f_benchmark(
+        output,
+        root,
+        run_root,
+        split="valid",
+        proof_args=("--candidate", "trivial"),
+        resume=True,
+        retry_transient_generation_failures=False,
+    )
+    assert ordinary_failure.failed == 1
+    failure_summary = json.loads((run_root / "summary.json").read_text())
+    assert failure_summary["failed_tasks"] == [
+        {
+            "message": "Model produced no usable proof candidate.",
+            "stop_reason": "generation:model_output_truncated",
+            "task_id": "valid_task",
+        }
+    ]
+
+    with (
+        patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
+        patch("agent.benchmarks.minif2f_runner._prewarm"),
+        patch(
+            "agent.benchmarks.minif2f_runner._run_controller",
+            side_effect=accepted_result,
+        ) as retry_truncated,
+    ):
+        recovered = run_minif2f_benchmark(
+            output,
+            root,
+            run_root,
+            split="valid",
+            proof_args=("--candidate", "trivial"),
+            resume=True,
+        )
+    assert recovered.accepted == 1
+    assert recovered.failed == 0
+    retry_truncated.assert_called_once()
 
 
 def test_provider_generation_error_is_infrastructure_without_checker_attempts() -> None:
@@ -353,3 +426,38 @@ def test_provider_generation_error_is_infrastructure_without_checker_attempts() 
         True,
         "generation:provider_error",
     )
+
+
+def test_benchmark_cli_exposes_and_forwards_execution_mode(tmp_path: Path) -> None:
+    # Omission preserves the historical proof_args hash on resume; cssc prove
+    # itself supplies the minimal default.
+    assert benchmark_cli.build_parser().parse_args(
+        ["--split", "valid"]
+    ).execution_mode is None
+    summary = SimpleNamespace(
+        infrastructure_failures=0,
+        completed=1,
+        selected=1,
+        run_id="mode-test",
+        run_root=tmp_path / "run",
+        accepted=1,
+        failed=0,
+        skipped=0,
+    )
+    with patch.object(
+        benchmark_cli, "run_minif2f_benchmark", return_value=summary
+    ) as run:
+        exit_code = benchmark_cli.main(
+            [
+                "--split", "valid",
+                "--run-name", "mode-test",
+                "--execution-mode", "structured",
+                "--",
+                "--candidate", "trivial",
+            ]
+        )
+
+    assert exit_code == 0
+    assert run.call_args.kwargs["proof_args"] == [
+        "--execution-mode", "structured", "--candidate", "trivial"
+    ]

@@ -166,7 +166,7 @@ def build_final_result(
 ) -> ControllerResult:
     """Construct the result when the loop exits without an accepted proof."""
     reason = budget.exhausted_reason()
-    if reason is not None and not state.stop_reason.startswith("budget:"):
+    if reason is not None and state.stop_reason in {"", "budget"}:
         state.stop_reason = f"budget:{reason}"
     logger.info(
         "Controller run finished: task_id=%s accepted=False stop_reason=%s attempts=%d",

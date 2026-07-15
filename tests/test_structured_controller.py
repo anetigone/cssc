@@ -743,7 +743,11 @@ class StructuredControllerTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as tmp:
-            controller = self._controller(tmp, TruncatedGenerator())
+            controller = self._controller(
+                tmp,
+                TruncatedGenerator(),
+                budget=BudgetConfig(max_checks=8, max_model_calls=2),
+            )
             result = controller.run(_task())
 
         self.assertEqual(
@@ -752,8 +756,9 @@ class StructuredControllerTests(unittest.TestCase):
         self.assertEqual(
             result.metadata["workspace"]["branches"][0]["status"], "active"
         )
-        self.assertEqual(result.metrics.model_input_tokens, 11)
+        self.assertEqual(result.metrics.model_input_tokens, 22)
         self.assertEqual(result.metrics.model_output_tokens, 0)
+        self.assertEqual(len(result.metadata["generation_failures"]), 2)
 
     def test_assembly_reserves_its_own_check_budget(self) -> None:
         # max_checks=2: one attempt + the assembly recheck. The run must still

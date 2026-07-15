@@ -23,6 +23,14 @@ class ActionGenerationError(RuntimeError):
         self.metadata = dict(metadata or {})
 
 
+RETRYABLE_GENERATION_FAILURES = frozenset({"model_output_truncated"})
+
+
+def is_retryable_generation_failure(exc: ActionGenerationError) -> bool:
+    """Return whether another budgeted model request can recover the failure."""
+    return exc.reason in RETRYABLE_GENERATION_FAILURES
+
+
 @dataclass(frozen=True)
 class ActionCandidate:
     """One model- or heuristic-proposed proof edit."""

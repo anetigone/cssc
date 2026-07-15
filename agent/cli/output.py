@@ -42,6 +42,9 @@ def result_payload(result: ControllerResult, *, include_candidate_file: bool = T
         last = result.attempts[-1].check_result
         payload["last_category"] = last.category.value
         payload["last_message"] = last.parsed_feedback.message if last.parsed_feedback else ""
+    generation_failures = result.metadata.get("generation_failures")
+    if isinstance(generation_failures, (list, tuple)):
+        payload["generation_failures"] = list(generation_failures)
     sequence = result.metadata.get("task_sequence")
     if isinstance(sequence, (list, tuple)):
         payload["task_sequence"] = sequence

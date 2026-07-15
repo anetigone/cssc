@@ -10,6 +10,7 @@ from ..action import (
     ActionGenerationError,
     ActionGenerationRequest,
     ActionGenerator,
+    is_retryable_generation_failure,
 )
 from ..budget import BudgetConfig, BudgetManager
 from .context import maybe_retrieve, summarize_context
@@ -149,6 +150,12 @@ class ProofController:
                     task.task_id,
                     state.stop_reason,
                 )
+                if (
+                    is_retryable_generation_failure(exc)
+                    and self.budget.can_call_model()
+                ):
+                    state.stop_reason = ""
+                    continue
                 break
             _record_model_usage(state.model_usage, actions)
             if actions:
@@ -269,6 +276,7 @@ class ProofController:
                 "summarized_context": summarized_context,
                 "proof_memory": state.memory,
                 "budget": budget_snapshot,
+                "generation_failures": tuple(state.generation_failures),
             },
         )
 
