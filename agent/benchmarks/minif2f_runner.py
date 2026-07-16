@@ -116,6 +116,7 @@ def run_minif2f_benchmark(
     }
     config_hash = _sha256_json(config)
     run_id = root.name
+    selected_task_ids = [str(row["task_id"]) for row in rows]
     run_metadata_path = root / "run.json"
     if resume:
         if not run_metadata_path.is_file():
@@ -139,6 +140,9 @@ def run_minif2f_benchmark(
             },
         )
 
+    error_history = (
+        _load_error_history(root, selected_task_ids) if resume else []
+    )
     completed = accepted = failed = skipped = infrastructure_failures = 0
     if resume:
         for row in rows:
@@ -163,7 +167,7 @@ def run_minif2f_benchmark(
     if completed == len(rows):
         _write_summary(
             root, run_id, len(rows), completed, accepted, failed, skipped,
-            infrastructure_failures, [str(row["task_id"]) for row in rows], "complete",
+            infrastructure_failures, selected_task_ids, "complete", error_history,
         )
         metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
         metadata["status"] = "complete"
@@ -260,8 +264,9 @@ def run_minif2f_benchmark(
             _write_summary(
                 root, run_id, len(rows), completed, accepted, failed, skipped,
                 infrastructure_failures,
-                [str(selected_row["task_id"]) for selected_row in rows],
+                selected_task_ids,
                 "running",
+                error_history,
             )
             if progress:
                 progress(index, len(rows), task_id, "accepted" if result.accepted else "failed")
@@ -274,7 +279,7 @@ def run_minif2f_benchmark(
     status = "aborted_infrastructure" if aborted else "complete"
     _write_summary(
         root, run_id, len(rows), completed, accepted, failed, skipped,
-        infrastructure_failures, [str(row["task_id"]) for row in rows], status,
+        infrastructure_failures, selected_task_ids, status, error_history,
     )
     metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
     metadata["status"] = status
@@ -347,9 +352,23 @@ def _write_summary(
     infrastructure_failures: int,
     task_ids: Sequence[str],
     status: str,
+    prior_error_history: Sequence[dict[str, Any]] = (),
 ) -> None:
     failed_tasks, infrastructure_failure_tasks = _failure_task_details(
         root, task_ids
+    )
+    error_history = _merge_error_history(
+        prior_error_history,
+        (
+            *(
+                {**detail, "classification": "proof_or_generation"}
+                for detail in failed_tasks
+            ),
+            *(
+                {**detail, "classification": "infrastructure"}
+                for detail in infrastructure_failure_tasks
+            ),
+        ),
     )
     run_metadata = json.loads((root / "run.json").read_text(encoding="utf-8"))
     _atomic_json(
@@ -370,6 +389,7 @@ def _write_summary(
             "infrastructure_failures": infrastructure_failures,
             "failed_tasks": failed_tasks,
             "infrastructure_failure_tasks": infrastructure_failure_tasks,
+            "error_history": error_history,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -406,6 +426,60 @@ def _failure_task_details(
         else:
             failed.append(detail)
     return failed, infrastructure
+
+
+def _load_error_history(
+    root: Path, task_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    """Load durable prior errors before resume can overwrite task results."""
+    entries: list[dict[str, Any]] = []
+    summary_path = root / "summary.json"
+    if summary_path.is_file():
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        saved_history = summary.get("error_history")
+        if isinstance(saved_history, list):
+            entries.extend(item for item in saved_history if isinstance(item, dict))
+        for field, classification in (
+            ("failed_tasks", "proof_or_generation"),
+            ("infrastructure_failure_tasks", "infrastructure"),
+        ):
+            details = summary.get(field)
+            if isinstance(details, list):
+                entries.extend(
+                    {**item, "classification": classification}
+                    for item in details
+                    if isinstance(item, dict)
+                )
+
+    failed_tasks, infrastructure_tasks = _failure_task_details(root, task_ids)
+    entries.extend(
+        {**detail, "classification": "proof_or_generation"}
+        for detail in failed_tasks
+    )
+    entries.extend(
+        {**detail, "classification": "infrastructure"}
+        for detail in infrastructure_tasks
+    )
+    return _merge_error_history((), entries)
+
+
+def _merge_error_history(
+    previous: Sequence[dict[str, Any]],
+    current: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Preserve unique errors in stable first-seen order across resumes."""
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in (*previous, *current):
+        normalized = dict(entry)
+        key = json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    return merged
 
 
 def _execution_mode_from_proof_args(proof_args: Sequence[str]) -> str:

@@ -344,6 +344,14 @@ theorem synthetic_task : True := by
             "task_id": "valid_task",
         }
     ]
+    assert recounted_payload["error_history"] == [
+        {
+            "classification": "infrastructure",
+            "kind": None,
+            "stop_reason": "generation:provider_error",
+            "task_id": "valid_task",
+        }
+    ]
 
     with (
         patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
@@ -362,6 +370,11 @@ theorem synthetic_task : True := by
     assert retried.infrastructure_failures == 0
     assert retried.skipped == 0
     retry.assert_called_once()
+    retried_summary = json.loads((run_root / "summary.json").read_text())
+    assert retried_summary["infrastructure_failure_tasks"] == []
+    assert retried_summary["error_history"][0]["stop_reason"] == (
+        "generation:provider_error"
+    )
 
     saved = json.loads(result_path.read_text())
     saved.update(
@@ -398,6 +411,10 @@ theorem synthetic_task : True := by
             "task_id": "valid_task",
         }
     ]
+    assert [item["stop_reason"] for item in failure_summary["error_history"]] == [
+        "generation:provider_error",
+        "generation:model_output_truncated",
+    ]
 
     with (
         patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
@@ -418,6 +435,12 @@ theorem synthetic_task : True := by
     assert recovered.accepted == 1
     assert recovered.failed == 0
     retry_truncated.assert_called_once()
+    recovered_summary = json.loads((run_root / "summary.json").read_text())
+    assert recovered_summary["failed_tasks"] == []
+    assert [item["stop_reason"] for item in recovered_summary["error_history"]] == [
+        "generation:provider_error",
+        "generation:model_output_truncated",
+    ]
 
 
 def test_provider_generation_error_is_infrastructure_without_checker_attempts() -> None:

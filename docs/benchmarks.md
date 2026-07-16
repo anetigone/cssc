@@ -68,6 +68,8 @@ benchmark/
 - runner 不修改 upstream checkout。
 - manifest/provenance 必须能从冻结 source 重新生成和校验。
 - summary 是派生视图；发生冲突时，以 per-task result、trace 和 provenance 为准。
+- `summary.json.error_history` 在 resume 间持久保留去重后的既往错误；即使题目随后重跑成功，
+  当前 `failed_tasks` 会清空，但对应的历史错误不会丢失。
 
 ## 新 Benchmark Adapter 契约
 
