@@ -291,8 +291,9 @@ python scripts/minif2f_benchmark_run.py \
   --lean-timeout 300 --lean-server-startup-timeout 300
 ```
 
-每次 summary 更新会同时生成运行根目录的 `README.md` 和 `task-index.csv`。前者只展示当前失败与
-pending 任务，后者提供全部任务的可排序状态索引；历史失败仍单独保存在 `summary.json#error_history`。
+`summary.json` 每完成一题原子更新；运行根目录的 `README.md` 和 `task-index.csv` 每 10 题及运行结束时
+刷新，避免 Windows 上的重复全量扫描和频繁 `fsync`。前者只展示当前失败与 pending 任务，后者提供
+全部任务的可排序状态索引；历史失败仍单独保存在 `summary.json#error_history`。
 对于更新前创建或仍由旧进程执行的 run，可随时无副作用地刷新索引：
 
 ```bash

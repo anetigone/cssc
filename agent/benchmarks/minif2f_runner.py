@@ -41,6 +41,8 @@ from .minif2f_run_report import (
     write_summary as _write_summary,
 )
 
+RUN_INDEX_UPDATE_INTERVAL = 10
+
 
 @dataclass(frozen=True)
 class MiniF2FRunSummary:
@@ -125,12 +127,19 @@ def run_minif2f_benchmark(
     run_id = root.name
     selected_task_ids = [str(row["task_id"]) for row in rows]
     run_metadata_path = root / "run.json"
+    result_payloads: dict[str, dict[str, Any]] = {}
     if resume:
         if not run_metadata_path.is_file():
             raise MiniF2FError(f"cannot resume: missing {run_metadata_path}")
         previous = json.loads(run_metadata_path.read_text(encoding="utf-8"))
         if previous.get("config_sha256") != config_hash:
             raise MiniF2FError("resume configuration differs from the existing run")
+        for task_id in selected_task_ids:
+            result_path = root / "tasks" / task_id / "result.json"
+            if result_path.is_file():
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    result_payloads[task_id] = payload
     else:
         if root.exists():
             raise MiniF2FError(f"run directory already exists: {root}")
@@ -148,15 +157,21 @@ def run_minif2f_benchmark(
         )
 
     error_history = (
-        _load_error_history(root, selected_task_ids) if resume else []
+        _load_error_history(
+            root,
+            selected_task_ids,
+            result_payloads=result_payloads,
+        )
+        if resume
+        else []
     )
     completed = accepted = failed = skipped = infrastructure_failures = 0
     if resume:
         for row in rows:
-            result_path = root / "tasks" / str(row["task_id"]) / "result.json"
-            if not result_path.is_file():
+            task_id = str(row["task_id"])
+            previous_result = result_payloads.get(task_id)
+            if previous_result is None:
                 continue
-            previous_result = json.loads(result_path.read_text(encoding="utf-8"))
             infrastructure = _saved_result_is_infrastructure(previous_result)
             if (
                 (retry_infrastructure_failures and infrastructure)
@@ -175,6 +190,7 @@ def run_minif2f_benchmark(
         _write_summary(
             root, run_id, len(rows), completed, accepted, failed, skipped,
             infrastructure_failures, selected_task_ids, "complete", error_history,
+            result_payloads=result_payloads,
         )
         metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
         metadata["status"] = "complete"
@@ -217,8 +233,8 @@ def run_minif2f_benchmark(
             task_id = str(row["task_id"])
             task_root = root / "tasks" / task_id
             result_path = task_root / "result.json"
-            if resume and result_path.is_file():
-                previous_result = json.loads(result_path.read_text(encoding="utf-8"))
+            if resume and task_id in result_payloads:
+                previous_result = result_payloads[task_id]
                 if not (
                     (
                         retry_infrastructure_failures
@@ -264,6 +280,7 @@ def run_minif2f_benchmark(
             payload["infrastructure_failure"] = infrastructure
             payload["infrastructure_failure_kind"] = infrastructure_kind
             _atomic_json(result_path, payload)
+            result_payloads[task_id] = payload
             completed += 1
             accepted += int(result.accepted)
             failed += int(not result.accepted and not infrastructure)
@@ -274,6 +291,10 @@ def run_minif2f_benchmark(
                 selected_task_ids,
                 "running",
                 error_history,
+                result_payloads=result_payloads,
+                write_index=(
+                    completed % RUN_INDEX_UPDATE_INTERVAL == 0
+                ),
             )
             if progress:
                 progress(index, len(rows), task_id, "accepted" if result.accepted else "failed")
@@ -287,6 +308,7 @@ def run_minif2f_benchmark(
     _write_summary(
         root, run_id, len(rows), completed, accepted, failed, skipped,
         infrastructure_failures, selected_task_ids, status, error_history,
+        result_payloads=result_payloads,
     )
     metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
     metadata["status"] = status

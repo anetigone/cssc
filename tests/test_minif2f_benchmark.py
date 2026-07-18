@@ -24,6 +24,7 @@ from agent.benchmarks.minif2f_runner import (
     _classify_infrastructure_failure,
     run_minif2f_benchmark,
 )
+from agent.benchmarks.minif2f_run_report import write_summary
 
 
 class _AcceptingChecker:
@@ -502,3 +503,45 @@ def test_benchmark_cli_refreshes_existing_run_index(tmp_path: Path) -> None:
 
     assert exit_code == 0
     refresh.assert_called_once_with(run_root.resolve())
+
+
+def test_summary_uses_cached_results_without_rereading_task_files(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run"
+    task_root = run_root / "tasks" / "cached_task"
+    task_root.mkdir(parents=True)
+    (run_root / "run.json").write_text(
+        json.dumps({"proof_args": []}), encoding="utf-8"
+    )
+    # If report generation rereads the task file, this deliberately invalid
+    # payload makes the test fail.
+    (task_root / "result.json").write_text("not json", encoding="utf-8")
+    cached = {
+        "cached_task": {
+            "ok": True,
+            "stop_reason": "accepted",
+            "attempts": 1,
+            "checks_used": 1,
+            "model_calls_used": 1,
+        }
+    }
+
+    write_summary(
+        run_root,
+        "cached-run",
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        ("cached_task",),
+        "complete",
+        result_payloads=cached,
+    )
+
+    assert json.loads((run_root / "summary.json").read_text())["accepted"] == 1
+    assert "cached_task,accepted,accepted" in (
+        run_root / "task-index.csv"
+    ).read_text(encoding="utf-8")

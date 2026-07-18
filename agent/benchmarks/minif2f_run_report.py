@@ -9,7 +9,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from agent.proof_system.base import DiagnosticCategory
 
@@ -67,9 +67,12 @@ def write_summary(
     task_ids: Sequence[str],
     status: str,
     prior_error_history: Sequence[dict[str, Any]] = (),
+    *,
+    result_payloads: Mapping[str, Mapping[str, Any]] | None = None,
+    write_index: bool = True,
 ) -> None:
     failed_tasks, infrastructure_failure_tasks = failure_task_details(
-        root, task_ids
+        root, task_ids, result_payloads=result_payloads
     )
     error_history = merge_error_history(
         prior_error_history,
@@ -105,7 +108,13 @@ def write_summary(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     atomic_json(root / "summary.json", summary_payload)
-    write_run_index(root, task_ids, summary_payload)
+    if write_index:
+        write_run_index(
+            root,
+            task_ids,
+            summary_payload,
+            result_payloads=result_payloads,
+        )
 
 
 def refresh_minif2f_run_index(root: str | Path) -> None:
@@ -129,8 +138,12 @@ def write_run_index(
     root: Path,
     task_ids: Sequence[str],
     summary: dict[str, Any],
+    *,
+    result_payloads: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
-    rows = task_index_rows(root, task_ids)
+    rows = task_index_rows(
+        root, task_ids, result_payloads=result_payloads
+    )
     columns = (
         "index",
         "task_id",
@@ -153,16 +166,21 @@ def write_run_index(
 
 
 def task_index_rows(
-    root: Path, task_ids: Sequence[str]
+    root: Path,
+    task_ids: Sequence[str],
+    *,
+    result_payloads: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, task_id in enumerate(task_ids, start=1):
         task_root = root / "tasks" / task_id
         result_path = task_root / "result.json"
         trace_path = task_root / "trace.jsonl"
-        payload: dict[str, Any] = {}
-        if result_path.is_file():
-            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload = _result_payload(
+            result_path,
+            task_id,
+            result_payloads=result_payloads,
+        )
         status, classification = task_status(payload)
         message = payload.get("last_message", "")
         generation_failures = payload.get("generation_failures")
@@ -276,15 +294,22 @@ def markdown_cell(value: Any) -> str:
 
 
 def failure_task_details(
-    root: Path, task_ids: Sequence[str]
+    root: Path,
+    task_ids: Sequence[str],
+    *,
+    result_payloads: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     failed: list[dict[str, Any]] = []
     infrastructure: list[dict[str, Any]] = []
     for task_id in task_ids:
         result_path = root / "tasks" / task_id / "result.json"
-        if not result_path.is_file():
+        payload = _result_payload(
+            result_path,
+            task_id,
+            result_payloads=result_payloads,
+        )
+        if not payload:
             continue
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
         if payload.get("ok"):
             continue
         detail: dict[str, Any] = {
@@ -309,7 +334,10 @@ def failure_task_details(
 
 
 def load_error_history(
-    root: Path, task_ids: Sequence[str]
+    root: Path,
+    task_ids: Sequence[str],
+    *,
+    result_payloads: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Load durable prior errors before resume can overwrite task results."""
     entries: list[dict[str, Any]] = []
@@ -333,7 +361,9 @@ def load_error_history(
                     if isinstance(item, dict)
                 )
 
-    failed_tasks, infrastructure_tasks = failure_task_details(root, task_ids)
+    failed_tasks, infrastructure_tasks = failure_task_details(
+        root, task_ids, result_payloads=result_payloads
+    )
     entries.extend(
         {**detail, "classification": "proof_or_generation"}
         for detail in failed_tasks
@@ -343,6 +373,20 @@ def load_error_history(
         for detail in infrastructure_tasks
     )
     return merge_error_history((), entries)
+
+
+def _result_payload(
+    result_path: Path,
+    task_id: str,
+    *,
+    result_payloads: Mapping[str, Mapping[str, Any]] | None,
+) -> Mapping[str, Any]:
+    if result_payloads is not None:
+        return result_payloads.get(task_id, {})
+    if not result_path.is_file():
+        return {}
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
 
 
 def merge_error_history(
