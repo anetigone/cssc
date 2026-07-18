@@ -161,6 +161,42 @@ class ChatActionGeneratorTests(unittest.TestCase):
         self.assertEqual(usage["output_tokens"], 0)
         self.assertEqual(usage["reasoning_tokens"], 200)
 
+    def test_reasoning_usage_detects_truncation_without_length_reason(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "internal reasoning",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 200,
+                    "total_tokens": 300,
+                    "completion_tokens_details": {"reasoning_tokens": 200},
+                },
+            }
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        with self.assertRaises(ActionGenerationError) as raised:
+            generator.generate(
+                ActionGenerationRequest(
+                    task=ProofTask(
+                        "sample", "theorem sample : True := by\n  {{proof}}"
+                    ),
+                    attempt_index=0,
+                )
+            )
+
+        self.assertEqual(raised.exception.reason, "model_output_truncated")
+
     def test_generates_action_from_chat_completion_response(self) -> None:
         transport = RecordingTransport(
             {
@@ -989,6 +1025,42 @@ class ChatStructuredActionGeneratorTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.reason, "invalid_structured_output")
+
+    def test_reasoning_only_structured_output_is_truncation(self) -> None:
+        transport = RecordingTransport(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "internal reasoning",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 50,
+                    "completion_tokens": 100,
+                    "completion_tokens_details": {"reasoning_tokens": 100},
+                },
+            }
+        )
+        generator = ChatStructuredActionGenerator(
+            ChatConfig(api_key="key", model="model"), transport=transport
+        )
+
+        with self.assertRaises(ActionGenerationError) as raised:
+            generator.generate(
+                ActionGenerationRequest(
+                    task=ProofTask(
+                        "sample", "theorem sample : True := by\n  {{proof}}"
+                    ),
+                    attempt_index=0,
+                    metadata={"branch_id": "sample:root"},
+                )
+            )
+
+        self.assertEqual(raised.exception.reason, "model_output_truncated")
 
 
 if __name__ == "__main__":

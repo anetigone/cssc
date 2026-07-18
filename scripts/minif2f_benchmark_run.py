@@ -13,7 +13,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.benchmarks.minif2f import MiniF2FError
-from agent.benchmarks.minif2f_runner import run_minif2f_benchmark
+from agent.benchmarks.minif2f_runner import (
+    refresh_minif2f_run_index,
+    run_minif2f_benchmark,
+)
 
 
 def _rooted(value: str) -> Path:
@@ -28,7 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--prepared-root", default="benchmark/generated/miniF2F")
     parser.add_argument("--project-root", default="benchmark/miniF2F")
-    parser.add_argument("--split", choices=("valid", "test"), required=True)
+    parser.add_argument("--split", choices=("valid", "test"))
+    parser.add_argument(
+        "--refresh-index",
+        metavar="RUN_ROOT",
+        help="Regenerate README.md and task-index.csv for an existing run, then exit.",
+    )
     parser.add_argument("--task-id", action="append", default=[])
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
@@ -71,6 +79,28 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.refresh_index:
+        run_root = _rooted(args.refresh_index)
+        try:
+            refresh_minif2f_run_index(run_root)
+        except (MiniF2FError, OSError, ValueError, json.JSONDecodeError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
+            return 2
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "run_root": str(run_root),
+                    "readme": str(run_root / "README.md"),
+                    "task_index": str(run_root / "task-index.csv"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.split is None:
+        raise SystemExit("--split is required unless --refresh-index is used.")
     proof_args = list(args.proof_args)
     if proof_args[:1] == ["--"]:
         proof_args.pop(0)

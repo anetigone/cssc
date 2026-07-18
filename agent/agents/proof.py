@@ -24,6 +24,7 @@ from .openai import (
     UrllibChatTransport,
     chat_completions_url,
     choice_content,
+    output_budget_was_exhausted,
 )
 from .tools import Tool
 from .tools.loop import (
@@ -163,7 +164,7 @@ class ChatActionGenerator(ActionGenerator):
             )
             reason = (
                 "model_output_truncated"
-                if "length" in finish_reasons
+                if output_budget_was_exhausted(choices, usage_metadata)
                 else "empty_model_output"
             )
             logger.warning(

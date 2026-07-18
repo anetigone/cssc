@@ -96,6 +96,41 @@ def merge_token_usage(*usages: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+def output_budget_was_exhausted(
+    choices: Any,
+    token_usage: Mapping[str, Any],
+) -> bool:
+    """Detect a response whose budget was consumed before visible output."""
+    finish_reasons = (
+        {
+            str(choice.get("finish_reason", "")).strip().lower()
+            for choice in choices
+            if isinstance(choice, Mapping)
+        }
+        if isinstance(choices, (list, tuple))
+        else set()
+    )
+    if finish_reasons & {
+        "length",
+        "max_tokens",
+        "max_output_tokens",
+        "token_limit",
+    }:
+        return True
+
+    visible_output = _usage_int(token_usage.get("output_tokens"))
+    reasoning = _usage_int(token_usage.get("reasoning_tokens"))
+    provider_completion = _usage_int(
+        token_usage.get("provider_completion_tokens")
+    )
+    return (
+        visible_output == 0
+        and reasoning > 0
+        and provider_completion > 0
+        and reasoning >= provider_completion
+    )
+
+
 def _usage_int(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -371,28 +373,189 @@ def _write_summary(
         ),
     )
     run_metadata = json.loads((root / "run.json").read_text(encoding="utf-8"))
-    _atomic_json(
-        root / "summary.json",
-        {
-            "schema_version": 1,
-            "suite": "minif2f",
-            "run_id": run_id,
-            "status": status,
-            "execution_mode": _execution_mode_from_proof_args(
-                run_metadata.get("proof_args", ())
-            ),
-            "selected": selected,
-            "completed": completed,
-            "accepted": accepted,
-            "failed": failed,
-            "skipped": skipped,
-            "infrastructure_failures": infrastructure_failures,
-            "failed_tasks": failed_tasks,
-            "infrastructure_failure_tasks": infrastructure_failure_tasks,
-            "error_history": error_history,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        },
+    summary_payload = {
+        "schema_version": 1,
+        "suite": "minif2f",
+        "run_id": run_id,
+        "status": status,
+        "execution_mode": _execution_mode_from_proof_args(
+            run_metadata.get("proof_args", ())
+        ),
+        "selected": selected,
+        "completed": completed,
+        "accepted": accepted,
+        "failed": failed,
+        "skipped": skipped,
+        "infrastructure_failures": infrastructure_failures,
+        "failed_tasks": failed_tasks,
+        "infrastructure_failure_tasks": infrastructure_failure_tasks,
+        "error_history": error_history,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _atomic_json(root / "summary.json", summary_payload)
+    _write_run_index(root, task_ids, summary_payload)
+
+
+def refresh_minif2f_run_index(root: str | Path) -> None:
+    """Regenerate the human-readable index for an existing benchmark run."""
+    run_root = Path(root).resolve()
+    run_metadata = json.loads(
+        (run_root / "run.json").read_text(encoding="utf-8")
     )
+    summary = json.loads(
+        (run_root / "summary.json").read_text(encoding="utf-8")
+    )
+    task_ids = run_metadata.get("task_ids")
+    if not isinstance(task_ids, list) or not all(
+        isinstance(task_id, str) for task_id in task_ids
+    ):
+        raise MiniF2FError("run.json does not contain a valid task_ids list")
+    _write_run_index(run_root, task_ids, summary)
+
+
+def _write_run_index(
+    root: Path,
+    task_ids: Sequence[str],
+    summary: dict[str, Any],
+) -> None:
+    rows = _task_index_rows(root, task_ids)
+    columns = (
+        "index",
+        "task_id",
+        "status",
+        "classification",
+        "attempts",
+        "checks_used",
+        "model_calls_used",
+        "stop_reason",
+        "message",
+        "result_path",
+        "trace_path",
+    )
+    csv_buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(csv_buffer, fieldnames=columns, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    _atomic_text(root / "task-index.csv", csv_buffer.getvalue())
+    _atomic_text(root / "README.md", _run_index_markdown(root, rows, summary))
+
+
+def _task_index_rows(
+    root: Path, task_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, task_id in enumerate(task_ids, start=1):
+        task_root = root / "tasks" / task_id
+        result_path = task_root / "result.json"
+        trace_path = task_root / "trace.jsonl"
+        payload: dict[str, Any] = {}
+        if result_path.is_file():
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        status, classification = _task_status(payload)
+        message = payload.get("last_message", "")
+        generation_failures = payload.get("generation_failures")
+        if isinstance(generation_failures, list) and generation_failures:
+            last_failure = generation_failures[-1]
+            if isinstance(last_failure, dict):
+                message = last_failure.get("message", message)
+        rows.append(
+            {
+                "index": index,
+                "task_id": task_id,
+                "status": status,
+                "classification": classification,
+                "attempts": payload.get("attempts", ""),
+                "checks_used": payload.get("checks_used", ""),
+                "model_calls_used": payload.get("model_calls_used", ""),
+                "stop_reason": payload.get("stop_reason", ""),
+                "message": str(message or "").replace("\r", " ").replace("\n", " "),
+                "result_path": (
+                    f"tasks/{task_id}/result.json" if result_path.is_file() else ""
+                ),
+                "trace_path": (
+                    f"tasks/{task_id}/trace.jsonl" if trace_path.is_file() else ""
+                ),
+            }
+        )
+    return rows
+
+
+def _task_status(payload: dict[str, Any]) -> tuple[str, str]:
+    if not payload:
+        return "pending", "pending"
+    if payload.get("ok"):
+        return "accepted", "accepted"
+    if _saved_result_is_infrastructure(payload):
+        return "infrastructure_failure", "infrastructure"
+    stop_reason = str(payload.get("stop_reason", ""))
+    if stop_reason.startswith("generation:"):
+        return "generation_failure", "proof_or_generation"
+    return "proof_failure", "proof_or_generation"
+
+
+def _run_index_markdown(
+    root: Path,
+    rows: Sequence[dict[str, Any]],
+    summary: dict[str, Any],
+) -> str:
+    current_failures = [
+        row for row in rows
+        if row["status"] not in {"accepted", "pending"}
+    ]
+    pending = [row for row in rows if row["status"] == "pending"]
+    lines = [
+        f"# miniF2F run `{summary.get('run_id', root.name)}`",
+        "",
+        f"- Status: `{summary.get('status', 'unknown')}`",
+        f"- Progress: {summary.get('completed', 0)} / "
+        f"{summary.get('selected', len(rows))}",
+        f"- Accepted: {summary.get('accepted', 0)}",
+        f"- Proof/generation failures: {summary.get('failed', 0)}",
+        f"- Infrastructure failures: "
+        f"{summary.get('infrastructure_failures', 0)}",
+        f"- Pending: {len(pending)}",
+        "",
+        "All tasks are listed in [task-index.csv](task-index.csv). "
+        "The tables below show current state only; `summary.json#error_history` "
+        "retains failures from earlier resume attempts.",
+        "",
+        "## Current failures",
+        "",
+    ]
+    if current_failures:
+        lines.extend(
+            [
+                "| Task | Status | Stop reason | Message |",
+                "| --- | --- | --- | --- |",
+                *(
+                    "| [{task}](tasks/{task}/) | `{status}` | `{reason}` | "
+                    "{message} |".format(
+                        task=row["task_id"],
+                        status=row["status"],
+                        reason=row["stop_reason"] or "",
+                        message=_markdown_cell(row["message"]),
+                    )
+                    for row in current_failures
+                ),
+            ]
+        )
+    else:
+        lines.append("None.")
+    lines.extend(["", "## Pending tasks", ""])
+    if pending:
+        lines.extend(
+            f"- [{row['task_id']}](tasks/{row['task_id']}/)"
+            for row in pending
+        )
+    else:
+        lines.append("None.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _markdown_cell(value: Any) -> str:
+    text = str(value or "").replace("|", r"\|").strip()
+    return text if len(text) <= 240 else text[:237] + "..."
 
 
 def _failure_task_details(
@@ -509,6 +672,23 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)

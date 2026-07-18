@@ -42,6 +42,7 @@ from .openai import (
     UrllibChatTransport,
     chat_completions_url,
     choice_content,
+    output_budget_was_exhausted,
 )
 from .proof import _build_user_prompt, _should_allow_tools
 from .tools import Tool
@@ -148,17 +149,28 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
                 errors.append(str(exc))
 
         if not proposals:
+            reason = (
+                "model_output_truncated"
+                if output_budget_was_exhausted(choices, usage_metadata)
+                else "invalid_structured_output"
+            )
             logger.warning(
                 "Structured model response produced no valid proposals: model=%s "
-                "task_id=%s errors=%s token_usage=%s",
+                "task_id=%s reason=%s errors=%s token_usage=%s",
                 self.config.model,
                 request.task.task_id,
+                reason,
                 errors,
                 usage_metadata,
             )
             raise ActionGenerationError(
-                "invalid_structured_output",
-                "Model produced no valid structured proposals.",
+                reason,
+                (
+                    "Model exhausted its output budget before producing a "
+                    "structured proposal."
+                    if reason == "model_output_truncated"
+                    else "Model produced no valid structured proposals."
+                ),
                 metadata={
                     "model": self.config.model,
                     "errors": tuple(errors),

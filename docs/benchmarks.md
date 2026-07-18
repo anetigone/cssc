@@ -279,6 +279,15 @@ python scripts/minif2f_benchmark_run.py \
   --lean-timeout 300 --lean-server-startup-timeout 300
 ```
 
+每次 summary 更新会同时生成运行根目录的 `README.md` 和 `task-index.csv`。前者只展示当前失败与
+pending 任务，后者提供全部任务的可排序状态索引；历史失败仍单独保存在 `summary.json#error_history`。
+对于更新前创建或仍由旧进程执行的 run，可随时无副作用地刷新索引：
+
+```bash
+python scripts/minif2f_benchmark_run.py \
+  --refresh-index .runs/benchmarks/minif2f/minif2f-valid-pilot
+```
+
 ## 历史兼容入口与 action arms
 
 - `phase8_benchmark_*` 保留原 trace/replay backend 名称。

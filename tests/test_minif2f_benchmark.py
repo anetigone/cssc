@@ -293,6 +293,12 @@ theorem synthetic_task : True := by
     assert json.loads((run_root / "summary.json").read_text())["execution_mode"] == (
         "minimal"
     )
+    run_readme = (run_root / "README.md").read_text(encoding="utf-8")
+    assert "Progress: 1 / 1" in run_readme
+    assert "Current failures" in run_readme
+    task_index = (run_root / "task-index.csv").read_text(encoding="utf-8")
+    assert "task_id,status,classification" in task_index
+    assert "valid_task,accepted,accepted" in task_index
 
     with (
         patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
@@ -415,6 +421,9 @@ theorem synthetic_task : True := by
         "generation:provider_error",
         "generation:model_output_truncated",
     ]
+    run_readme = (run_root / "README.md").read_text(encoding="utf-8")
+    assert "valid_task" in run_readme
+    assert "generation_failure" in run_readme
 
     with (
         patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
@@ -484,3 +493,12 @@ def test_benchmark_cli_exposes_and_forwards_execution_mode(tmp_path: Path) -> No
     assert run.call_args.kwargs["proof_args"] == [
         "--execution-mode", "structured", "--candidate", "trivial"
     ]
+
+
+def test_benchmark_cli_refreshes_existing_run_index(tmp_path: Path) -> None:
+    run_root = tmp_path / "existing-run"
+    with patch.object(benchmark_cli, "refresh_minif2f_run_index") as refresh:
+        exit_code = benchmark_cli.main(["--refresh-index", str(run_root)])
+
+    assert exit_code == 0
+    refresh.assert_called_once_with(run_root.resolve())
