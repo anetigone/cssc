@@ -217,6 +217,18 @@ controller 配置。不得依据 arm 成功率筛题。
 
 ## 当前 miniF2F 实例
 
+### 实现模块边界
+
+- `agent/benchmarks/minif2f.py`：兼容入口，以及 prepared suite 写入/校验。
+- `agent/benchmarks/minif2f_source.py`：上游源码布局、theorem 提取与 scaffold 构造。
+- `agent/benchmarks/minif2f_eligibility.py`：eligibility 运行编排。
+- `agent/benchmarks/minif2f_eligibility_support.py`：候选物化、跨题引用审计与 evidence 写入。
+- `agent/benchmarks/minif2f_runner.py`：persistent Lean server 生命周期与逐题执行。
+- `agent/benchmarks/minif2f_run_report.py`：结果分类、resume 历史、summary 和人类可读索引。
+
+外部调用继续使用原有 `minif2f`、`minif2f_eligibility` 和 `minif2f_runner` 导入路径；辅助模块不是新的
+公共入口。
+
 ### 外部数据与准备
 
 Google DeepMind Lean 4 miniF2F checkout 位于 `benchmark/miniF2F/`，生成数据位于

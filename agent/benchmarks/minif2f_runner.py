@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import json
-import os
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,24 +13,33 @@ from typing import Any, Callable, Sequence
 from agent.cli.app import _run_controller
 from agent.cli.output import result_payload
 from agent.cli.parser import build_parser as build_cli_parser
-from agent.proof_system.base import BudgetSlice, DiagnosticCategory
+from agent.proof_system.base import BudgetSlice
 from agent.proof_system.lean import LeanAdapter
 from agent.runtime.trace_store import JsonlTraceStore
 from agent.runtime.workspace import EphemeralCheckWorkspace
 from agent.tasks.task_builder import LeanTaskBuilder
 
 from .minif2f import MiniF2FError
-
-
-INFRASTRUCTURE_CATEGORIES = {
-    DiagnosticCategory.CHECKER_ERROR,
-    DiagnosticCategory.TIMEOUT,
-    DiagnosticCategory.TOOL_UNAVAILABLE,
-}
-INFRASTRUCTURE_STOP_REASONS = {
-    "generation:provider_error",
-    "tool_unavailable",
-}
+from .minif2f_run_report import (
+    INFRASTRUCTURE_CATEGORIES,
+    INFRASTRUCTURE_STOP_REASONS,
+    atomic_json as _atomic_json,
+    atomic_text as _atomic_text,
+    classify_infrastructure_failure as _classify_infrastructure_failure,
+    execution_mode_from_proof_args as _execution_mode_from_proof_args,
+    failure_task_details as _failure_task_details,
+    load_error_history as _load_error_history,
+    markdown_cell as _markdown_cell,
+    merge_error_history as _merge_error_history,
+    refresh_minif2f_run_index,
+    run_index_markdown as _run_index_markdown,
+    saved_result_is_infrastructure as _saved_result_is_infrastructure,
+    saved_result_is_transient_generation as _saved_result_is_transient_generation,
+    task_index_rows as _task_index_rows,
+    task_status as _task_status,
+    write_run_index as _write_run_index,
+    write_summary as _write_summary,
+)
 
 
 @dataclass(frozen=True)
@@ -299,34 +304,6 @@ def run_minif2f_benchmark(
     )
 
 
-def _classify_infrastructure_failure(result: Any) -> tuple[bool, str | None]:
-    """Classify failures that are external to mathematical/proof correctness."""
-    if result.stop_reason in INFRASTRUCTURE_STOP_REASONS:
-        return True, result.stop_reason
-    if result.stop_reason.startswith("generation:provider_"):
-        return True, result.stop_reason
-    if result.attempts:
-        category = result.attempts[-1].check_result.category
-        if category in INFRASTRUCTURE_CATEGORIES:
-            return True, f"checker:{category.value}"
-    return False, None
-
-
-def _saved_result_is_infrastructure(payload: dict[str, Any]) -> bool:
-    """Recognize both current results and pre-fix provider-error results."""
-    if payload.get("infrastructure_failure"):
-        return True
-    stop_reason = str(payload.get("stop_reason", ""))
-    return (
-        stop_reason in INFRASTRUCTURE_STOP_REASONS
-        or stop_reason.startswith("generation:provider_")
-    )
-
-
-def _saved_result_is_transient_generation(payload: dict[str, Any]) -> bool:
-    return payload.get("stop_reason") == "generation:model_output_truncated"
-
-
 def _prewarm(adapter: LeanAdapter, root: Path, *, timeout_seconds: float) -> None:
     root.mkdir(parents=True, exist_ok=True)
     path = root / "Prewarm.lean"
@@ -343,318 +320,6 @@ def _prewarm(adapter: LeanAdapter, root: Path, *, timeout_seconds: float) -> Non
         raise MiniF2FError("prewarm did not use the persistent Lean server")
 
 
-def _write_summary(
-    root: Path,
-    run_id: str,
-    selected: int,
-    completed: int,
-    accepted: int,
-    failed: int,
-    skipped: int,
-    infrastructure_failures: int,
-    task_ids: Sequence[str],
-    status: str,
-    prior_error_history: Sequence[dict[str, Any]] = (),
-) -> None:
-    failed_tasks, infrastructure_failure_tasks = _failure_task_details(
-        root, task_ids
-    )
-    error_history = _merge_error_history(
-        prior_error_history,
-        (
-            *(
-                {**detail, "classification": "proof_or_generation"}
-                for detail in failed_tasks
-            ),
-            *(
-                {**detail, "classification": "infrastructure"}
-                for detail in infrastructure_failure_tasks
-            ),
-        ),
-    )
-    run_metadata = json.loads((root / "run.json").read_text(encoding="utf-8"))
-    summary_payload = {
-        "schema_version": 1,
-        "suite": "minif2f",
-        "run_id": run_id,
-        "status": status,
-        "execution_mode": _execution_mode_from_proof_args(
-            run_metadata.get("proof_args", ())
-        ),
-        "selected": selected,
-        "completed": completed,
-        "accepted": accepted,
-        "failed": failed,
-        "skipped": skipped,
-        "infrastructure_failures": infrastructure_failures,
-        "failed_tasks": failed_tasks,
-        "infrastructure_failure_tasks": infrastructure_failure_tasks,
-        "error_history": error_history,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _atomic_json(root / "summary.json", summary_payload)
-    _write_run_index(root, task_ids, summary_payload)
-
-
-def refresh_minif2f_run_index(root: str | Path) -> None:
-    """Regenerate the human-readable index for an existing benchmark run."""
-    run_root = Path(root).resolve()
-    run_metadata = json.loads(
-        (run_root / "run.json").read_text(encoding="utf-8")
-    )
-    summary = json.loads(
-        (run_root / "summary.json").read_text(encoding="utf-8")
-    )
-    task_ids = run_metadata.get("task_ids")
-    if not isinstance(task_ids, list) or not all(
-        isinstance(task_id, str) for task_id in task_ids
-    ):
-        raise MiniF2FError("run.json does not contain a valid task_ids list")
-    _write_run_index(run_root, task_ids, summary)
-
-
-def _write_run_index(
-    root: Path,
-    task_ids: Sequence[str],
-    summary: dict[str, Any],
-) -> None:
-    rows = _task_index_rows(root, task_ids)
-    columns = (
-        "index",
-        "task_id",
-        "status",
-        "classification",
-        "attempts",
-        "checks_used",
-        "model_calls_used",
-        "stop_reason",
-        "message",
-        "result_path",
-        "trace_path",
-    )
-    csv_buffer = io.StringIO(newline="")
-    writer = csv.DictWriter(csv_buffer, fieldnames=columns, lineterminator="\n")
-    writer.writeheader()
-    writer.writerows(rows)
-    _atomic_text(root / "task-index.csv", csv_buffer.getvalue())
-    _atomic_text(root / "README.md", _run_index_markdown(root, rows, summary))
-
-
-def _task_index_rows(
-    root: Path, task_ids: Sequence[str]
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for index, task_id in enumerate(task_ids, start=1):
-        task_root = root / "tasks" / task_id
-        result_path = task_root / "result.json"
-        trace_path = task_root / "trace.jsonl"
-        payload: dict[str, Any] = {}
-        if result_path.is_file():
-            payload = json.loads(result_path.read_text(encoding="utf-8"))
-        status, classification = _task_status(payload)
-        message = payload.get("last_message", "")
-        generation_failures = payload.get("generation_failures")
-        if isinstance(generation_failures, list) and generation_failures:
-            last_failure = generation_failures[-1]
-            if isinstance(last_failure, dict):
-                message = last_failure.get("message", message)
-        rows.append(
-            {
-                "index": index,
-                "task_id": task_id,
-                "status": status,
-                "classification": classification,
-                "attempts": payload.get("attempts", ""),
-                "checks_used": payload.get("checks_used", ""),
-                "model_calls_used": payload.get("model_calls_used", ""),
-                "stop_reason": payload.get("stop_reason", ""),
-                "message": str(message or "").replace("\r", " ").replace("\n", " "),
-                "result_path": (
-                    f"tasks/{task_id}/result.json" if result_path.is_file() else ""
-                ),
-                "trace_path": (
-                    f"tasks/{task_id}/trace.jsonl" if trace_path.is_file() else ""
-                ),
-            }
-        )
-    return rows
-
-
-def _task_status(payload: dict[str, Any]) -> tuple[str, str]:
-    if not payload:
-        return "pending", "pending"
-    if payload.get("ok"):
-        return "accepted", "accepted"
-    if _saved_result_is_infrastructure(payload):
-        return "infrastructure_failure", "infrastructure"
-    stop_reason = str(payload.get("stop_reason", ""))
-    if stop_reason.startswith("generation:"):
-        return "generation_failure", "proof_or_generation"
-    return "proof_failure", "proof_or_generation"
-
-
-def _run_index_markdown(
-    root: Path,
-    rows: Sequence[dict[str, Any]],
-    summary: dict[str, Any],
-) -> str:
-    current_failures = [
-        row for row in rows
-        if row["status"] not in {"accepted", "pending"}
-    ]
-    pending = [row for row in rows if row["status"] == "pending"]
-    lines = [
-        f"# miniF2F run `{summary.get('run_id', root.name)}`",
-        "",
-        f"- Status: `{summary.get('status', 'unknown')}`",
-        f"- Progress: {summary.get('completed', 0)} / "
-        f"{summary.get('selected', len(rows))}",
-        f"- Accepted: {summary.get('accepted', 0)}",
-        f"- Proof/generation failures: {summary.get('failed', 0)}",
-        f"- Infrastructure failures: "
-        f"{summary.get('infrastructure_failures', 0)}",
-        f"- Pending: {len(pending)}",
-        "",
-        "All tasks are listed in [task-index.csv](task-index.csv). "
-        "The tables below show current state only; `summary.json#error_history` "
-        "retains failures from earlier resume attempts.",
-        "",
-        "## Current failures",
-        "",
-    ]
-    if current_failures:
-        lines.extend(
-            [
-                "| Task | Status | Stop reason | Message |",
-                "| --- | --- | --- | --- |",
-                *(
-                    "| [{task}](tasks/{task}/) | `{status}` | `{reason}` | "
-                    "{message} |".format(
-                        task=row["task_id"],
-                        status=row["status"],
-                        reason=row["stop_reason"] or "",
-                        message=_markdown_cell(row["message"]),
-                    )
-                    for row in current_failures
-                ),
-            ]
-        )
-    else:
-        lines.append("None.")
-    lines.extend(["", "## Pending tasks", ""])
-    if pending:
-        lines.extend(
-            f"- [{row['task_id']}](tasks/{row['task_id']}/)"
-            for row in pending
-        )
-    else:
-        lines.append("None.")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _markdown_cell(value: Any) -> str:
-    text = str(value or "").replace("|", r"\|").strip()
-    return text if len(text) <= 240 else text[:237] + "..."
-
-
-def _failure_task_details(
-    root: Path, task_ids: Sequence[str]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    failed: list[dict[str, Any]] = []
-    infrastructure: list[dict[str, Any]] = []
-    for task_id in task_ids:
-        result_path = root / "tasks" / task_id / "result.json"
-        if not result_path.is_file():
-            continue
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
-        if payload.get("ok"):
-            continue
-        detail: dict[str, Any] = {
-            "task_id": task_id,
-            "stop_reason": payload.get("stop_reason"),
-        }
-        if payload.get("last_category"):
-            detail["last_category"] = payload["last_category"]
-        if payload.get("last_message"):
-            detail["message"] = payload["last_message"]
-        generation_failures = payload.get("generation_failures")
-        if isinstance(generation_failures, list) and generation_failures:
-            last_failure = generation_failures[-1]
-            if isinstance(last_failure, dict) and last_failure.get("message"):
-                detail["message"] = last_failure["message"]
-        if _saved_result_is_infrastructure(payload):
-            detail["kind"] = payload.get("infrastructure_failure_kind")
-            infrastructure.append(detail)
-        else:
-            failed.append(detail)
-    return failed, infrastructure
-
-
-def _load_error_history(
-    root: Path, task_ids: Sequence[str]
-) -> list[dict[str, Any]]:
-    """Load durable prior errors before resume can overwrite task results."""
-    entries: list[dict[str, Any]] = []
-    summary_path = root / "summary.json"
-    if summary_path.is_file():
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        saved_history = summary.get("error_history")
-        if isinstance(saved_history, list):
-            entries.extend(item for item in saved_history if isinstance(item, dict))
-        for field, classification in (
-            ("failed_tasks", "proof_or_generation"),
-            ("infrastructure_failure_tasks", "infrastructure"),
-        ):
-            details = summary.get(field)
-            if isinstance(details, list):
-                entries.extend(
-                    {**item, "classification": classification}
-                    for item in details
-                    if isinstance(item, dict)
-                )
-
-    failed_tasks, infrastructure_tasks = _failure_task_details(root, task_ids)
-    entries.extend(
-        {**detail, "classification": "proof_or_generation"}
-        for detail in failed_tasks
-    )
-    entries.extend(
-        {**detail, "classification": "infrastructure"}
-        for detail in infrastructure_tasks
-    )
-    return _merge_error_history((), entries)
-
-
-def _merge_error_history(
-    previous: Sequence[dict[str, Any]],
-    current: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Preserve unique errors in stable first-seen order across resumes."""
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for entry in (*previous, *current):
-        normalized = dict(entry)
-        key = json.dumps(
-            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(normalized)
-    return merged
-
-
-def _execution_mode_from_proof_args(proof_args: Sequence[str]) -> str:
-    mode = "minimal"
-    for index, argument in enumerate(proof_args):
-        if argument.startswith("--execution-mode="):
-            mode = argument.partition("=")[2]
-        elif argument == "--execution-mode" and index + 1 < len(proof_args):
-            mode = proof_args[index + 1]
-    return mode
-
-
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
@@ -662,36 +327,3 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 def _sha256_json(value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    temporary = Path(name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
-def _atomic_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
-    temporary = Path(name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
