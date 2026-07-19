@@ -43,6 +43,7 @@ _DIAGNOSTIC_START_RE = re.compile(
     r"^.*?:\d+:\d+:\s+(?:error(?:\([^)]*\))?|warning|information|hint):",
     re.IGNORECASE | re.MULTILINE,
 )
+_DSML_TOOL_CALL_MARKER = "<｜｜DSML｜｜tool_calls>"
 
 
 class ChatActionGenerator(ActionGenerator):
@@ -122,10 +123,15 @@ class ChatActionGenerator(ActionGenerator):
             else []
         )
         candidates: list[ActionCandidate] = []
+        tool_call_markup = ""
         for index, choice in enumerate(choices[: request.max_candidates]):
             if not isinstance(choice, Mapping):
                 continue
-            proof_text, removed_commands = _clean_proof_text(choice_content(choice))
+            content = choice_content(choice)
+            if _looks_like_dsml_tool_call(content):
+                tool_call_markup = content
+                continue
+            proof_text, removed_commands = _clean_proof_text(content)
             if not proof_text:
                 continue
             if removed_commands:
@@ -165,6 +171,8 @@ class ChatActionGenerator(ActionGenerator):
             reason = (
                 "model_output_truncated"
                 if output_budget_was_exhausted(choices, usage_metadata)
+                else "tool_call_after_budget"
+                if tool_call_markup
                 else "empty_model_output"
             )
             logger.warning(
@@ -178,10 +186,16 @@ class ChatActionGenerator(ActionGenerator):
             )
             raise ActionGenerationError(
                 reason,
-                f"Model produced no usable proof candidate ({reason}).",
+                (
+                    "Model requested another tool call after the Lean tool "
+                    "budget was exhausted."
+                    if reason == "tool_call_after_budget"
+                    else f"Model produced no usable proof candidate ({reason})."
+                ),
                 metadata={
                     "model": self.config.model,
                     "finish_reasons": finish_reasons,
+                    "response_preview": _response_preview(tool_call_markup),
                     "token_usage": usage_metadata,
                     "tool_calls": tool_metadata,
                     "provider_requests": provider_metadata,
@@ -439,6 +453,15 @@ def _clean_proof_text(content: str) -> tuple[str, int]:
     kept = [line for line in lines if not _FORBIDDEN_PROOF_COMMAND_RE.match(line)]
     removed = len(lines) - len(kept)
     return "\n".join(kept).strip(), removed
+
+
+def _looks_like_dsml_tool_call(content: str) -> bool:
+    return content.lstrip().startswith(_DSML_TOOL_CALL_MARKER)
+
+
+def _response_preview(content: str, *, limit: int = 500) -> str:
+    normalized = content.strip().replace("\x00", "\N{REPLACEMENT CHARACTER}")
+    return normalized if len(normalized) <= limit else normalized[:limit] + "..."
 
 
 def _compact_checker_output(raw_output: str, *, max_chars: int = 6_000) -> str:

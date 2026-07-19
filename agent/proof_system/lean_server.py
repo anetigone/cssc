@@ -298,15 +298,13 @@ class LeanServerClient:
                     publications = self._diagnostic_publications.get(uri, 0) + 1
                     self._diagnostic_publications[uri] = publications
                     # Push diagnostics are not a protocol-level completion
-                    # signal. The common Lean sequence is an empty placeholder
-                    # set on didOpen followed by the final set after elaboration,
-                    # so ``publications >= 2`` recognizes that replacement and a
-                    # non-empty set is treated the same way. We then wait briefly
-                    # for the authoritative ``fileProgress=[]``; if it never
-                    # comes, we fall back to returning the latest diagnostics
-                    # after a quiet period rather than discarding the server
-                    # result and re-checking in a subprocess.
-                    if publications >= 2 or diagnostics:
+                    # signal. In particular, Lean can publish several empty
+                    # placeholder sets while imports and elaboration are still
+                    # running. Empty diagnostics therefore never prove success:
+                    # only a paired ``fileProgress=[]`` may do that. A non-empty
+                    # diagnostic set is safe to return after a quiet period when
+                    # an older server omits the final progress notification.
+                    if diagnostics:
                         self._diagnostic_fallback_deadlines[uri] = (
                             time.monotonic() + self._diagnostics_fallback_seconds
                         )
@@ -324,7 +322,12 @@ class LeanServerClient:
                         # for ``processing=[]`` rather than let a short fallback
                         # timer declare an ambiguous completion mid-elaboration.
                         self._diagnostic_fallback_deadlines.pop(uri, None)
-                    else:
+                    elif uri in self._processing_documents:
+                        # ``processing=[]`` is only conclusive when it closes an
+                        # active processing interval observed for this document.
+                        # Lean may emit an initial or stale empty progress event
+                        # around didOpen; accepting that event unconditionally
+                        # can return empty diagnostics before elaboration starts.
                         self._completed_documents.add(uri)
                     self._condition.notify_all()
 

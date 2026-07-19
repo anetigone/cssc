@@ -61,6 +61,7 @@ def saved_result_is_transient_generation(payload: dict[str, Any]) -> bool:
         "generation:model_output_truncated",
         "generation:empty_model_output",
         "generation:invalid_structured_output",
+        "generation:tool_call_after_budget",
     }
 
 

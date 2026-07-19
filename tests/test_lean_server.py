@@ -42,6 +42,19 @@ class LeanServerFramingTests(unittest.TestCase):
 
 
 class LeanServerCompletionTests(unittest.TestCase):
+    def test_unpaired_empty_progress_does_not_complete_document(self) -> None:
+        client = LeanServerClient(["lean", "--server"], cwd=None, root=None)
+        uri = "file:///Attempt.lean"
+
+        client._handle_message(
+            {
+                "method": "$/lean/fileProgress",
+                "params": {"textDocument": {"uri": uri}, "processing": []},
+            }
+        )
+
+        self.assertNotIn(uri, client._completed_documents)
+
     def test_initial_empty_diagnostics_do_not_complete_active_processing(self) -> None:
         client = LeanServerClient(
             ["lean", "--server"],
@@ -124,7 +137,7 @@ class LeanServerCompletionTests(unittest.TestCase):
         with self.assertRaises(LeanServerAmbiguousCompletion):
             client._wait_for_check_completion(uri, timeout_seconds=0.01)
 
-    def test_empty_diagnostics_after_processing_are_accepted_via_fallback(self) -> None:
+    def test_repeated_empty_diagnostics_during_processing_do_not_complete(self) -> None:
         client = LeanServerClient(
             ["lean", "--server"],
             cwd=None,
@@ -151,8 +164,36 @@ class LeanServerCompletionTests(unittest.TestCase):
             }
         )
 
-        result = client._wait_for_check_completion(uri, timeout_seconds=0.1)
-        self.assertEqual(result, [])
+        self.assertNotIn(uri, client._diagnostic_fallback_deadlines)
+        with self.assertRaises(LeanServerAmbiguousCompletion):
+            client._wait_for_check_completion(uri, timeout_seconds=0.01)
+
+    def test_paired_empty_progress_accepts_empty_final_diagnostics(self) -> None:
+        client = LeanServerClient(["lean", "--server"], cwd=None, root=None)
+        uri = "file:///Attempt.lean"
+        client._handle_message(
+            {
+                "method": "$/lean/fileProgress",
+                "params": {"textDocument": {"uri": uri}, "processing": [{"kind": 1}]},
+            }
+        )
+        client._handle_message(
+            {
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "diagnostics": []},
+            }
+        )
+        client._handle_message(
+            {
+                "method": "$/lean/fileProgress",
+                "params": {"textDocument": {"uri": uri}, "processing": []},
+            }
+        )
+
+        self.assertEqual(
+            client._wait_for_check_completion(uri, timeout_seconds=0.1),
+            [],
+        )
 
     def test_progress_clears_diagnostic_fallback_mid_elaboration(self) -> None:
         # Once the server reports active elaboration via fileProgress, a pending

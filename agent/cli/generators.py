@@ -82,17 +82,18 @@ def build_action_generator(
             )
 
             tools = _proof_tools(args, project_root, proof_adapter)
+            max_tool_rounds = _structured_tool_rounds(args)
             cheap = ChatStructuredActionGenerator(
                 _model_config(args, role="proof"),
                 tools=tools,
-                max_tool_rounds=1,
+                max_tool_rounds=max_tool_rounds,
             )
             if not routing_enabled:
                 return cheap
             strong = ChatStructuredActionGenerator(
                 _model_config(args, role="strong_proof"),
                 tools=tools,
-                max_tool_rounds=1,
+                max_tool_rounds=max_tool_rounds,
             )
             return TieredStructuredActionGenerator(cheap, strong)
         return ChatActionGenerator(
@@ -190,6 +191,14 @@ def _proof_tools(
         timeout_seconds=min(float(getattr(args, "lean_timeout", 60.0)), 60.0),
         checker=proof_adapter,
     ).tools()
+
+
+def _structured_tool_rounds(args: Namespace) -> int:
+    """Match minimal's single exploration call and reserve a proof check."""
+    max_checks = getattr(args, "max_checks", 3)
+    if not isinstance(max_checks, int):
+        return 0
+    return min(1, max(0, max_checks - 1))
 
 
 def _needs_formalizer(args: Namespace) -> bool:

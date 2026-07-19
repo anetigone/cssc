@@ -141,6 +141,22 @@ class SolveLeanTaskCliTests(unittest.TestCase):
 
         self.assertTrue(getattr(generator, "_is_structured_generator", False))
         self.assertEqual(generator.__class__.__name__, "ChatStructuredActionGenerator")
+        self.assertEqual(generator.driver.max_tool_rounds, 1)
+
+    def test_structured_tool_rounds_reserve_final_checker_budget(self) -> None:
+        args = _args(
+            use_model=True,
+            execution_mode="structured",
+            max_checks=1,
+        )
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "key", "OPENAI_MODEL": "model"}),
+            patch("agent.cli.generators._ensure_env_loaded"),
+            patch("agent.cli.generators._proof_tools", return_value=()),
+        ):
+            generator = build_action_generator(args)
+
+        self.assertEqual(generator.driver.max_tool_rounds, 0)
 
     def test_structured_model_routing_builds_cheap_and_strong_tiers(self) -> None:
         args = _args(

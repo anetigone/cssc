@@ -44,7 +44,12 @@ from .openai import (
     choice_content,
     output_budget_was_exhausted,
 )
-from .proof import _build_user_prompt, _should_allow_tools
+from .proof import (
+    _build_user_prompt,
+    _looks_like_dsml_tool_call,
+    _response_preview,
+    _should_allow_tools,
+)
 from .tools import Tool
 from .tools.loop import (
     AGENT_PROVIDER_REQUESTS_KEY,
@@ -159,11 +164,17 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
                 errors.append(str(exc))
 
         if not proposals:
-            reason = (
-                "model_output_truncated"
-                if output_budget_was_exhausted(choices, usage_metadata)
-                else "invalid_structured_output"
+            response_content = (
+                choice_content(choices[0])
+                if choices and isinstance(choices[0], Mapping)
+                else ""
             )
+            if output_budget_was_exhausted(choices, usage_metadata):
+                reason = "model_output_truncated"
+            elif tool_metadata and _looks_like_dsml_tool_call(response_content):
+                reason = "tool_call_after_budget"
+            else:
+                reason = "invalid_structured_output"
             logger.warning(
                 "Structured model response produced no valid proposals: model=%s "
                 "task_id=%s reason=%s errors=%s token_usage=%s",
@@ -179,16 +190,15 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
                     "Model exhausted its output budget before producing a "
                     "structured proposal."
                     if reason == "model_output_truncated"
+                    else "Model requested another tool call after the structured "
+                    "tool budget was exhausted."
+                    if reason == "tool_call_after_budget"
                     else "Model produced no valid structured proposals."
                 ),
                 metadata={
                     "model": self.config.model,
                     "errors": tuple(errors),
-                    "response_preview": _response_preview(
-                        choice_content(choices[0])
-                        if choices and isinstance(choices[0], Mapping)
-                        else ""
-                    ),
+                    "response_preview": _response_preview(response_content),
                     "token_usage": usage_metadata,
                     "provider_requests": provider_metadata,
                     "tool_calls": tool_metadata,
@@ -256,12 +266,6 @@ def _decode_json(content: str) -> Any:
         return json.loads(stripped)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON: {exc.msg}") from exc
-
-
-def _response_preview(content: str, *, limit: int = 500) -> str:
-    """Keep enough invalid output for diagnosis without bloating traces."""
-    normalized = content.strip().replace("\x00", "\N{REPLACEMENT CHARACTER}")
-    return normalized if len(normalized) <= limit else normalized[:limit] + "..."
 
 
 def _proposal_items(decoded: Any) -> list[Mapping[str, Any]]:

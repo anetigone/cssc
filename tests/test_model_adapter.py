@@ -557,6 +557,71 @@ class ChatActionGeneratorTests(unittest.TestCase):
         tool_messages = [m for m in transport.calls[1]["messages"] if m.get("role") == "tool"]
         self.assertEqual(tool_messages[0]["tool_call_id"], "call_1")
 
+    def test_proof_generator_rejects_dsml_after_tool_budget(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "check_lean_snippet",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "<｜｜DSML｜｜tool_calls>\n"
+                                    '<｜｜DSML｜｜invoke name="check_lean_snippet">'
+                                )
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            ]
+        )
+        tool = FunctionTool(
+            name="check_lean_snippet",
+            description="Check Lean.",
+            parameters={"type": "object", "properties": {}},
+            _execute=lambda _: '{"ok": true}',
+        )
+        generator = ChatActionGenerator(
+            ChatConfig(api_key="key", model="model"),
+            transport=transport,
+            tools=[tool],
+            max_tool_rounds=1,
+        )
+
+        with self.assertRaises(ActionGenerationError) as raised:
+            generator.generate(
+                ActionGenerationRequest(
+                    task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                    attempt_index=0,
+                )
+            )
+
+        self.assertEqual(raised.exception.reason, "tool_call_after_budget")
+        self.assertIn(
+            "<｜｜DSML｜｜tool_calls>",
+            raised.exception.metadata["response_preview"],
+        )
+
     def test_type_mismatch_repair_disables_tools(self) -> None:
         transport = RecordingTransport(
             {"choices": [{"message": {"content": "exact fixed"}, "finish_reason": "stop"}]}
@@ -959,6 +1024,79 @@ class ChatStructuredActionGeneratorTests(unittest.TestCase):
         self.assertIn("final JSON object", final_instruction)
         self.assertIn("`proposals` array", final_instruction)
         self.assertNotIn("final proof body that replaces", final_instruction)
+
+    def test_dsml_after_tool_budget_has_specific_generation_reason(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "check_lean_snippet",
+                                            "arguments": '{"code":"#check True"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": (
+                                    "<｜｜DSML｜｜tool_calls>\n"
+                                    '<｜｜DSML｜｜invoke name="check_lean_snippet">'
+                                )
+                            },
+                        }
+                    ]
+                },
+            ]
+        )
+        generator = ChatStructuredActionGenerator(
+            ChatConfig(api_key="key", model="model"),
+            transport=transport,
+            tools=[
+                FunctionTool(
+                    name="check_lean_snippet",
+                    description="Check Lean.",
+                    parameters={
+                        "type": "object",
+                        "properties": {"code": {"type": "string"}},
+                    },
+                    _execute=lambda args: json.dumps({"ok": True}),
+                )
+            ],
+            max_tool_rounds=1,
+        )
+
+        with self.assertRaises(ActionGenerationError) as raised:
+            generator.generate(
+                ActionGenerationRequest(
+                    task=ProofTask(
+                        "sample",
+                        "theorem sample : True := by\n  {{proof}}",
+                    ),
+                    attempt_index=0,
+                    metadata={"branch_id": "sample:root"},
+                )
+            )
+
+        self.assertEqual(raised.exception.reason, "tool_call_after_budget")
+        self.assertIn(
+            "<｜｜DSML｜｜tool_calls>",
+            raised.exception.metadata["response_preview"],
+        )
 
     def test_generates_typed_proposals_from_json_response(self) -> None:
         transport = RecordingTransport(

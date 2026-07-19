@@ -490,6 +490,9 @@ def test_saved_generation_reason_repairs_stale_infrastructure_flag() -> None:
     assert saved_result_is_transient_generation(
         {"stop_reason": "generation:invalid_structured_output"}
     ) is True
+    assert saved_result_is_transient_generation(
+        {"stop_reason": "generation:tool_call_after_budget"}
+    ) is True
 
 
 def test_benchmark_cli_exposes_and_forwards_execution_mode(tmp_path: Path) -> None:

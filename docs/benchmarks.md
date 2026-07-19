@@ -279,7 +279,7 @@ python scripts/minif2f_benchmark_run.py \
 
 普通 resume 会自动重跑 provider/checker 等 infrastructure result，以及
 `generation:model_output_truncated`、`generation:empty_model_output` 和
-`generation:invalid_structured_output` 这类可恢复的生成失败；
+`generation:invalid_structured_output`、`generation:tool_call_after_budget` 这类可恢复的生成失败；
 其中 `empty_model_output` 覆盖 provider 不暴露 reasoning token、也没有给出可靠 length finish
 reason 的空响应。
 reasoning token 只用于细化诊断，不参与 benchmark 是否 solved 的最终判定。
