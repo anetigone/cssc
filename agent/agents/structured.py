@@ -56,6 +56,12 @@ from .tools.loop import (
 logger = logging.getLogger(__name__)
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+_STRUCTURED_TOOL_BUDGET_FINAL_INSTRUCTION = (
+    "The Lean tool budget is exhausted. Do not call tools again. Return only "
+    "the final JSON object with a `proposals` array, following the structured "
+    "action schemas from the system message. Never return a bare Lean proof "
+    "body or markdown."
+)
 
 
 class ChatStructuredActionGenerator(StructuredActionGenerator):
@@ -98,6 +104,9 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
             ),
             final_n=1,
             allow_tools=allow_tools,
+            tool_budget_final_instruction=(
+                _STRUCTURED_TOOL_BUDGET_FINAL_INSTRUCTION
+            ),
         )
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -115,8 +124,9 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
         for choice_index, choice in enumerate(choices[:1]):
             if not isinstance(choice, Mapping):
                 continue
+            content = choice_content(choice)
             try:
-                decoded = _decode_json(choice_content(choice))
+                decoded = _decode_json(content)
                 for proposal_index, item in enumerate(_proposal_items(decoded)):
                     proposal = _proposal_from_model_item(item, branch_id=branch_id)
                     ok, validation_errors = proposal.validate()
@@ -174,6 +184,11 @@ class ChatStructuredActionGenerator(StructuredActionGenerator):
                 metadata={
                     "model": self.config.model,
                     "errors": tuple(errors),
+                    "response_preview": _response_preview(
+                        choice_content(choices[0])
+                        if choices and isinstance(choices[0], Mapping)
+                        else ""
+                    ),
                     "token_usage": usage_metadata,
                     "provider_requests": provider_metadata,
                     "tool_calls": tool_metadata,
@@ -241,6 +256,12 @@ def _decode_json(content: str) -> Any:
         return json.loads(stripped)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON: {exc.msg}") from exc
+
+
+def _response_preview(content: str, *, limit: int = 500) -> str:
+    """Keep enough invalid output for diagnosis without bloating traces."""
+    normalized = content.strip().replace("\x00", "\N{REPLACEMENT CHARACTER}")
+    return normalized if len(normalized) <= limit else normalized[:limit] + "..."
 
 
 def _proposal_items(decoded: Any) -> list[Mapping[str, Any]]:

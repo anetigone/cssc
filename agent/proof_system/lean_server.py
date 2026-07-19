@@ -13,6 +13,7 @@ from typing import Any
 
 
 logger = logging.getLogger(__name__)
+INTERRUPT_POLL_SECONDS = 0.1
 
 
 class LeanServerError(RuntimeError):
@@ -140,18 +141,30 @@ class LeanServerClient:
         process = self._process
         if process is None:
             return
-        if process.poll() is None:
-            try:
-                self._request("shutdown", None, timeout_seconds=2.0)
-                self._notify("exit", {})
-            except LeanServerError:
-                pass
         try:
-            process.terminate()
-            process.wait(timeout=2.0)
-        except (OSError, subprocess.TimeoutExpired):
-            process.kill()
-        self._process = None
+            if process.poll() is None:
+                try:
+                    self._request("shutdown", None, timeout_seconds=2.0)
+                    self._notify("exit", {})
+                except (LeanServerError, OSError, ValueError):
+                    # Ctrl+C can close the server pipe/handle before cleanup
+                    # reaches this point. Shutdown is best-effort.
+                    pass
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=2.0)
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    try:
+                        process.kill()
+                    except (OSError, ValueError):
+                        pass
+        except (OSError, ValueError):
+            # A process handle invalidated by Ctrl+C is already closed for our
+            # purposes; cleanup must not replace the original interrupt.
+            pass
+        finally:
+            self._process = None
 
     def _request(self, method: str, params: Any, *, timeout_seconds: float) -> dict[str, Any]:
         request_id = self._next_id
@@ -164,7 +177,7 @@ class LeanServerClient:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise LeanServerTimeout(f"Lean server request {method!r} timed out after {timeout_seconds}s.")
-                self._condition.wait(remaining)
+                self._condition.wait(min(remaining, INTERRUPT_POLL_SECONDS))
             response = self._responses.pop(request_id)
         if "error" in response:
             raise LeanServerError(f"Lean server request {method!r} failed: {response['error']}")
@@ -216,7 +229,7 @@ class LeanServerClient:
                     raise LeanServerTimeout(f"Lean checker timed out after {timeout_seconds}s.")
                 if fallback_deadline is not None:
                     remaining = min(remaining, max(0.0, fallback_deadline - now))
-                self._condition.wait(remaining)
+                self._condition.wait(min(remaining, INTERRUPT_POLL_SECONDS))
             self._completed_documents.discard(uri)
             self._processing_documents.discard(uri)
             self._diagnostic_publications.pop(uri, None)

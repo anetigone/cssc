@@ -60,6 +60,7 @@ def saved_result_is_transient_generation(payload: dict[str, Any]) -> bool:
     return payload.get("stop_reason") in {
         "generation:model_output_truncated",
         "generation:empty_model_output",
+        "generation:invalid_structured_output",
     }
 
 

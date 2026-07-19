@@ -147,6 +147,20 @@ def main(argv: list[str] | None = None) -> int:
     except (MiniF2FError, OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
         return 2
+    except KeyboardInterrupt:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "interrupted": True,
+                    "run_root": str(run_root),
+                    "status": "interrupted",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 130
     payload = {
         "ok": summary.infrastructure_failures == 0 and summary.completed == summary.selected,
         "run_id": summary.run_id,

@@ -40,6 +40,7 @@ class ChatDriver:
         *,
         final_n: int = 1,
         allow_tools: bool = True,
+        tool_budget_final_instruction: str | None = None,
     ) -> Mapping[str, Any]:
         """Run a chat completion and return the decoded response.
 
@@ -64,6 +65,7 @@ class ChatDriver:
             self.execute_tool,
             base_payload=base_payload,
             final_n=final_n,
+            tool_budget_final_instruction=tool_budget_final_instruction,
         )
 
     def execute_tool(self, call: ToolCall) -> ToolResult:

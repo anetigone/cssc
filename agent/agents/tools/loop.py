@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -22,6 +24,12 @@ logger = logging.getLogger(__name__)
 AGENT_TOKEN_USAGE_KEY = "_agent_token_usage"
 AGENT_TOOL_CALLS_KEY = "_agent_tool_calls"
 AGENT_PROVIDER_REQUESTS_KEY = "_agent_provider_requests"
+DEFAULT_TOOL_BUDGET_FINAL_INSTRUCTION = (
+    "The Lean tool budget is exhausted. Do not call tools again. Return only "
+    "the final proof body that replaces the proof marker, with no markdown, "
+    "imports, #check, #print, #eval, or #reduce commands."
+)
+INTERRUPT_POLL_SECONDS = 0.1
 
 
 def run_tool_loop(
@@ -34,6 +42,7 @@ def run_tool_loop(
     *,
     base_payload: Mapping[str, Any],
     final_n: int = 1,
+    tool_budget_final_instruction: str | None = None,
 ) -> Mapping[str, Any]:
     """Run a chat completion, allowing the model to call tools first.
 
@@ -51,14 +60,15 @@ def run_tool_loop(
     def post(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         started = time.perf_counter()
         try:
-            response = transport.post_json(
+            response = _interruptible_post_json(
+                transport,
                 chat_completions_url(config.base_url),
-                headers={
+                {
                     "Authorization": f"Bearer {config.api_key}",
                     "Content-Type": "application/json",
                 },
-                payload=payload,
-                timeout_seconds=config.timeout_seconds,
+                payload,
+                config.timeout_seconds,
             )
         except ModelAdapterError as exc:
             traced = exc.metadata.get("provider_requests")
@@ -201,9 +211,8 @@ def run_tool_loop(
             {
                 "role": "user",
                 "content": (
-                    "The Lean tool budget is exhausted. Do not call tools again. Return only "
-                    "the final proof body that replaces the proof marker, with no markdown, "
-                    "imports, #check, #print, #eval, or #reduce commands."
+                    tool_budget_final_instruction
+                    or DEFAULT_TOOL_BUDGET_FINAL_INSTRUCTION
                 ),
             }
         )
@@ -213,6 +222,55 @@ def run_tool_loop(
     response = post(final_payload)
     request_usages.append(normalized_token_usage(response))
     return _with_usage(response, request_usages, tool_events, provider_requests)
+
+
+def _interruptible_post_json(
+    transport: ChatTransport,
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, Any],
+    timeout_seconds: float,
+) -> Mapping[str, Any]:
+    """Keep the main thread responsive to Ctrl+C during blocking HTTP reads.
+
+    Some Windows/Python combinations defer signal delivery while urllib is in
+    a socket read. The transport still owns its normal request timeout and
+    retry policy; a daemon worker merely lets the main thread poll often
+    enough to receive ``KeyboardInterrupt`` promptly.
+    """
+    outcome: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def request() -> None:
+        try:
+            outcome.put(
+                (
+                    True,
+                    transport.post_json(
+                        url,
+                        headers=headers,
+                        payload=payload,
+                        timeout_seconds=timeout_seconds,
+                    ),
+                )
+            )
+        except BaseException as exc:
+            outcome.put((False, exc))
+
+    threading.Thread(
+        target=request,
+        name="chat-transport-request",
+        daemon=True,
+    ).start()
+    while True:
+        try:
+            succeeded, value = outcome.get(timeout=INTERRUPT_POLL_SECONDS)
+            break
+        except queue.Empty:
+            continue
+    if succeeded:
+        return value
+    assert isinstance(value, BaseException)
+    raise value
 
 
 def _with_usage(

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import _thread
 import json
+import threading
+import time
 import unittest
 from typing import Any, Mapping
 
@@ -34,6 +37,37 @@ class RecordingTransport:
 
 
 class ChatDriverTests(unittest.TestCase):
+    def test_blocking_transport_remains_keyboard_interruptible(self) -> None:
+        release = threading.Event()
+
+        class BlockingTransport:
+            def post_json(
+                self,
+                url: str,
+                headers: Mapping[str, str],
+                payload: Mapping[str, Any],
+                timeout_seconds: float,
+            ) -> Mapping[str, Any]:
+                release.wait(5)
+                return {"choices": [{"message": {"content": "too late"}}]}
+
+        driver = ChatDriver(
+            ChatConfig(api_key="k", model="m"),
+            transport=BlockingTransport(),
+            tools=(),
+        )
+        timer = threading.Timer(0.05, _thread.interrupt_main)
+        started = time.perf_counter()
+        timer.start()
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                driver.complete([{"role": "user", "content": "hi"}])
+        finally:
+            release.set()
+            timer.cancel()
+
+        self.assertLess(time.perf_counter() - started, 1.0)
+
     def test_complete_returns_final_response(self) -> None:
         transport = RecordingTransport(
             [{"choices": [{"message": {"content": "hello"}}]}]

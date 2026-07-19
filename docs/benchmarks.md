@@ -278,8 +278,10 @@ python scripts/minif2f_benchmark_run.py \
 ```
 
 普通 resume 会自动重跑 provider/checker 等 infrastructure result，以及
-`generation:model_output_truncated` 和 `generation:empty_model_output` 这类可恢复的生成失败；
-后者覆盖 provider 不暴露 reasoning token、也没有给出可靠 length finish reason 的空响应。
+`generation:model_output_truncated`、`generation:empty_model_output` 和
+`generation:invalid_structured_output` 这类可恢复的生成失败；
+其中 `empty_model_output` 覆盖 provider 不暴露 reasoning token、也没有给出可靠 length finish
+reason 的空响应。
 reasoning token 只用于细化诊断，不参与 benchmark 是否 solved 的最终判定。
 它仍会跳过已有 accepted 和普通证明失败。
 若需要保留这些结果，可显式传 `--skip-infrastructure-failures` 或
@@ -303,6 +305,10 @@ python scripts/minif2f_benchmark_run.py \
 python scripts/minif2f_benchmark_run.py \
   --refresh-index .runs/benchmarks/minif2f/minif2f-valid-pilot
 ```
+
+交互运行时按 Ctrl+C 会把 `summary.json` 和 `run.json` 状态写为 `interrupted`，当前题保持 pending，
+进程以 130 退出；随后使用相同 selection 和 proof 参数 `--resume` 即可继续。模型 HTTP 等待和 Lean
+server 等待保持短周期中断检查，server 句柄已先行退出时的清理错误不得覆盖原始 KeyboardInterrupt。
 
 运行结束后可从最终 `result.json` 和 append-only trace 生成结果与 token 汇总：
 

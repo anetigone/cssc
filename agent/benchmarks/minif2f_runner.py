@@ -225,6 +225,7 @@ def run_minif2f_benchmark(
         keep_files=cli_args.keep_check_files,
     )
     aborted = False
+    interrupted: KeyboardInterrupt | None = None
     try:
         _prewarm(adapter, check_workspace.root, timeout_seconds=cli_args.lean_timeout)
         services = SimpleNamespace(adapter=adapter)
@@ -301,10 +302,22 @@ def run_minif2f_benchmark(
             if infrastructure and not continue_on_infrastructure_failure:
                 aborted = True
                 break
+    except KeyboardInterrupt as exc:
+        interrupted = exc
     finally:
-        adapter.close()
+        try:
+            adapter.close()
+        except KeyboardInterrupt as exc:
+            # A second Ctrl+C during server cleanup must still leave durable
+            # interrupted metadata rather than an apparently running suite.
+            interrupted = interrupted or exc
 
-    status = "aborted_infrastructure" if aborted else "complete"
+    if interrupted is not None:
+        status = "interrupted"
+    elif aborted:
+        status = "aborted_infrastructure"
+    else:
+        status = "complete"
     _write_summary(
         root, run_id, len(rows), completed, accepted, failed, skipped,
         infrastructure_failures, selected_task_ids, status, error_history,
@@ -314,6 +327,8 @@ def run_minif2f_benchmark(
     metadata["status"] = status
     metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
     _atomic_json(run_metadata_path, metadata)
+    if interrupted is not None:
+        raise interrupted
     return MiniF2FRunSummary(
         run_id=run_id,
         run_root=root,

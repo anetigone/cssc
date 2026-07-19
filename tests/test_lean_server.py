@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import unittest
+from unittest.mock import MagicMock
 
 from agent.proof_system.lean_server import (
     LeanServerAmbiguousCompletion,
@@ -24,6 +25,20 @@ class LeanServerFramingTests(unittest.TestCase):
     def test_read_exact_rejects_truncated_message(self) -> None:
         with self.assertRaisesRegex(LeanServerError, r"3/5 bytes"):
             _read_exact(io.BytesIO(b'123'), 5)
+
+    def test_close_does_not_leak_invalid_handle_error(self) -> None:
+        client = LeanServerClient(["lean", "--server"], cwd=None, root=None)
+        process = MagicMock()
+        process.poll.return_value = None
+        process.terminate.side_effect = OSError(22, "Invalid argument")
+        process.kill.side_effect = OSError(22, "Invalid argument")
+        client._process = process
+        client._request = MagicMock(side_effect=OSError(22, "Invalid argument"))
+
+        client.close()
+
+        process.kill.assert_called_once()
+        self.assertIsNone(client._process)
 
 
 class LeanServerCompletionTests(unittest.TestCase):

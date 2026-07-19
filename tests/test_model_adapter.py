@@ -884,6 +884,82 @@ class ChatActionGeneratorTests(unittest.TestCase):
 
 
 class ChatStructuredActionGeneratorTests(unittest.TestCase):
+    def test_tool_budget_final_request_requires_structured_json(self) -> None:
+        transport = SequenceTransport(
+            [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "check_lean_snippet",
+                                            "arguments": '{"snippet":"#check True"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "proposals": [
+                                            {
+                                                "kind": "implement",
+                                                "rationale": "close directly",
+                                                "proof_text": "trivial",
+                                            }
+                                        ]
+                                    }
+                                )
+                            },
+                        }
+                    ]
+                },
+            ]
+        )
+        tool = FunctionTool(
+            name="check_lean_snippet",
+            description="Check Lean.",
+            parameters={
+                "type": "object",
+                "properties": {"snippet": {"type": "string"}},
+            },
+            _execute=lambda args: json.dumps({"ok": True}),
+        )
+        generator = ChatStructuredActionGenerator(
+            ChatConfig(api_key="key", model="model"),
+            transport=transport,
+            tools=[tool],
+            max_tool_rounds=1,
+        )
+
+        proposals = generator.generate(
+            ActionGenerationRequest(
+                task=ProofTask("sample", "theorem sample : True := by\n  {{proof}}"),
+                attempt_index=0,
+                metadata={"branch_id": "sample:root"},
+            )
+        )
+
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0].action.kind, SearchActionKind.IMPLEMENT)
+        final_instruction = transport.calls[1]["messages"][-1]["content"]
+        self.assertIn("final JSON object", final_instruction)
+        self.assertIn("`proposals` array", final_instruction)
+        self.assertNotIn("final proof body that replaces", final_instruction)
+
     def test_generates_typed_proposals_from_json_response(self) -> None:
         transport = RecordingTransport(
             {
@@ -1025,6 +1101,7 @@ class ChatStructuredActionGeneratorTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.reason, "invalid_structured_output")
+        self.assertEqual(raised.exception.metadata["response_preview"], "not json")
 
     def test_reasoning_only_structured_output_is_truncation(self) -> None:
         transport = RecordingTransport(

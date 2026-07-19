@@ -487,6 +487,9 @@ def test_saved_generation_reason_repairs_stale_infrastructure_flag() -> None:
     assert saved_result_is_transient_generation(
         {"stop_reason": "generation:empty_model_output"}
     ) is True
+    assert saved_result_is_transient_generation(
+        {"stop_reason": "generation:invalid_structured_output"}
+    ) is True
 
 
 def test_benchmark_cli_exposes_and_forwards_execution_mode(tmp_path: Path) -> None:
@@ -531,6 +534,82 @@ def test_benchmark_cli_refreshes_existing_run_index(tmp_path: Path) -> None:
 
     assert exit_code == 0
     refresh.assert_called_once_with(run_root.resolve())
+
+
+def test_benchmark_runner_persists_interrupted_status(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "miniF2F"
+    output = tmp_path / "prepared"
+    source = """import MiniF2F.ProblemImports
+theorem synthetic_task : True := by
+  sorry
+"""
+    _write_checkout(
+        root,
+        valid=source.replace("synthetic_task", "valid_task"),
+        test=source.replace("synthetic_task", "test_task"),
+    )
+    prepare_minif2f(
+        root,
+        output,
+        expected_split_counts={"valid": 1, "test": 1},
+        source_revision="test-revision",
+    )
+    rows = [
+        json.loads(line)
+        for line in (output / "manifest.jsonl").read_text().splitlines()
+    ]
+    for row in rows:
+        row["eligibility"] = "eligible"
+    (output / "manifest.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    adapter = MagicMock()
+    run_root = tmp_path / "interrupted-run"
+
+    with (
+        patch("agent.benchmarks.minif2f_runner.LeanAdapter", return_value=adapter),
+        patch("agent.benchmarks.minif2f_runner._prewarm"),
+        patch(
+            "agent.benchmarks.minif2f_runner._run_controller",
+            side_effect=KeyboardInterrupt,
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        run_minif2f_benchmark(
+            output,
+            root,
+            run_root,
+            split="valid",
+            proof_args=("--candidate", "trivial"),
+        )
+
+    adapter.close.assert_called_once()
+    summary = json.loads((run_root / "summary.json").read_text())
+    metadata = json.loads((run_root / "run.json").read_text())
+    assert summary["status"] == "interrupted"
+    assert summary["completed"] == 0
+    assert metadata["status"] == "interrupted"
+
+
+def test_benchmark_cli_reports_keyboard_interrupt(
+    capsys,
+) -> None:
+    with patch.object(
+        benchmark_cli,
+        "run_minif2f_benchmark",
+        side_effect=KeyboardInterrupt,
+    ):
+        exit_code = benchmark_cli.main(
+            ["--split", "valid", "--run-name", "interrupted-cli"]
+        )
+
+    assert exit_code == 130
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["interrupted"] is True
+    assert payload["status"] == "interrupted"
 
 
 def test_summary_uses_cached_results_without_rereading_task_files(
