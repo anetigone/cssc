@@ -23,7 +23,16 @@ class ActionGenerationError(RuntimeError):
         self.metadata = dict(metadata or {})
 
 
-RETRYABLE_GENERATION_FAILURES = frozenset({"model_output_truncated"})
+RETRYABLE_GENERATION_FAILURES = frozenset(
+    {
+        "model_output_truncated",
+        # Some OpenAI-compatible providers neither expose reasoning-token
+        # details nor return a reliable length finish reason. An empty,
+        # successfully decoded response is still a model-generation failure,
+        # and another budgeted request can recover it.
+        "empty_model_output",
+    }
+)
 
 
 def is_retryable_generation_failure(exc: ActionGenerationError) -> bool:

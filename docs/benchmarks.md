@@ -278,7 +278,10 @@ python scripts/minif2f_benchmark_run.py \
 ```
 
 普通 resume 会自动重跑 provider/checker 等 infrastructure result，以及
-`generation:model_output_truncated` 这类可恢复的生成失败；它仍会跳过已有 accepted 和普通证明失败。
+`generation:model_output_truncated` 和 `generation:empty_model_output` 这类可恢复的生成失败；
+后者覆盖 provider 不暴露 reasoning token、也没有给出可靠 length finish reason 的空响应。
+reasoning token 只用于细化诊断，不参与 benchmark 是否 solved 的最终判定。
+它仍会跳过已有 accepted 和普通证明失败。
 若需要保留这些结果，可显式传 `--skip-infrastructure-failures` 或
 `--skip-transient-generation-failures`。兼容的显式写法为：
 

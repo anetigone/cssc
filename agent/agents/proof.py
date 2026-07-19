@@ -211,12 +211,12 @@ def _build_messages(
             "one coherent proof body."
         )
     generation_failures = request.metadata.get("generation_failures", ())
-    if (
-        generation_failures
-        and generation_failures[-1].get("reason") == "model_output_truncated"
-    ):
+    if generation_failures and generation_failures[-1].get("reason") in {
+        "model_output_truncated",
+        "empty_model_output",
+    }:
         phase_guidance += (
-            " The previous response hit the output limit before producing a usable proof; "
+            " The previous response produced no usable proof body; "
             "make this proof body concise and return it before any extended explanation."
         )
     return [

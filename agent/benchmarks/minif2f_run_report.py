@@ -29,10 +29,15 @@ INFRASTRUCTURE_STOP_REASONS = {
 
 def classify_infrastructure_failure(result: Any) -> tuple[bool, str | None]:
     """Classify failures that are external to mathematical/proof correctness."""
-    if result.stop_reason in INFRASTRUCTURE_STOP_REASONS:
-        return True, result.stop_reason
-    if result.stop_reason.startswith("generation:provider_"):
-        return True, result.stop_reason
+    stop_reason = str(result.stop_reason)
+    if stop_reason in INFRASTRUCTURE_STOP_REASONS:
+        return True, stop_reason
+    if stop_reason.startswith("generation:"):
+        # The terminal generation outcome is authoritative. Prior checker
+        # attempts may contain infrastructure diagnostics, but they did not
+        # cause this run to stop.
+        is_provider_error = stop_reason.startswith("generation:provider_")
+        return is_provider_error, stop_reason if is_provider_error else None
     if result.attempts:
         category = result.attempts[-1].check_result.category
         if category in INFRASTRUCTURE_CATEGORIES:
@@ -42,17 +47,20 @@ def classify_infrastructure_failure(result: Any) -> tuple[bool, str | None]:
 
 def saved_result_is_infrastructure(payload: dict[str, Any]) -> bool:
     """Recognize both current results and pre-fix provider-error results."""
-    if payload.get("infrastructure_failure"):
-        return True
     stop_reason = str(payload.get("stop_reason", ""))
-    return (
-        stop_reason in INFRASTRUCTURE_STOP_REASONS
-        or stop_reason.startswith("generation:provider_")
-    )
+    if stop_reason in INFRASTRUCTURE_STOP_REASONS:
+        return True
+    if stop_reason.startswith("generation:"):
+        # Repair stale pre-fix flags on saved non-provider generation failures.
+        return stop_reason.startswith("generation:provider_")
+    return bool(payload.get("infrastructure_failure"))
 
 
 def saved_result_is_transient_generation(payload: dict[str, Any]) -> bool:
-    return payload.get("stop_reason") == "generation:model_output_truncated"
+    return payload.get("stop_reason") in {
+        "generation:model_output_truncated",
+        "generation:empty_model_output",
+    }
 
 
 def write_summary(

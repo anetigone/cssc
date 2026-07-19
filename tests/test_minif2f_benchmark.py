@@ -24,7 +24,11 @@ from agent.benchmarks.minif2f_runner import (
     _classify_infrastructure_failure,
     run_minif2f_benchmark,
 )
-from agent.benchmarks.minif2f_run_report import write_summary
+from agent.benchmarks.minif2f_run_report import (
+    saved_result_is_infrastructure,
+    saved_result_is_transient_generation,
+    write_summary,
+)
 
 
 class _AcceptingChecker:
@@ -459,6 +463,30 @@ def test_provider_generation_error_is_infrastructure_without_checker_attempts() 
         True,
         "generation:provider_error",
     )
+
+
+def test_terminal_generation_failure_overrides_prior_checker_infrastructure() -> None:
+    attempt = MagicMock()
+    attempt.check_result.category = DiagnosticCategory.TIMEOUT
+    result = MagicMock(
+        stop_reason="generation:model_output_truncated",
+        attempts=(attempt,),
+    )
+
+    assert _classify_infrastructure_failure(result) == (False, None)
+
+
+def test_saved_generation_reason_repairs_stale_infrastructure_flag() -> None:
+    payload = {
+        "stop_reason": "generation:model_output_truncated",
+        "infrastructure_failure": True,
+    }
+
+    assert saved_result_is_infrastructure(payload) is False
+    assert saved_result_is_transient_generation(payload) is True
+    assert saved_result_is_transient_generation(
+        {"stop_reason": "generation:empty_model_output"}
+    ) is True
 
 
 def test_benchmark_cli_exposes_and_forwards_execution_mode(tmp_path: Path) -> None:
