@@ -304,6 +304,20 @@ python scripts/minif2f_benchmark_run.py \
   --refresh-index .runs/benchmarks/minif2f/minif2f-valid-pilot
 ```
 
+运行结束后可从最终 `result.json` 和 append-only trace 生成结果与 token 汇总：
+
+```bash
+python scripts/minif2f_benchmark_report.py \
+  .runs/benchmarks/minif2f/minif2f-valid-pilot \
+  --format markdown \
+  --json-output .runs/benchmarks/minif2f/minif2f-valid-pilot/usage-report.json \
+  --markdown-output .runs/benchmarks/minif2f/minif2f-valid-pilot/usage-report.md
+```
+
+报告分别给出当前 accepted 会话和包含失败/resume 的全历史口径，并同时列出首次会话通过率、模型调用
+coverage、统一 ledger coverage 与 provider request 状态。provider 未返回的 usage 保持不完整状态，
+不会作为零计入 observed total；cached input 已包含在 input token 内，不能重复加到 provider total。
+
 ## 历史兼容入口与 action arms
 
 - `phase8_benchmark_*` 保留原 trace/replay backend 名称。
